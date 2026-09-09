@@ -2067,6 +2067,9 @@ name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
+dependencies = [
+ "getrandom 0.4.3",
+]
 
 [[package]]
 name = "fax"
@@ -2131,6 +2134,18 @@ dependencies = [
  "borrow-or-share",
  "ref-cast",
  "serde",
+]
+
+[[package]]
+name = "flume"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e139bc46ca777eb5efaf62df0ab8cc5fd400866427e56c68b22e414e53bd3be"
+dependencies = [
+ "fastrand 2.5.0",
+ "futures-core",
+ "futures-sink",
+ "spin",
 ]
 
 [[package]]
@@ -4131,6 +4146,7 @@ dependencies = [
  "tracing-rolling-file",
  "tracing-subscriber",
  "tracing-test",
+ "triomphe",
  "url",
 ]
 
@@ -4276,6 +4292,7 @@ dependencies = [
  "dashmap",
  "enum_dispatch",
  "exponential-backoff",
+ "flume",
  "futures",
  "futures-util",
  "h2",
@@ -4351,6 +4368,7 @@ dependencies = [
  "tracing-appender",
  "tracing-rolling-file",
  "tracing-test",
+ "triomphe",
  "twox-hash",
  "typed-builder",
  "upon",
@@ -4438,6 +4456,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "triomphe",
 ]
 
 [[package]]
@@ -6497,6 +6516,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "spin"
+version = "0.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
+dependencies = [
+ "lock_api",
+]
+
+[[package]]
 name = "spm_precompiled"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7381,6 +7409,16 @@ checksum = "ad06847b7afb65c7866a36664b75c40b895e318cea4f71299f013fb22965329d"
 dependencies = [
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "triomphe"
+version = "0.1.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b40688ea6389c8171614b25491f71d4a27946e0c7ce2da1c6de27e25abf1a0ae"
+dependencies = [
+ "serde",
+ "stable_deref_trait",
 ]
 
 [[package]]

@@ -91,7 +91,8 @@ pub async fn config_dump_handler(State(admin_state): State<AdminState>) -> Json<
 
 #[cfg(test)]
 mod config_dump_tests {
-    use std::{sync::Arc, time::Instant};
+    use std::time::Instant;
+    use triomphe::Arc;
 
     use crate::admin::build_admin_router;
 

@@ -19,3 +19,10 @@ pub mod http;
 pub mod instrumented_stream;
 pub mod rewindable_stream;
 pub mod truncated_debug;
+
+#[cfg(any(feature = "access-log", feature = "metrics"))]
+pub(crate) type StreamMetrics =
+    instrumented_stream::StreamMetrics<crate::listeners::http_connection_manager::HttpTxnFlush>;
+
+#[cfg(not(any(feature = "access-log", feature = "metrics")))]
+pub(crate) type StreamMetrics = instrumented_stream::StreamMetrics<()>;

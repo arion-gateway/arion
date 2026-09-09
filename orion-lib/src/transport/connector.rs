@@ -20,10 +20,10 @@ use std::{
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     pin::Pin,
-    sync::Arc,
     task::{self, Poll},
     time::{Duration, Instant},
 };
+use triomphe::Arc;
 
 use http::uri::Authority;
 use hyper::Uri;
@@ -122,9 +122,9 @@ impl ConnectUsing {
                 Ok(ConnectUsing::Socket { authority, bind_device, connect_timeout, idle_timeout })
             },
             Address::Internal(internal) => {
-                let listener_name = internal.server_listener_name.to_static_str();
-                let synthetic_authority = Authority::try_from(format!("{listener_name}.listener.internal:80"))?;
-                Ok(ConnectUsing::InternalListener { listener_name, synthetic_authority })
+                let static_listener_name = internal.server_listener_name.to_static_str();
+                let synthetic_authority = Authority::try_from(format!("{static_listener_name}.listener.internal:80"))?;
+                Ok(ConnectUsing::InternalListener { listener_name: static_listener_name, synthetic_authority })
             },
             Address::Pipe(path, _) => {
                 Err(format!("Pipe addresses are not supported for upstream connections: {path}").into())
@@ -318,7 +318,7 @@ impl InternalConnector {
             })
         });
         let internal_conn = InternalConnection {
-            stream: Box::new(InstrumentedStream::new(server_stream)) as AsyncInstrumentedStream,
+            stream: InstrumentedStream::new(server_stream).into(),
             downstream_metadata,
             start_instant: Instant::now(),
         };
@@ -331,7 +331,7 @@ impl InternalConnector {
         }
         debug!("Successfully connected to internal listener '{}'", self.listener_name);
 
-        Ok((Box::new(InstrumentedStream::new(client_stream)) as AsyncInstrumentedStream, self.cluster_name))
+        Ok((InstrumentedStream::new(client_stream).into(), self.cluster_name))
     }
 }
 
@@ -515,7 +515,7 @@ impl Service<Uri> for UnifiedConnector {
                         }))
                     }
 
-                    Ok(HttpConnection::new(TokioIo::new(Box::new(instrumented) as AsyncInstrumentedStream)))
+                    Ok(HttpConnection::new(TokioIo::new(instrumented.into())))
                 })
             },
             UnifiedConnector::Internal(c) => {

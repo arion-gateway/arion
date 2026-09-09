@@ -16,13 +16,18 @@
 //
 
 use std::{
-    collections::HashMap,
+    borrow::Borrow,
+    cell::RefCell,
+    cmp::Ordering as CmpOrdering,
+    collections::{BTreeMap, HashMap},
     hash::Hash,
+    ptr,
     sync::atomic::{AtomicU64, Ordering},
+    thread::ThreadId,
 };
 
 use ahash::RandomState;
-use opentelemetry::KeyValue;
+use opentelemetry::{KeyValue, Value};
 use papaya::HashMap as ConcurrentHashMap;
 use smallvec::SmallVec;
 use std::{collections::hash_map, fmt};
@@ -31,44 +36,256 @@ pub trait Clearable {
     fn clear(&self);
 }
 
+struct CacheKey(SmallVec<[KeyValue; 4]>);
+
+#[repr(transparent)]
+struct KvSlice([KeyValue]);
+
+impl KvSlice {
+    fn from_slice(slice: &[KeyValue]) -> &Self {
+        // SAFETY: `KvSlice` is `repr(transparent)` over `[KeyValue]`.
+        unsafe { &*(ptr::from_ref(slice) as *const KvSlice) }
+    }
+}
+
+impl PartialEq for KvSlice {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for KvSlice {}
+
+impl PartialOrd for KvSlice {
+    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for KvSlice {
+    fn cmp(&self, other: &Self) -> CmpOrdering {
+        cmp_labels(&self.0, &other.0)
+    }
+}
+
+impl PartialEq for CacheKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.as_slice() == other.0.as_slice()
+    }
+}
+
+impl Eq for CacheKey {}
+
+impl PartialOrd for CacheKey {
+    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for CacheKey {
+    fn cmp(&self, other: &Self) -> CmpOrdering {
+        Borrow::<KvSlice>::borrow(self).cmp(other.borrow())
+    }
+}
+
+impl Borrow<KvSlice> for CacheKey {
+    fn borrow(&self) -> &KvSlice {
+        KvSlice::from_slice(self.0.as_slice())
+    }
+}
+
+struct CachedCell {
+    shard_id: ThreadId,
+    cell: *const AtomicU64,
+}
+
+fn cmp_labels(left: &[KeyValue], right: &[KeyValue]) -> CmpOrdering {
+    match left.len().cmp(&right.len()) {
+        CmpOrdering::Equal => {
+            for (a, b) in left.iter().zip(right.iter()) {
+                match cmp_key_value(a, b) {
+                    CmpOrdering::Equal => {},
+                    ordering => return ordering,
+                }
+            }
+            CmpOrdering::Equal
+        },
+        ordering => ordering,
+    }
+}
+
+fn cmp_key_value(left: &KeyValue, right: &KeyValue) -> CmpOrdering {
+    match left.key.as_str().cmp(right.key.as_str()) {
+        CmpOrdering::Equal => match (&left.value, &right.value) {
+            (Value::String(a), Value::String(b)) => a.as_str().cmp(b.as_str()),
+            (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
+            (Value::I64(a), Value::I64(b)) => a.cmp(b),
+            _ => left.value.as_str().cmp(&right.value.as_str()),
+        },
+        ordering => ordering,
+    }
+}
+
+struct PerMetric {
+    epoch: u64,
+    cells: BTreeMap<CacheKey, CachedCell>,
+}
+
+thread_local! {
+    static LAST: RefCell<HashMap<usize, PerMetric, RandomState>> =
+        RefCell::new(HashMap::with_hasher(RandomState::new()));
+}
+
+fn cache_lookup(
+    tls: &mut HashMap<usize, PerMetric, RandomState>,
+    owner: usize,
+    epoch: u64,
+    shard_id: ThreadId,
+    key: &[KeyValue],
+) -> Option<*const AtomicU64> {
+    let cached = tls.get_mut(&owner)?;
+    if cached.epoch != epoch {
+        cached.epoch = epoch;
+        cached.cells.clear();
+        return None;
+    }
+    let hit = cached.cells.get(KvSlice::from_slice(key))?;
+    (hit.shard_id == shard_id).then_some(hit.cell)
+}
+
+fn cache_store(
+    tls: &mut HashMap<usize, PerMetric, RandomState>,
+    owner: usize,
+    epoch: u64,
+    shard_id: ThreadId,
+    cache_key: CacheKey,
+    cell: *const AtomicU64,
+) {
+    let cached = tls.entry(owner).or_insert_with(|| PerMetric { epoch, cells: BTreeMap::new() });
+    if cached.epoch != epoch {
+        cached.epoch = epoch;
+        cached.cells.clear();
+    }
+    cached.cells.insert(cache_key, CachedCell { shard_id, cell });
+}
+
+/// Trait for shard keys that enables compile-time monomorphization of the
+/// thread-local caching path, eliminating the `Any` downcast that was
+/// previously performed on every `add()`/`sub()` call.
+pub trait ShardKey: Eq + Hash + Copy + 'static {
+    /// Return the `ThreadId` if this key *is* a thread id, enabling the
+    /// per-metric TLS cache.  The default returns `None` (no caching).
+    #[inline(always)]
+    fn as_thread_id(&self) -> Option<ThreadId> {
+        None
+    }
+}
+
+impl ShardKey for ThreadId {
+    #[inline(always)]
+    fn as_thread_id(&self) -> Option<ThreadId> {
+        Some(*self)
+    }
+}
+
+fn saturating_sub(counter: &AtomicU64, value: u64) {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let new = current.saturating_sub(value);
+        match counter.compare_exchange_weak(current, new, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(x) => current = x,
+        }
+    }
+}
+
 pub struct ShardedU64<S> {
     data: ConcurrentHashMap<S, ConcurrentHashMap<SmallVec<[KeyValue; 4]>, AtomicU64, RandomState>, RandomState>,
+    epoch: AtomicU64,
 }
 
 impl<S: Eq + Hash> ShardedU64<S> {
     pub fn new() -> Self {
-        ShardedU64 { data: ConcurrentHashMap::with_hasher(RandomState::new()) }
+        ShardedU64 { data: ConcurrentHashMap::with_hasher(RandomState::new()), epoch: AtomicU64::new(0) }
     }
 
-    pub fn add(&self, value: u64, shard_id: S, key: &[KeyValue]) {
+    fn owner_key(&self) -> usize {
+        ptr::from_ref(self) as usize
+    }
+
+    fn lookup_or_insert_ptr(&self, shard_id: S, key: &[KeyValue]) -> *const AtomicU64 {
         let map = self.data.pin();
         let shard = map.get_or_insert_with(shard_id, || ConcurrentHashMap::with_hasher(RandomState::new()));
         let shard_pin = shard.pin();
-        if let Some(counter) = shard_pin.get(key) {
-            counter.fetch_add(value, Ordering::Relaxed);
+        let counter = if let Some(counter) = shard_pin.get(key) {
+            counter
         } else {
-            let counter = shard_pin.get_or_insert_with(SmallVec::from(key), || AtomicU64::new(0));
-            counter.fetch_add(value, Ordering::Relaxed);
-        }
+            shard_pin.get_or_insert_with(SmallVec::from(key), || AtomicU64::new(0))
+        };
+        ptr::from_ref(counter)
+    }
+
+    fn lookup_ptr(&self, shard_id: S, key: &[KeyValue]) -> Option<*const AtomicU64> {
+        let map = self.data.pin();
+        let shard = map.get(&shard_id)?;
+        let shard_pin = shard.pin();
+        shard_pin.get(key).map(ptr::from_ref)
+    }
+}
+
+impl<S: ShardKey> ShardedU64<S> {
+    pub fn add(&self, value: u64, shard_id: S, key: &[KeyValue]) {
+        let owner = self.owner_key();
+        let epoch = self.epoch.load(Ordering::Relaxed);
+        LAST.with(|tls| {
+            let mut tls = tls.borrow_mut();
+            if let Some(tid) = shard_id.as_thread_id() {
+                if let Some(cell) = cache_lookup(&mut tls, owner, epoch, tid, key) {
+                    // SAFETY: `epoch` matches, so this entry has not been cleared/removed.
+                    // The `AtomicU64` address is stable in papaya until then.
+                    unsafe { (*cell).fetch_add(value, Ordering::Relaxed) };
+                    return;
+                }
+                let cell = self.lookup_or_insert_ptr(shard_id, key);
+                // SAFETY: `cell` was obtained from the live map in `lookup_or_insert_ptr`.
+                unsafe { (*cell).fetch_add(value, Ordering::Relaxed) };
+                cache_store(&mut tls, owner, epoch, tid, CacheKey(SmallVec::from(key)), cell);
+                return;
+            }
+            let cell = self.lookup_or_insert_ptr(shard_id, key);
+            // SAFETY: `cell` was obtained from the live map in `lookup_or_insert_ptr`.
+            unsafe { (*cell).fetch_add(value, Ordering::Relaxed) };
+        });
     }
 
     pub fn sub(&self, value: u64, shard_id: S, key: &[KeyValue]) {
-        let map = self.data.pin();
-        if let Some(shard) = map.get(&shard_id) {
-            let shard_pin = shard.pin();
-            if let Some(counter) = shard_pin.get(key) {
-                let mut current = counter.load(Ordering::Relaxed);
-                loop {
-                    let new = current.saturating_sub(value);
-                    match counter.compare_exchange_weak(current, new, Ordering::Relaxed, Ordering::Relaxed) {
-                        Ok(_) => break,
-                        Err(x) => current = x,
-                    }
+        let owner = self.owner_key();
+        let epoch = self.epoch.load(Ordering::Relaxed);
+        LAST.with(|tls| {
+            let mut tls = tls.borrow_mut();
+            if let Some(tid) = shard_id.as_thread_id() {
+                if let Some(cell) = cache_lookup(&mut tls, owner, epoch, tid, key) {
+                    // SAFETY: same as `add`: epoch still matches, cell has not been reclaimed.
+                    unsafe { saturating_sub(&*cell, value) };
+                    return;
                 }
+                let Some(cell) = self.lookup_ptr(shard_id, key) else {
+                    return;
+                };
+                // SAFETY: `cell` was obtained from the live map in `lookup_ptr`.
+                unsafe { saturating_sub(&*cell, value) };
+                cache_store(&mut tls, owner, epoch, tid, CacheKey(SmallVec::from(key)), cell);
+                return;
             }
-        }
+            if let Some(cell) = self.lookup_ptr(shard_id, key) {
+                // SAFETY: `cell` was obtained from the live map in `lookup_ptr`.
+                unsafe { saturating_sub(&*cell, value) };
+            }
+        });
     }
+}
 
+impl<S: Eq + Hash> ShardedU64<S> {
     pub fn load_all(&self) -> HashMap<SmallVec<[KeyValue; 4]>, u64, RandomState> {
         let map = self.data.pin();
         let mut result = HashMap::with_capacity_and_hasher(map.len(), RandomState::new());
@@ -103,13 +320,18 @@ impl<S: Eq + Hash> ShardedU64<S> {
         let map = self.data.pin();
         let shard = map.get(&shard_id)?;
         let shard_pin = shard.pin();
-        shard_pin.remove(key).map(|counter| counter.load(Ordering::Relaxed))
+        let removed = shard_pin.remove(key).map(|counter| counter.load(Ordering::Relaxed));
+        if removed.is_some() {
+            self.epoch.fetch_add(1, Ordering::Relaxed);
+        }
+        removed
     }
 }
 
-impl<S: Eq + std::hash::Hash> Clearable for ShardedU64<S> {
+impl<S: Eq + Hash> Clearable for ShardedU64<S> {
     fn clear(&self) {
         self.data.pin().clear();
+        self.epoch.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -221,31 +443,7 @@ pub struct ShardedHistogram<S> {
     otel_histogram: Option<opentelemetry::metrics::Histogram<u64>>,
 }
 
-impl<S: Eq + Hash + Clone + Copy> ShardedHistogram<S> {
-    pub fn new(mut buckets: Vec<u64>, otel_histogram: Option<opentelemetry::metrics::Histogram<u64>>) -> Self {
-        buckets.sort_unstable();
-        let mut counts = Vec::with_capacity(buckets.len());
-        for _ in 0..buckets.len() {
-            counts.push(ShardedU64::new());
-        }
-        Self { buckets, counts, sum: ShardedU64::new(), count: ShardedU64::new(), otel_histogram }
-    }
-
-    pub fn record(&self, value: u64, shard_id: S, key: &[KeyValue]) {
-        if let Some(otel) = &self.otel_histogram {
-            otel.record(value, key);
-        }
-
-        self.sum.add(value, shard_id, key);
-        self.count.add(1, shard_id, key);
-
-        for (i, &bound) in self.buckets.iter().enumerate() {
-            if value <= bound {
-                self.counts[i].add(1, shard_id, key);
-            }
-        }
-    }
-
+impl<S> ShardedHistogram<S> {
     pub fn buckets(&self) -> &[u64] {
         &self.buckets
     }
@@ -263,7 +461,58 @@ impl<S: Eq + Hash + Clone + Copy> ShardedHistogram<S> {
     }
 }
 
-impl<S: Eq + Hash + Clone + Copy> Clearable for ShardedHistogram<S> {
+impl<S: Eq + Hash> ShardedHistogram<S> {
+    /// Load cumulative bucket counts, reconstructing them from the
+    /// per-bucket (differential) counters stored at record time.
+    ///
+    /// Each returned `HashMap` at position `i` contains the cumulative count
+    /// for `bucket[0..=i]`, i.e. the number of observations ≤ `buckets[i]`.
+    /// This is the format expected by Prometheus histogram exposition.
+    pub fn load_cumulative_counts(&self) -> Vec<HashMap<SmallVec<[KeyValue; 4]>, u64, RandomState>> {
+        let mut cumulative = Vec::with_capacity(self.counts.len());
+        let mut running: HashMap<SmallVec<[KeyValue; 4]>, u64, RandomState> = HashMap::with_hasher(RandomState::new());
+
+        for bucket_count in &self.counts {
+            let snapshot = bucket_count.load_all();
+            for (labels, value) in snapshot {
+                *running.entry(labels).or_insert(0) += value;
+            }
+            cumulative.push(running.clone());
+        }
+        cumulative
+    }
+}
+
+impl<S: ShardKey> ShardedHistogram<S> {
+    pub fn new(mut buckets: Vec<u64>, otel_histogram: Option<opentelemetry::metrics::Histogram<u64>>) -> Self {
+        buckets.sort_unstable();
+        let mut counts = Vec::with_capacity(buckets.len());
+        for _ in 0..buckets.len() {
+            counts.push(ShardedU64::new());
+        }
+        Self { buckets, counts, sum: ShardedU64::new(), count: ShardedU64::new(), otel_histogram }
+    }
+
+    pub fn record(&self, value: u64, shard_id: S, key: &[KeyValue]) {
+        if let Some(otel) = &self.otel_histogram {
+            otel.record(value, key);
+        }
+
+        self.sum.add(value, shard_id, key);
+        self.count.add(1, shard_id, key);
+
+        // Binary search to find the single bucket this value falls into,
+        // instead of the previous linear scan that incremented *all*
+        // cumulative buckets (up to 9 `ShardedU64::add()` calls).
+        // Cumulative counts are reconstructed at read time.
+        let idx = self.buckets.partition_point(|&bound| bound < value);
+        if idx < self.counts.len() {
+            self.counts[idx].add(1, shard_id, key);
+        }
+    }
+}
+
+impl<S: Eq + Hash> Clearable for ShardedHistogram<S> {
     fn clear(&self) {
         for count in &self.counts {
             count.clear();
@@ -423,5 +672,170 @@ mod tests {
         g.record(50, &key);
         let all2 = g.load_all();
         assert_eq!(all2.get(key.as_slice()), Some(&50));
+    }
+
+    // ---- ShardedHistogram tests ----
+
+    /// Helper: collect cumulative counts for a single label set from the histogram.
+    fn cumulative_for_key(hist: &ShardedHistogram<ThreadId>, key: &[KeyValue]) -> Vec<u64> {
+        hist.load_cumulative_counts().iter().map(|bucket_map| bucket_map.get(key).copied().unwrap_or(0)).collect()
+    }
+
+    #[test]
+    fn test_histogram_basic_record_and_cumulative() {
+        // Buckets: [10, 50, 100, +Inf]
+        let h = ShardedHistogram::new(vec![10, 50, 100, u64::MAX], None);
+        let tid = build_thread_id(1);
+        let key = vec![KeyValue::new("op", "get")];
+
+        // Record value=5 → falls into bucket ≤10 (index 0)
+        h.record(5, tid, &key);
+        // Record value=30 → falls into bucket ≤50 (index 1)
+        h.record(30, tid, &key);
+        // Record value=30 again
+        h.record(30, tid, &key);
+        // Record value=80 → falls into bucket ≤100 (index 2)
+        h.record(80, tid, &key);
+
+        // Cumulative expectations:
+        //   ≤10:   1  (only the 5)
+        //   ≤50:   3  (5 + 30 + 30)
+        //   ≤100:  4  (5 + 30 + 30 + 80)
+        //   +Inf:  4  (all)
+        let cum = cumulative_for_key(&h, &key);
+        assert_eq!(cum, vec![1, 3, 4, 4], "cumulative counts mismatch");
+
+        // sum = 5 + 30 + 30 + 80 = 145
+        assert_eq!(h.sum().load(&key), Some(145));
+        // count = 4
+        assert_eq!(h.count().load(&key), Some(4));
+    }
+
+    #[test]
+    fn test_histogram_exact_boundary_values() {
+        // Buckets: [10, 50, 100]
+        let h = ShardedHistogram::new(vec![10, 50, 100], None);
+        let tid = build_thread_id(1);
+        let key = vec![KeyValue::new("op", "boundary")];
+
+        // Values exactly on bucket boundaries
+        h.record(10, tid, &key); // ≤10 → index 0
+        h.record(50, tid, &key); // ≤50 → index 1
+        h.record(100, tid, &key); // ≤100 → index 2
+
+        let cum = cumulative_for_key(&h, &key);
+        assert_eq!(cum, vec![1, 2, 3], "boundary values cumulative mismatch");
+
+        assert_eq!(h.sum().load(&key), Some(160));
+        assert_eq!(h.count().load(&key), Some(3));
+    }
+
+    #[test]
+    fn test_histogram_value_exceeds_all_buckets() {
+        // Buckets: [10, 50] — no +Inf bucket
+        let h = ShardedHistogram::new(vec![10, 50], None);
+        let tid = build_thread_id(1);
+        let key = vec![KeyValue::new("op", "big")];
+
+        // Value 999 exceeds all bucket boundaries
+        h.record(999, tid, &key);
+
+        // sum and count are updated, but no bucket gets the observation
+        assert_eq!(h.sum().load(&key), Some(999));
+        assert_eq!(h.count().load(&key), Some(1));
+
+        let cum = cumulative_for_key(&h, &key);
+        assert_eq!(cum, vec![0, 0], "no bucket should contain the observation");
+    }
+
+    #[test]
+    fn test_histogram_multiple_labels() {
+        let h = ShardedHistogram::new(vec![10, 100, u64::MAX], None);
+        let tid = build_thread_id(1);
+
+        let key_a = vec![KeyValue::new("route", "a")];
+        let key_b = vec![KeyValue::new("route", "b")];
+
+        h.record(5, tid, &key_a); // a: bucket 0
+        h.record(50, tid, &key_a); // a: bucket 1
+        h.record(50, tid, &key_b); // b: bucket 1
+        h.record(200, tid, &key_b); // b: bucket 2 (+Inf)
+
+        let cum_a = cumulative_for_key(&h, &key_a);
+        assert_eq!(cum_a, vec![1, 2, 2], "label 'a' cumulative mismatch");
+
+        let cum_b = cumulative_for_key(&h, &key_b);
+        assert_eq!(cum_b, vec![0, 1, 2], "label 'b' cumulative mismatch");
+
+        assert_eq!(h.sum().load(&key_a), Some(55));
+        assert_eq!(h.sum().load(&key_b), Some(250));
+    }
+
+    #[test]
+    fn test_histogram_multi_shard() {
+        let h = ShardedHistogram::new(vec![10, 100, u64::MAX], None);
+        let tid1 = build_thread_id(1);
+        let tid2 = build_thread_id(2);
+        let key = vec![KeyValue::new("op", "multi")];
+
+        h.record(5, tid1, &key); // bucket 0
+        h.record(50, tid2, &key); // bucket 1
+        h.record(7, tid1, &key); // bucket 0
+        h.record(200, tid2, &key); // bucket 2
+
+        let cum = cumulative_for_key(&h, &key);
+        // bucket 0: 2, bucket 1: 1, bucket 2: 1
+        // cumulative: [2, 3, 4]
+        assert_eq!(cum, vec![2, 3, 4], "multi-shard cumulative mismatch");
+
+        assert_eq!(h.sum().load(&key), Some(5 + 50 + 7 + 200));
+        assert_eq!(h.count().load(&key), Some(4));
+    }
+
+    #[test]
+    fn test_histogram_clear() {
+        let h = ShardedHistogram::new(vec![10, 100, u64::MAX], None);
+        let tid = build_thread_id(1);
+        let key = vec![KeyValue::new("op", "clear")];
+
+        h.record(5, tid, &key);
+        h.record(50, tid, &key);
+        assert_eq!(h.count().load(&key), Some(2));
+
+        h.clear();
+        assert_eq!(h.count().load(&key), None);
+        assert_eq!(h.sum().load(&key), None);
+        let cum = cumulative_for_key(&h, &key);
+        assert_eq!(cum, vec![0, 0, 0], "all buckets should be zero after clear");
+    }
+
+    #[test]
+    fn test_histogram_zero_value() {
+        let h = ShardedHistogram::new(vec![0, 10, 100], None);
+        let tid = build_thread_id(1);
+        let key = vec![KeyValue::new("op", "zero")];
+
+        // value=0 should land in bucket ≤0 (index 0)
+        h.record(0, tid, &key);
+        let cum = cumulative_for_key(&h, &key);
+        assert_eq!(cum, vec![1, 1, 1]);
+        assert_eq!(h.sum().load(&key), Some(0));
+        assert_eq!(h.count().load(&key), Some(1));
+    }
+
+    #[test]
+    fn test_histogram_all_in_lowest_bucket() {
+        let h = ShardedHistogram::new(vec![100, 200, u64::MAX], None);
+        let tid = build_thread_id(1);
+        let key = vec![KeyValue::new("op", "low")];
+
+        for v in [1, 2, 3, 50, 99, 100] {
+            h.record(v, tid, &key);
+        }
+        let cum = cumulative_for_key(&h, &key);
+        // All 6 values ≤ 100, so cumulative = [6, 6, 6]
+        assert_eq!(cum, vec![6, 6, 6]);
+        assert_eq!(h.count().load(&key), Some(6));
+        assert_eq!(h.sum().load(&key), Some(1 + 2 + 3 + 50 + 99 + 100));
     }
 }

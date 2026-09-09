@@ -18,8 +18,8 @@
 #![allow(unused_macros)]
 
 use super::{AccessLogMessage, Target};
+use flume::Receiver;
 use std::collections::HashMap;
-use tokio::sync::mpsc::Receiver;
 use tracing::{error, info};
 use tracing_rolling_file::RollingFrequency;
 
@@ -45,13 +45,23 @@ impl AccessLogger {
         AccessLogger { id, max_log_files, frequency, max_file_size, map: HashMap::new() }
     }
 
-    pub(crate) async fn run(&mut self, mut receiver: Receiver<AccessLogMessage>) {
+    pub(crate) async fn run(&mut self, receiver: Receiver<AccessLogMessage>) {
         let mut buffer: Vec<AccessLogMessage> = Vec::with_capacity(RECEIVER_BATCH_CAPACITY);
         loop {
-            let count = receiver.recv_many(&mut buffer, RECEIVER_BATCH_CAPACITY).await;
-            if count == 0 {
-                error!("AccessLogger: channel Receiver closed");
-                return;
+            match receiver.recv_async().await {
+                Ok(msg) => {
+                    buffer.push(msg);
+                    while buffer.len() < RECEIVER_BATCH_CAPACITY {
+                        match receiver.try_recv() {
+                            Ok(msg) => buffer.push(msg),
+                            Err(_) => break,
+                        }
+                    }
+                },
+                Err(_) => {
+                    error!("AccessLogger: channel Receiver closed");
+                    return;
+                },
             }
 
             for msg in buffer.drain(..) {

@@ -15,7 +15,8 @@
 //
 //
 
-use std::{fmt::Debug, sync::Arc};
+use std::fmt::Debug;
+use triomphe::Arc;
 
 use super::{Balancer, WeightedEndpoint};
 use crate::{
@@ -56,7 +57,7 @@ where
     }
 
     #[inline]
-    pub fn next_item(&mut self, hash: Option<u64>) -> Option<Arc<E>> {
+    pub fn next_item(&mut self, hash: Option<u64>) -> Option<&E> {
         self.balancer.next_item(hash)
     }
 
@@ -107,14 +108,14 @@ where
     B: Balancer<E> + FromIterator<Arc<E>>,
     E: WeightedEndpoint,
 {
-    fn next_item(&mut self, hash: Option<u64>) -> Option<Arc<E>> {
+    fn next_item(&mut self, hash: Option<u64>) -> Option<&E> {
         self.next_item(hash)
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
+    use triomphe::Arc;
 
     use crate::clusters::{
         balancers::{healthy::HealthyBalancer, wrr::WeightedRoundRobinBalancer, WeightedEndpoint},
@@ -142,15 +143,14 @@ mod test {
     /// outputs of the balancer are `[a, b, c, a, b]`, `[b, c, a, b, c]` and `[c, a, b, c, a]`.
     /// This makes this test resilient to a Round-Robin that randomizes the start of the sequence.
     fn compare_rotated(balancer: &mut TestBalancer<Blah>, expected_items: Vec<&Arc<Blah>>) {
-        let selected_items: Vec<_> = (0..5).map(|_| balancer.next_item(None)).collect();
-        let selected: Vec<_> = selected_items.iter().map(|item| item.as_ref()).collect();
+        let selected: Vec<_> = (0..5).map(|_| balancer.next_item(None).cloned()).collect();
 
         if expected_items.is_empty() {
-            assert!(selected_items.iter().all(Option::is_none));
+            assert!(selected.iter().all(Option::is_none));
             return;
         }
 
-        let mut expected = expected_items.into_iter().map(Some).cycle().peekable();
+        let mut expected = expected_items.into_iter().map(|item| Some(item.as_ref().clone())).cycle().peekable();
 
         while selected.first() != expected.peek() {
             expected.next();

@@ -34,6 +34,7 @@
 pub mod channel_body;
 pub mod context_body;
 pub mod instrumented_body;
+pub(crate) mod on_end_body;
 pub mod poly_body;
 pub(crate) mod response_flags;
 pub mod timeout_body;

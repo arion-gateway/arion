@@ -1,4 +1,5 @@
-use std::{str::FromStr, sync::Arc};
+use std::str::FromStr;
+use triomphe::Arc;
 
 use http::{uri::Authority, HeaderName, HeaderValue};
 use rustc_hash::FxHashMap as HashMap;
@@ -113,7 +114,7 @@ impl OverrideHostLoadBalancer {
 }
 
 impl Balancer<LbEndpoint> for OverrideHostLoadBalancer {
-    fn next_item(&mut self, hash: Option<u64>) -> Option<Arc<LbEndpoint>> {
+    fn next_item(&mut self, hash: Option<u64>) -> Option<&LbEndpoint> {
         self.fallback.next_item(hash)
     }
 }

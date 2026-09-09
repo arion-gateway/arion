@@ -84,11 +84,14 @@ pub fn build_tokio_runtime(
 
     let num_threads = num_threads.max(1);
 
-    // Important note: although using `current_thread` when `num_threads == 1` may seem attractive,
-    // it isn't possible because we currently use `block_in_place`, which isn't available in single-threaded runtimes (Nicola)
-
-    let mut builder = Builder::new_multi_thread();
-    builder.worker_threads(num_threads).max_blocking_threads(num_threads).enable_all();
+    let mut builder = if num_threads == 1 {
+        Builder::new_current_thread()
+    } else {
+        let mut b = Builder::new_multi_thread();
+        b.worker_threads(num_threads).max_blocking_threads(num_threads);
+        b
+    };
+    builder.enable_all();
 
     config.global_queue_interval.map(|val| builder.global_queue_interval(val.into()));
     config.event_interval.map(|val| builder.event_interval(val));

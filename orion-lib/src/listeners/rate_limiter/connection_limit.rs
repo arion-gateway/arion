@@ -18,10 +18,11 @@
 use std::{
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, LazyLock,
+        LazyLock,
     },
     time::Duration,
 };
+use triomphe::Arc;
 
 use orion_configuration::config::network_filters::ConnectionLimit as ConnectionLimitConfig;
 use papaya::HashMap as PapayaMap;

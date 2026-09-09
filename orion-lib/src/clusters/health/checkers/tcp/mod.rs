@@ -18,7 +18,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::sync::Arc;
+use triomphe::Arc;
 
 use futures::{future::BoxFuture, FutureExt, TryFutureExt};
 use orion_configuration::config::cluster::health_check::{ClusterHealthCheck, TcpHealthCheck};

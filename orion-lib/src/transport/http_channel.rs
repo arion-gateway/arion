@@ -17,10 +17,7 @@
 
 use super::connector::{ConnectUsing, UnifiedConnector};
 use crate::{
-    body::{
-        instrumented_body::InstrumentedBody, poly_body::PolyBody, response_flags::ResponseFlags,
-        timeout_body::TimeoutBody,
-    },
+    body::{instrumented_body::InstrumentedBody, response_flags::ResponseFlags, timeout_body::TimeoutBody},
     clusters::{
         decrement_retries, retry_policy::RetryCondition, try_increment_retries, CircuitBreakerDenial, RoutingPriority,
     },
@@ -31,8 +28,8 @@ use crate::{
         synthetic_http_response::SyntheticHttpResponse,
     },
     secrets::{TlsConfigurator, WantsToBuildClient},
-    thread_local::{LocalBuilder, ThreadLocalObject},
-    transport::timer::PingoraTimer,
+    transport::http1_pool::Http1ClientExt,
+    transport::http2_pool::Http2ClientExt,
     Error, OrionRequestBody, OrionResponseBody, Result, UpstreamCallOpts,
 };
 use http::{
@@ -40,12 +37,8 @@ use http::{
     HeaderValue, Response, Version,
 };
 use http_body_util::BodyExt;
-use hyper::{body::Incoming, Request, Uri};
-use hyper_rustls::{FixedServerNameResolver, HttpsConnector};
-use hyper_util::{
-    client::legacy::{connect::Connect, Builder, Client},
-    rt::tokio::TokioExecutor,
-};
+use hyper::{Request, Uri};
+use hyper_rustls::FixedServerNameResolver;
 use orion_configuration::config::{
     cluster::http_protocol_options::{Codec, HttpProtocolOptions},
     network_filters::http_connection_manager::RetryPolicy,
@@ -55,7 +48,6 @@ use orion_format::types::{ResponseFlagsLong, ResponseFlagsShort};
 use orion_metrics::metrics::custom::CUSTOM_METRICS;
 
 use crate::with_metric;
-use hyperlocal::UnixConnector;
 
 #[cfg(feature = "metrics")]
 use {crate::get_shard_id, opentelemetry::KeyValue, orion_metrics::metrics::clusters};
@@ -66,7 +58,7 @@ use rustls::ClientConfig;
 #[cfg(feature = "metrics")]
 use smallvec::SmallVec;
 use smol_str::ToSmolStr;
-use std::{io, mem, sync::Arc, time::Duration};
+use std::{future::Future, io, mem, time::Duration};
 use tracing::debug;
 use webpki::types::ServerName;
 
@@ -93,26 +85,6 @@ impl RetryCircuitBreakerPermit {
 impl Drop for RetryCircuitBreakerPermit {
     fn drop(&mut self) {
         decrement_retries(self.cluster_name, self.priority);
-    }
-}
-
-type HttpClient = Client<UnifiedConnector, OrionRequestBody>;
-type HttpsClient = Client<HttpsConnector<UnifiedConnector>, OrionRequestBody>;
-
-// Rationale: The outer Arc is necessary to avoid building a new Client when cloning the HttpChannel.
-// The inner Arc, instead, is used to pass the client to async code, so it's already wrapped by the Arc.
-
-#[derive(Clone, Debug)]
-pub struct HttpsClientExt {
-    configured_upstream_http_version: Codec,
-    client: Arc<ThreadLocalObject<Arc<HttpsClient>, Builder, HttpsConnector<UnifiedConnector>>>,
-}
-impl HttpsClientExt {
-    fn new(
-        configured_upstream_http_version: Codec,
-        client: Arc<ThreadLocalObject<Arc<HttpsClient>, Builder, HttpsConnector<UnifiedConnector>>>,
-    ) -> Self {
-        Self { configured_upstream_http_version, client }
     }
 }
 
@@ -153,12 +125,24 @@ pub struct HttpChannel {
 
 #[derive(Clone, Debug)]
 pub enum HttpChannelClient {
-    Plain(Arc<ThreadLocalObject<Arc<HttpClient>, Builder, UnifiedConnector>>),
-    Tls(HttpsClientExt),
-    Unix(hyper::Uri, Arc<Client<UnixConnector, InstrumentedBody<TimeoutBody<PolyBody>>>>),
+    Plain(PlainChannelClient),
+    Tls(TlsChannelClient),
+}
+
+#[derive(Clone, Debug)]
+pub enum PlainChannelClient {
+    Http1(Http1ClientExt),
+    Http2(Http2ClientExt),
+}
+
+#[derive(Clone, Debug)]
+pub enum TlsChannelClient {
+    Http1(Http1ClientExt),
+    Http2(Http2ClientExt),
 }
 
 impl HttpChannelClient {
+    #[inline]
     pub fn is_tls(&self) -> bool {
         matches!(self, HttpChannelClient::Tls(_))
     }
@@ -170,18 +154,6 @@ pub struct HttpChannelBuilder {
     server_name: Option<ServerName<'static>>,
     http_protocol_options: HttpProtocolOptions,
     cluster_name: Option<&'static str>,
-}
-
-impl LocalBuilder<UnifiedConnector, Arc<HttpClient>> for Builder {
-    fn build(&self, arg: UnifiedConnector) -> Arc<HttpClient> {
-        Arc::new(self.build(arg))
-    }
-}
-
-impl LocalBuilder<HttpsConnector<UnifiedConnector>, Arc<HttpsClient>> for Builder {
-    fn build(&self, arg: HttpsConnector<UnifiedConnector>) -> Arc<HttpsClient> {
-        Arc::new(self.build(arg))
-    }
 }
 
 impl HttpChannelBuilder {
@@ -215,62 +187,19 @@ impl HttpChannelBuilder {
         self.build_channel()
     }
 
-    fn configure_hyper_client(&self) -> Builder {
-        let mut client_builder = Client::builder(TokioExecutor::new());
-        client_builder
-            .timer(PingoraTimer)
-            .pool_idle_timeout(self.http_protocol_options.common.idle_timeout.unwrap_or(DEFAULT_IDLE_TIMEOUT))
-            .pool_timer(PingoraTimer)
-            .pool_max_idle_per_host(usize::MAX)
-            .set_host(false);
-
-        client_builder.http1_writev(false);
-        self.configure_http2_if_needed(&mut client_builder, self.http_protocol_options.codec);
-
-        client_builder
-    }
-
-    fn configure_http2_if_needed(&self, client_builder: &mut Builder, version: Codec) {
-        if matches!(version, Codec::Http2) {
-            client_builder.http2_only(true);
-            let http2_options = &self.http_protocol_options.http2_options;
-
-            if let Some(settings) = &http2_options.keep_alive_settings {
-                client_builder.http2_keep_alive_interval(settings.keep_alive_interval);
-                if let Some(timeout) = settings.keep_alive_timeout {
-                    client_builder.http2_keep_alive_timeout(timeout);
-                }
-                client_builder.http2_keep_alive_while_idle(true);
-            }
-
-            let stream_window = http2_options.initial_stream_window_size();
-            let conn_window = http2_options.initial_connection_window_size();
-            if stream_window.is_none() && conn_window.is_none() {
-                // Hyper defaults to 64KiB; adaptive windowing avoids stalling large bodies.
-                client_builder.http2_adaptive_window(true);
-            } else {
-                client_builder.http2_initial_stream_window_size(stream_window);
-                client_builder.http2_initial_connection_window_size(conn_window);
-            }
-
-            if let Some(max) = http2_options.max_concurrent_streams() {
-                client_builder.http2_initial_max_send_streams(max);
-                client_builder.http2_max_concurrent_reset_streams(max);
-            }
-        }
-    }
-
     fn build_channel(self) -> crate::Result<HttpChannel> {
         let authority = self.connect_using.authority().clone();
-        let client_builder = self.configure_hyper_client();
         let is_http2 = matches!(self.http_protocol_options.codec, Codec::Http2);
 
         let enable_trailers = match self.http_protocol_options.codec {
             Codec::Http1 => self.http_protocol_options.http1_options.enable_trailers,
             Codec::Http2 => false,
         };
+        let idle_timeout = self.http_protocol_options.common.idle_timeout.unwrap_or(DEFAULT_IDLE_TIMEOUT);
+        let cluster_name = self.cluster_name.unwrap_or_default();
+        let http2_options = self.http_protocol_options.http2_options.clone();
 
-        if let Some(tls_context) = self.tls {
+        let channel_client = if let Some(tls_context) = self.tls {
             let mut builder =
                 hyper_rustls::HttpsConnectorBuilder::new().with_tls_config(tls_context.into_inner()).https_only();
 
@@ -282,36 +211,36 @@ impl HttpChannelBuilder {
                 builder.with_server_name_resolver(FixedServerNameResolver::new(server_name))
             };
 
-            let connector =
-                UnifiedConnector::from((&self.connect_using, self.cluster_name.unwrap_or_default(), is_http2));
+            let connector = UnifiedConnector::from((&self.connect_using, cluster_name, is_http2));
 
-            let http_connector = match self.http_protocol_options.codec {
-                Codec::Http2 => builder.enable_http2().wrap_connector(connector),
-                Codec::Http1 => builder.enable_http1().wrap_connector(connector),
-            };
-
-            Ok(HttpChannel {
-                channel_client: HttpChannelClient::Tls(HttpsClientExt::new(
-                    self.http_protocol_options.codec,
-                    Arc::new(ThreadLocalObject::new(client_builder, http_connector)),
-                )),
-                http_version: self.http_protocol_options.codec,
-                enable_trailers,
-                upstream_authority: authority,
-                cluster_name: self.cluster_name.unwrap_or_default(),
-            })
+            if is_http2 {
+                let http_connector = builder.enable_http2().wrap_connector(connector);
+                let ext = Http2ClientExt::tls(http_connector, &authority, idle_timeout, http2_options)?;
+                HttpChannelClient::Tls(TlsChannelClient::Http2(ext))
+            } else {
+                let http_connector = builder.enable_http1().wrap_connector(connector);
+                let ext = Http1ClientExt::tls(http_connector, &authority, idle_timeout)?;
+                HttpChannelClient::Tls(TlsChannelClient::Http1(ext))
+            }
         } else {
-            let connector =
-                UnifiedConnector::from((&self.connect_using, self.cluster_name.unwrap_or_default(), is_http2));
+            let connector = UnifiedConnector::from((&self.connect_using, cluster_name, is_http2));
 
-            Ok(HttpChannel {
-                channel_client: HttpChannelClient::Plain(Arc::new(ThreadLocalObject::new(client_builder, connector))),
-                http_version: self.http_protocol_options.codec,
-                enable_trailers,
-                upstream_authority: authority,
-                cluster_name: self.cluster_name.unwrap_or_default(),
-            })
-        }
+            if is_http2 {
+                let ext = Http2ClientExt::plain(connector, &authority, idle_timeout, http2_options)?;
+                HttpChannelClient::Plain(PlainChannelClient::Http2(ext))
+            } else {
+                let ext = Http1ClientExt::plain(connector, &authority, idle_timeout)?;
+                HttpChannelClient::Plain(PlainChannelClient::Http1(ext))
+            }
+        };
+
+        Ok(HttpChannel {
+            channel_client,
+            http_version: self.http_protocol_options.codec,
+            enable_trailers,
+            upstream_authority: authority,
+            cluster_name,
+        })
     }
 
     #[allow(dead_code)]
@@ -477,21 +406,25 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, UpstreamCallOpts<'a>> for &Ht
             with_metric!(clusters::UPSTREAM_RQ_TOTAL, add, 1, shard_id, &[KeyValue::new("cluster", self.cluster_name)]);
         }
 
-        with_metric!(
-            clusters::UPSTREAM_RQ_RETRY,
-            add,
-            u64::from(retries.requests),
-            shard_id,
-            &[KeyValue::new("cluster", self.cluster_name)]
-        );
+        if retries.requests > 0 {
+            with_metric!(
+                clusters::UPSTREAM_RQ_RETRY,
+                add,
+                u64::from(retries.requests),
+                shard_id,
+                &[KeyValue::new("cluster", self.cluster_name)]
+            );
+        }
 
-        with_metric!(
-            clusters::UPSTREAM_RQ_PER_TRY_TIMEOUT,
-            add,
-            u64::from(retries.timeouts),
-            shard_id,
-            &[KeyValue::new("cluster", self.cluster_name)]
-        );
+        if retries.timeouts > 0 {
+            with_metric!(
+                clusters::UPSTREAM_RQ_PER_TRY_TIMEOUT,
+                add,
+                u64::from(retries.timeouts),
+                shard_id,
+                &[KeyValue::new("cluster", self.cluster_name)]
+            );
+        }
 
         if let Err(ref err) = result {
             if let Some(UpstreamError::RouteTimeout) = UpstreamError::try_infer_from(err.as_ref()) {
@@ -519,57 +452,71 @@ impl HttpChannel {
         priority: RoutingPriority,
         output: Option<&mut Retries>,
         #[cfg(feature = "instrumentation")] clock: &quanta::Clock,
-    ) -> Result<Response<Incoming>> {
+    ) -> Result<Response<OrionResponseBody>> {
         match &self.channel_client {
-            HttpChannelClient::Plain(sender) => {
-                let client = sender.get_local();
-                maybe_normalize_uri(&mut request, false)?;
-                self.send_with_policy(
-                    request,
-                    timeout,
-                    retry_policy,
-                    priority,
-                    client,
-                    output,
-                    #[cfg(feature = "instrumentation")]
-                    clock,
-                )
-                .await
+            HttpChannelClient::Plain(plain) => match plain {
+                PlainChannelClient::Http1(ext) => {
+                    prepare_http1_request(&mut request)?;
+                    let pool_ref = ext.local_pool_ref();
+                    self.send_with_policy(
+                        request,
+                        timeout,
+                        retry_policy,
+                        priority,
+                        |req| async move { pool_ref.send(req).await },
+                        output,
+                        #[cfg(feature = "instrumentation")]
+                        clock,
+                    )
+                    .await
+                },
+                PlainChannelClient::Http2(ext) => {
+                    prepare_http2_request(&mut request, false)?;
+                    let pool_ref = ext.local_pool_ref();
+                    self.send_with_policy(
+                        request,
+                        timeout,
+                        retry_policy,
+                        priority,
+                        |req| async move { pool_ref.send(req).await },
+                        output,
+                        #[cfg(feature = "instrumentation")]
+                        clock,
+                    )
+                    .await
+                },
             },
-            HttpChannelClient::Tls(context) => {
-                let HttpsClientExt { configured_upstream_http_version, client: sender } = context;
-                let configured_version = *configured_upstream_http_version;
-                let client = sender.get_local();
-                maybe_normalize_uri(&mut request, true)?;
-                //FIXME(hayley): apply http protocol translation for plaintext too
-                maybe_change_http_protocol_version(&mut request, configured_version)?;
-
-                self.send_with_policy(
-                    request,
-                    timeout,
-                    retry_policy,
-                    priority,
-                    client,
-                    output,
-                    #[cfg(feature = "instrumentation")]
-                    clock,
-                )
-                .await
-            },
-            HttpChannelClient::Unix(uri, sender) => {
-                let client = sender;
-                *request.uri_mut() = uri.clone();
-                self.send_with_policy(
-                    request,
-                    timeout,
-                    retry_policy,
-                    priority,
-                    client,
-                    output,
-                    #[cfg(feature = "instrumentation")]
-                    clock,
-                )
-                .await
+            HttpChannelClient::Tls(tls) => match tls {
+                TlsChannelClient::Http1(ext) => {
+                    prepare_http1_request(&mut request)?;
+                    let pool_ref = ext.local_pool_ref();
+                    self.send_with_policy(
+                        request,
+                        timeout,
+                        retry_policy,
+                        priority,
+                        |req| async move { pool_ref.send(req).await },
+                        output,
+                        #[cfg(feature = "instrumentation")]
+                        clock,
+                    )
+                    .await
+                },
+                TlsChannelClient::Http2(ext) => {
+                    prepare_http2_request(&mut request, true)?;
+                    let pool_ref = ext.local_pool_ref();
+                    self.send_with_policy(
+                        request,
+                        timeout,
+                        retry_policy,
+                        priority,
+                        |req| async move { pool_ref.send(req).await },
+                        output,
+                        #[cfg(feature = "instrumentation")]
+                        clock,
+                    )
+                    .await
+                },
             },
         }
     }
@@ -578,18 +525,19 @@ impl HttpChannel {
     /// along with the time spent for possible retransmissions. Note: the returned
     /// duration does not include the time spent receiving the Body of the Response.
     #[allow(clippy::too_many_arguments)]
-    async fn send_with_policy<C>(
+    async fn send_with_policy<F, Fut>(
         &self,
         mut req: Request<OrionRequestBody>,
         timeout: Option<Duration>,
         retry_policy: Option<&RetryPolicy>,
         priority: RoutingPriority,
-        sender: &Client<C, OrionRequestBody>,
+        send: F,
         output: Option<&mut Retries>,
         #[cfg(feature = "instrumentation")] clock: &quanta::Clock,
-    ) -> Result<Response<Incoming>>
+    ) -> Result<Response<OrionResponseBody>>
     where
-        C: Connect + Clone + Send + Sync + 'static,
+        F: Fn(Request<OrionRequestBody>) -> Fut,
+        Fut: Future<Output = Result<Response<OrionResponseBody>>>,
     {
         if !self.enable_trailers {
             strip_trailers_headers(self.http_version, req.headers_mut());
@@ -600,7 +548,7 @@ impl HttpChannel {
                 req,
                 policy,
                 priority,
-                sender,
+                send,
                 output,
                 #[cfg(feature = "instrumentation")]
                 clock,
@@ -620,7 +568,7 @@ impl HttpChannel {
                         #[allow(clippy::cast_possible_truncation)]
                         crate::instrumentation::metrics::SEND_REQUEST.observe(nanos as usize);
                     },
-                    { sender.request(req).await.map_err(Error::from) }
+                    { send(req).await }
                 )
             })
             .await
@@ -632,23 +580,24 @@ impl HttpChannel {
                     #[allow(clippy::cast_possible_truncation)]
                     crate::instrumentation::metrics::SEND_REQUEST.observe(nanos as usize);
                 },
-                { sender.request(req).await.map_err(Error::from) }
+                { send(req).await }
             )
         }
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn send_with_retry<C>(
+    async fn send_with_retry<F, Fut>(
         &self,
         req: Request<OrionRequestBody>,
         retry_policy: &RetryPolicy,
         priority: RoutingPriority,
-        sender: &Client<C, OrionRequestBody>,
+        send: F,
         mut output: Option<&mut Retries>,
         #[cfg(feature = "instrumentation")] clock: &quanta::Clock,
-    ) -> Result<Response<Incoming>>
+    ) -> Result<Response<OrionResponseBody>>
     where
-        C: Connect + Clone + Send + Sync + 'static,
+        F: Fn(Request<OrionRequestBody>) -> Fut,
+        Fut: Future<Output = Result<Response<OrionResponseBody>>>,
     {
         instrument_function!(clock, |nanos| {
             #[allow(clippy::cast_possible_truncation)]
@@ -671,7 +620,7 @@ impl HttpChannel {
         let max_retries = retry_policy.num_retries() as usize;
         let mut parts_opt = Some(parts);
         let mut retry_permit = None;
-        let mut last_result: Option<Result<Response<Incoming>>> = None;
+        let mut last_result: Option<Result<Response<OrionResponseBody>>> = None;
 
         for (index, back_off) in retry_policy.exponential_back_off().iter().enumerate() {
             let back_off = back_off.unwrap_or(Duration::from_secs(1));
@@ -692,21 +641,23 @@ impl HttpChannel {
             let cloned_req: Request<OrionRequestBody> = Request::from_parts(current_parts, cloned_body);
 
             // actually send the request and wait for the response...
-            let result: Result<Response<Incoming>> = if let Some(t) = retry_policy.per_try_timeout() {
-                match fast_timeout(t, sender.request(cloned_req)).await.map_err(|_e| UpstreamError::PerTryTimeout) {
-                    Ok(result) => result.map_err(Into::into),
+            let result: Result<Response<OrionResponseBody>> = if let Some(t) = retry_policy.per_try_timeout() {
+                match fast_timeout(t, send(cloned_req)).await.map_err(|_e| UpstreamError::PerTryTimeout) {
+                    Ok(result) => result,
                     Err(err) => Err(err.into()),
                 }
             } else {
-                sender.request(cloned_req).await.map_err(Into::into)
+                send(cloned_req).await
             };
 
             // generate a possible retry condition...
-            let Some(condition) = RetryCondition::try_infer_from(&result) else {
+            let Some((is_per_try_timeout, should_retry)) = RetryCondition::try_infer_from(&result)
+                .map(|condition| (condition.is_per_try_timeout(), condition.should_retry(retry_policy)))
+            else {
                 return result;
             };
 
-            if condition.is_per_try_timeout() {
+            if is_per_try_timeout {
                 if let Some(retries) = output.as_deref_mut() {
                     // Increment the timeout counter
                     retries.timeouts += 1;
@@ -714,7 +665,7 @@ impl HttpChannel {
             }
 
             // check for a possible retry...
-            if !condition.should_retry(retry_policy) {
+            if !should_retry {
                 return result;
             }
 
@@ -771,7 +722,7 @@ impl HttpChannel {
     }
 
     fn map_upstream_result(
-        result: Result<Response<Incoming>>,
+        result: Result<Response<OrionResponseBody>>,
         elapsed: Duration,
         route_timeout: Option<Duration>,
         version: http::Version,
@@ -780,14 +731,9 @@ impl HttpChannel {
             (Ok(response), elapsed) => {
                 // calculate the remaining timeout (relative to the route timeout) for receiving
                 // the body of the incoming response...
-                if let Some(residual_timeout) = route_timeout.map(|dur| dur.checked_sub(elapsed).unwrap_or_default()) {
-                    // set the residual_timeout on the body of the Response
-                    let (parts, body) = response.into_parts();
-                    Ok(Response::from_parts(parts, TimeoutBody::new(Some(residual_timeout), body.into())))
-                } else {
-                    let (parts, body) = response.into_parts();
-                    Ok(Response::from_parts(parts, TimeoutBody::new(None, body.into())))
-                }
+                let (parts, mut body) = response.into_parts();
+                body.timeout = route_timeout.map(|dur| dur.checked_sub(elapsed).unwrap_or_default());
+                Ok(Response::from_parts(parts, body))
             },
             (Err(err), dur) => {
                 if let Some(event_error) = UpstreamError::try_infer_from(err.as_ref()) {
@@ -831,10 +777,7 @@ impl HttpChannel {
     }
 
     pub fn is_https(&self) -> bool {
-        match &self.channel_client {
-            HttpChannelClient::Tls(_) => true,
-            HttpChannelClient::Plain(_) | HttpChannelClient::Unix(_, _) => false,
-        }
+        self.channel_client.is_tls()
     }
 
     pub fn http_version(&self) -> Codec {
@@ -843,69 +786,108 @@ impl HttpChannel {
 
     pub fn load(&self) -> u32 {
         let load = match &self.channel_client {
-            HttpChannelClient::Plain(sender) => Arc::strong_count(sender),
-            HttpChannelClient::Tls(sender) => Arc::strong_count(&sender.client),
-            HttpChannelClient::Unix(_, sender) => Arc::strong_count(sender),
+            HttpChannelClient::Plain(plain) => match plain {
+                PlainChannelClient::Http1(ext) => ext.strong_count(),
+                PlainChannelClient::Http2(ext) => ext.strong_count(),
+            },
+            HttpChannelClient::Tls(tls) => match tls {
+                TlsChannelClient::Http1(ext) => ext.strong_count(),
+                TlsChannelClient::Http2(ext) => ext.strong_count(),
+            },
         };
         u32::try_from(load).unwrap_or(u32::MAX)
     }
 }
 
 #[inline]
-fn is_absolute(uri: &Uri) -> bool {
-    uri.authority().is_some() && uri.scheme().is_some()
-}
-
-#[inline]
-fn maybe_change_http_protocol_version(request: &mut Request<OrionRequestBody>, version: Codec) -> Result<()> {
-    maybe_update_host(request, version)?;
-    maybe_rewrite_version(request, version);
-    Ok(())
-}
-
-#[inline]
-fn maybe_rewrite_version(request: &mut Request<OrionRequestBody>, version: Codec) {
-    *request.version_mut() = version.into();
-}
-
-fn maybe_update_host(request: &mut Request<OrionRequestBody>, version: Codec) -> Result<()> {
-    let request_version = request.version();
-    match (request_version, version) {
-        (Version::HTTP_11, Codec::Http2) => {
-            let headers = request.headers_mut();
-            headers.remove(http::header::HOST);
-        },
-        (Version::HTTP_2, Codec::Http1) => {
-            let authority_val = request.uri().authority().and_then(|a| HeaderValue::try_from(a.as_str()).ok());
-            if let Some(val) = authority_val {
-                debug!("Swapping authority/host (http2 -> http1)");
-                request.headers_mut().append(http::header::HOST, val);
+fn prepare_http1_request(request: &mut Request<OrionRequestBody>) -> Result<()> {
+    // Fast-path for H1 -> H1 origin-form requests (the dominant hot path):
+    if request.version() == Version::HTTP_11 {
+        let uri = request.uri();
+        if uri.scheme().is_none() && uri.authority().is_none() {
+            if let Some(host) = request.headers().get(http::header::HOST) {
+                if host.as_bytes().is_empty() {
+                    return Err(format!("Empty Host header").into());
+                }
             }
-        },
-        (Version::HTTP_11, Codec::Http1) | (Version::HTTP_2, Codec::Http2) => {},
-        (v, _) => {
-            return Err(format!("Unsupported http version {v:?}").into());
-        },
-    }
-    Ok(())
-}
-
-fn maybe_normalize_uri(request: &mut Request<OrionRequestBody>, is_tls: bool) -> Result<()> {
-    let uri = request.uri();
-    if !is_absolute(uri) {
-        if let Some(host_header) = request.headers().get("host") {
-            let authority = host_header.to_str().map_err(|e| format!("Can't parse Host header {e:?}"))?;
-            let authority = authority.parse::<Authority>().map_err(|e| format!("Can't parse uri {e:?}"))?;
-
-            let uri = request.uri_mut();
-            let mut parts = Parts::from(mem::take(uri));
-            if parts.scheme.is_none() {
-                parts.scheme = if is_tls { Some(http::uri::Scheme::HTTPS) } else { Some(http::uri::Scheme::HTTP) };
-            }
-            parts.authority = Some(authority);
-            let new = Uri::from_parts(parts).map_err(|_e| format!("Can't normalize uri: {uri}"))?;
-            *uri = new;
+            return Ok(());
         }
     }
+
+    // Cross-protocol or non-origin-form:
+    if !request.headers().contains_key(http::header::HOST) {
+        if let Some(authority) = request.uri().authority() {
+            let val = HeaderValue::try_from(authority.as_str())
+                .map_err(|e| format!("Invalid authority for Host header: {e}"))?;
+            request.headers_mut().insert(http::header::HOST, val);
+        }
+    } else if let Some(host) = request.headers().get(http::header::HOST) {
+        if host.as_bytes().is_empty() {
+            return Err(format!("Empty Host header").into());
+        }
+    }
+
+    if request.version() == Version::HTTP_2 {
+        *request.version_mut() = Version::HTTP_11;
+    }
+
+    // Ensure origin-form URI:
+    let uri = request.uri_mut();
+    if uri.scheme().is_none() && uri.authority().is_none() {
+        if uri.path_and_query().is_none() {
+            *uri = Uri::from_static("/");
+        }
+        return Ok(());
+    }
+
+    let mut parts = Parts::from(mem::take(uri));
+    parts.scheme = None;
+    parts.authority = None;
+    if parts.path_and_query.is_none() {
+        parts.path_and_query = Some(http::uri::PathAndQuery::from_static("/"));
+    }
+    *uri = Uri::from_parts(parts).map_err(|e| format!("Invalid uri: {e}"))?;
+    Ok(())
+}
+
+#[inline]
+fn prepare_http2_request(request: &mut Request<OrionRequestBody>, is_tls: bool) -> Result<()> {
+    // 1. Version rewrite
+    *request.version_mut() = Version::HTTP_2;
+
+    // 2. Ensure absolute URI with scheme and authority
+    let uri = request.uri();
+    let has_scheme = uri.scheme().is_some();
+    let has_authority = uri.authority().is_some();
+
+    if !has_scheme || !has_authority {
+        let authority_from_host = if !has_authority {
+            if let Some(host_header) = request.headers().get(http::header::HOST) {
+                let authority_str = host_header.to_str().map_err(|e| format!("Can't parse Host header: {e}"))?;
+                Some(authority_str.parse::<Authority>().map_err(|e| format!("Can't parse authority: {e}"))?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let uri = request.uri_mut();
+        let mut parts = Parts::from(mem::take(uri));
+
+        if parts.scheme.is_none() {
+            parts.scheme = if is_tls { Some(http::uri::Scheme::HTTPS) } else { Some(http::uri::Scheme::HTTP) };
+        }
+
+        if parts.authority.is_none() {
+            parts.authority = authority_from_host;
+        }
+
+        *uri = Uri::from_parts(parts).map_err(|e| format!("Can't normalize uri: {e}"))?;
+    }
+
+    // 3. Remove Host header as HTTP/2 uses :authority
+    request.headers_mut().remove(http::header::HOST);
+
     Ok(())
 }

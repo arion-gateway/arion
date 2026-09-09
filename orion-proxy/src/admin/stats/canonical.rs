@@ -102,6 +102,7 @@ fn build_canonical_output() -> io::Result<String> {
     process_metric_canonical(&mut out, &clusters::UPSTREAM_RQ_RETRY)?;
 
     process_metric_canonical(&mut out, &clusters::UPSTREAM_CX_TOTAL)?;
+    process_metric_canonical(&mut out, &clusters::UPSTREAM_CLIENT_EXEC_TOTAL)?;
     process_metric_canonical(&mut out, &clusters::UPSTREAM_CX_ACTIVE)?;
     process_metric_canonical(&mut out, &clusters::UPSTREAM_CX_DESTROY)?;
     process_metric_canonical(&mut out, &clusters::UPSTREAM_CX_IDLE_TIMEOUT)?;

@@ -29,8 +29,8 @@ use crate::{
 };
 use http::uri::Authority;
 use orion_configuration::config::cluster::{HealthCheck, HealthStatus};
-use std::sync::Arc;
 use tracing::debug;
+use triomphe::Arc;
 
 #[derive(Debug, Clone)]
 pub struct StaticClusterBuilder {

@@ -1,10 +1,11 @@
 use std::{
     sync::{
         atomic::{AtomicI64, AtomicU64, Ordering},
-        Arc, LazyLock,
+        LazyLock,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
+use triomphe::Arc;
 
 use orion_configuration::config::{
     cluster::ClusterSpecifier,

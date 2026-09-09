@@ -172,7 +172,7 @@ impl SyntheticHttpResponse {
 
     #[inline]
     pub fn into_response(self, version: http::Version) -> Response<OrionResponseBody> {
-        let mut rsp = Response::new(TimeoutBody::new(None, Full::from(self.body).into()));
+        let mut rsp = Response::new(TimeoutBody::new(None, Full::from(self.body).into()).into());
         *rsp.status_mut() = self.http_status;
         *rsp.version_mut() = version;
         rsp.extensions_mut()

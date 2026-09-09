@@ -15,7 +15,8 @@
 //
 //
 
-use std::{fmt::Debug, sync::Arc};
+use std::fmt::Debug;
+use triomphe::Arc;
 
 use rand::{
     distributions::{Distribution, WeightedIndex},
@@ -70,8 +71,8 @@ impl<E: WeightedEndpoint> Default for RandomBalancer<E> {
 }
 
 impl<E> Balancer<E> for RandomBalancer<E> {
-    fn next_item(&mut self, _hash: Option<u64>) -> Option<Arc<E>> {
-        self.items.get(self.weighted_index.as_ref()?.sample(&mut self.rng)).map(|item| &item.item).cloned()
+    fn next_item(&mut self, _hash: Option<u64>) -> Option<&E> {
+        self.items.get(self.weighted_index.as_ref()?.sample(&mut self.rng)).map(|item| item.item.as_ref())
     }
 }
 
@@ -83,7 +84,7 @@ impl<E: WeightedEndpoint> FromIterator<Arc<E>> for RandomBalancer<E> {
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
+    use triomphe::Arc;
 
     use rand::{rngs::SmallRng, SeedableRng};
 
@@ -116,7 +117,7 @@ mod test {
         let mut random_lb = RandomBalancer::new_with_rng(items, gen);
         let mut selected_items = vec![];
         for _n in 0..10 {
-            selected_items.push(random_lb.next_item(None));
+            selected_items.push(random_lb.next_item(None).cloned());
         }
         let selected_items: Vec<_> = selected_items.into_iter().flatten().collect();
         println!("{selected_items:?}");
@@ -124,16 +125,16 @@ mod test {
         assert_eq!(
             selected_items,
             vec![
-                Arc::clone(&expected_b3),
-                Arc::clone(&expected_b1),
-                Arc::clone(&expected_b1),
-                Arc::clone(&expected_b2),
-                Arc::clone(&expected_b2),
-                Arc::clone(&expected_b3),
-                Arc::clone(&expected_b1),
-                Arc::clone(&expected_b2),
-                Arc::clone(&expected_b1),
-                Arc::clone(&expected_b3)
+                expected_b3.as_ref().clone(),
+                expected_b1.as_ref().clone(),
+                expected_b1.as_ref().clone(),
+                expected_b2.as_ref().clone(),
+                expected_b2.as_ref().clone(),
+                expected_b3.as_ref().clone(),
+                expected_b1.as_ref().clone(),
+                expected_b2.as_ref().clone(),
+                expected_b1.as_ref().clone(),
+                expected_b3.as_ref().clone()
             ]
         );
     }
@@ -148,7 +149,7 @@ mod test {
         let mut random_lb = RandomBalancer::new_with_rng(items, gen);
 
         for _n in 0..20 {
-            counts[random_lb.next_item(None).map(|item| *item).unwrap()] += 1;
+            counts[*random_lb.next_item(None).unwrap()] += 1;
         }
 
         assert_eq!(counts, vec![5, 6, 9]);
@@ -164,12 +165,12 @@ mod test {
         let mut random_lb = RandomBalancer::new_with_rng(items, gen);
         let mut selected_items = vec![];
         for _n in 0..20 {
-            selected_items.push(random_lb.next_item(None));
+            selected_items.push(random_lb.next_item(None).copied());
         }
         let selected_items: Vec<_> = selected_items.into_iter().flatten().collect();
 
         for i in selected_items {
-            counts[*i] += 1;
+            counts[i] += 1;
         }
 
         assert_eq!(counts, vec![2, 6, 12]);

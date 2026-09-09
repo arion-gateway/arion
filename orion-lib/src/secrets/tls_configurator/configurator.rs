@@ -39,7 +39,7 @@ use rustls::{
 };
 use rustls_platform_verifier::Verifier;
 use smol_str::SmolStr;
-use std::{borrow::Cow, collections::HashMap, result::Result as StdResult, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, result::Result as StdResult, sync::Arc as StdArc};
 use str_utils::ToLowercase;
 use tracing::{debug, info, warn};
 
@@ -90,8 +90,8 @@ impl ServerCertVerifier for IgnoreCertVerifier {
 
 #[derive(Debug, Clone)]
 pub struct ClientCert {
-    pub key: Arc<PrivateKeyDer<'static>>,
-    pub certs: Arc<Vec<CertificateDer<'static>>>,
+    pub key: StdArc<PrivateKeyDer<'static>>,
+    pub certs: StdArc<Vec<CertificateDer<'static>>>,
 }
 
 impl From<CertificateSecret> for ClientCert {
@@ -101,12 +101,12 @@ impl From<CertificateSecret> for ClientCert {
     }
 }
 
-impl TryFrom<TransportSecret> for Arc<RootCertStore> {
+impl TryFrom<TransportSecret> for StdArc<RootCertStore> {
     type Error = crate::Error;
     fn try_from(value: TransportSecret) -> Result<Self> {
         match value {
             TransportSecret::ValidationContext(context) => {
-                let cert_store = Arc::unwrap_or_clone(context);
+                let cert_store = StdArc::unwrap_or_clone(context);
                 Ok(cert_store.into())
             },
             TransportSecret::Certificate(_) => {
@@ -121,7 +121,7 @@ impl TryFrom<TransportSecret> for ServerCert {
     fn try_from(value: TransportSecret) -> Result<Self> {
         match value {
             TransportSecret::Certificate(certificate) => {
-                let certificate = Arc::unwrap_or_clone(certificate);
+                let certificate = StdArc::unwrap_or_clone(certificate);
                 ServerCert::try_from(certificate)
             },
             TransportSecret::ValidationContext(_) => {
@@ -136,7 +136,7 @@ impl TryFrom<TransportSecret> for ClientCert {
     fn try_from(value: TransportSecret) -> Result<Self> {
         match value {
             TransportSecret::Certificate(certificate) => {
-                let certificate = Arc::unwrap_or_clone(certificate);
+                let certificate = StdArc::unwrap_or_clone(certificate);
                 Ok(ClientCert::from(certificate))
             },
             TransportSecret::ValidationContext(_) => {
@@ -151,7 +151,7 @@ impl TryFrom<CertificateSecret> for ServerCert {
     fn try_from(secret: CertificateSecret) -> Result<Self> {
         let CertificateSecret { name, key, certs, .. } = secret;
         if let Some(name) = name {
-            Ok(ServerCert { name, key: Arc::new(key.clone_key()), certs })
+            Ok(ServerCert { name, key: StdArc::new(key.clone_key()), certs })
         } else {
             Err("secret doesn't contain server name".into())
         }
@@ -182,8 +182,8 @@ impl TryFrom<TlsCertificateConfig> for ClientCert {
 #[derive(Clone)]
 pub struct ServerCert {
     pub name: SmolStr,
-    pub key: Arc<PrivateKeyDer<'static>>,
-    pub certs: Arc<Vec<CertificateDer<'static>>>,
+    pub key: StdArc<PrivateKeyDer<'static>>,
+    pub certs: StdArc<Vec<CertificateDer<'static>>>,
 }
 
 impl std::fmt::Debug for ServerCert {
@@ -199,7 +199,7 @@ impl std::fmt::Debug for ServerCert {
 #[derive(Debug, Clone)]
 pub struct TlsConfigurator<S: Clone, CtxType> {
     context_builder: TlsContextBuilder<CtxType>,
-    config: Arc<S>,
+    config: StdArc<S>,
 }
 
 impl TlsConfigurator<ClientConfig, WantsToBuildClient> {
@@ -220,7 +220,7 @@ impl TlsConfigurator<ClientConfig, WantsToBuildClient> {
                     let client_cert: ClientCert = certificate.as_ref().to_owned().into();
                     TlsContextBuilder::with_supported_versions(supported_versions)
                         .with_client_certificate_store(validation_context_secret_id, certificate_store)
-                        .with_client_certificate(certificate_secret_id, Arc::new(client_cert))
+                        .with_client_certificate(certificate_secret_id, StdArc::new(client_cert))
                         .with_sni(sni)
                         .with_trust_chain_verification(trust_chain_verification)
                 } else {
@@ -250,7 +250,7 @@ impl TlsConfigurator<ClientConfig, WantsToBuildClient> {
         };
 
         let new_config = new_builder.build()?;
-        Ok(TlsConfigurator { context_builder: new_builder, config: Arc::new(new_config) })
+        Ok(TlsConfigurator { context_builder: new_builder, config: StdArc::new(new_config) })
     }
 }
 
@@ -263,6 +263,7 @@ impl TlsConfigurator<ServerConfig, WantsToBuildServer> {
             certificate_store,
             mut server_ids_and_certificates,
             require_client_cert,
+            ticketer,
         } = state;
         let new_builder = match secret {
             TransportSecret::Certificate(certificate) => {
@@ -278,7 +279,8 @@ impl TlsConfigurator<ServerConfig, WantsToBuildServer> {
                         builder.with_no_client_auth()
                     }
                     .with_certificates(server_ids_and_certificates)
-                    .with_client_authentication(require_client_cert)
+                    .with_client_authentication(require_client_cert)?
+                    .with_ticketer(ticketer)
                 } else {
                     let msg = format!("Can't find secret {secret_id}");
                     debug!("{msg}");
@@ -287,11 +289,12 @@ impl TlsConfigurator<ServerConfig, WantsToBuildServer> {
             },
             TransportSecret::ValidationContext(cert_store) => {
                 if Some(secret_id) == validation_context_secret_id.as_deref() {
-                    let cert_store = Arc::clone(&cert_store.store);
+                    let cert_store = StdArc::clone(&cert_store.store);
                     TlsContextBuilder::with_supported_versions(supported_versions)
                         .with_server_certificate_store(validation_context_secret_id, cert_store)
                         .with_certificates(server_ids_and_certificates)
-                        .with_client_authentication(require_client_cert)
+                        .with_client_authentication(require_client_cert)?
+                        .with_ticketer(ticketer)
                 } else {
                     let msg = format!("Can't find secret {secret_id} {validation_context_secret_id:?}");
                     debug!("{msg}");
@@ -301,7 +304,7 @@ impl TlsConfigurator<ServerConfig, WantsToBuildServer> {
         };
 
         let new_config = new_builder.build()?;
-        Ok(TlsConfigurator { context_builder: new_builder, config: Arc::new(new_config) })
+        Ok(TlsConfigurator { context_builder: new_builder, config: StdArc::new(new_config) })
     }
 }
 
@@ -359,13 +362,13 @@ impl TryFrom<(TlsServerConfig, &SecretManager)> for TlsConfigurator<ServerConfig
             ctx_builder.with_no_client_auth()
         }
         .with_certificates(certs_and_secret_ids)
-        .with_client_authentication(require_client_cert);
+        .with_client_authentication(require_client_cert)?;
 
         let config = ctx_builder.build()?;
 
         Ok(TlsConfigurator::<ServerConfig, WantsToBuildServer> {
             context_builder: ctx_builder,
-            config: Arc::new(config),
+            config: StdArc::new(config),
         })
     }
 }
@@ -412,7 +415,7 @@ impl TryFrom<(TlsClientConfig, &SecretManager)> for TlsConfigurator<ClientConfig
             .with_client_certificate_store(certificate_store_secret_id.map(SmolStr::into), certificate_store);
 
         let ctx_builder = if let Some(client_certificate) = client_certificate {
-            ctx_builder.with_client_certificate(secret_id.map(SmolStr::into), Arc::new(client_certificate))
+            ctx_builder.with_client_certificate(secret_id.map(SmolStr::into), StdArc::new(client_certificate))
         } else {
             ctx_builder.with_no_client_auth()
         }
@@ -423,7 +426,7 @@ impl TryFrom<(TlsClientConfig, &SecretManager)> for TlsConfigurator<ClientConfig
 
         Ok(TlsConfigurator::<ClientConfig, WantsToBuildClient> {
             context_builder: ctx_builder,
-            config: Arc::new(config),
+            config: StdArc::new(config),
         })
     }
 }
@@ -436,7 +439,7 @@ impl TlsConfigurator<(), ()> {
     fn create_certificate_store(
         secret_manager: &SecretManager,
         validation_options: Option<CommonTlsValidationContext>,
-    ) -> Result<(Option<SmolStr>, Option<Arc<RootCertStore>>)> {
+    ) -> Result<(Option<SmolStr>, Option<StdArc<RootCertStore>>)> {
         match validation_options {
             Some(CommonTlsValidationContext::ValidationContext(validation_context)) => {
                 Ok((None, Some(CertStore::try_from(&validation_context)?.into())))
@@ -445,7 +448,7 @@ impl TlsConfigurator<(), ()> {
                 if let Some(cert_store) = secret_manager.get_validation_context(&sds_config_name)? {
                     Ok((Some(sds_config_name.clone()), Some(cert_store.try_into()?)))
                 } else {
-                    Ok((Some(sds_config_name.clone()), Some(Arc::new(RootCertStore::empty()))))
+                    Ok((Some(sds_config_name.clone()), Some(StdArc::new(RootCertStore::empty()))))
                 }
             },
             None => Ok((None, None)),
@@ -455,8 +458,8 @@ impl TlsConfigurator<(), ()> {
 
 impl TlsConfigurator<ServerConfig, WantsToBuildServer> {
     #[inline]
-    pub fn server_config(&self) -> Arc<ServerConfig> {
-        Arc::clone(&self.config)
+    pub fn server_config(&self) -> StdArc<ServerConfig> {
+        StdArc::clone(&self.config)
     }
 
     pub fn into_inner(self) -> ServerConfig {
@@ -478,9 +481,9 @@ impl TlsConfigurator<ClientConfig, WantsToBuildClient> {
 
 #[derive(Debug)]
 pub struct RelaxedResolvesServerCertUsingSni {
-    by_name: HashMap<String, Arc<rustls::sign::CertifiedKey>, ahash::RandomState>,
-    by_wildcard: HashMap<String, Arc<rustls::sign::CertifiedKey>, ahash::RandomState>,
-    default_cert: Option<Arc<rustls::sign::CertifiedKey>>,
+    by_name: HashMap<String, StdArc<rustls::sign::CertifiedKey>, ahash::RandomState>,
+    by_wildcard: HashMap<String, StdArc<rustls::sign::CertifiedKey>, ahash::RandomState>,
+    default_cert: Option<StdArc<rustls::sign::CertifiedKey>>,
 }
 
 impl RelaxedResolvesServerCertUsingSni {
@@ -492,7 +495,7 @@ impl RelaxedResolvesServerCertUsingSni {
         }
     }
 
-    pub fn add(&mut self, name: &str, ck: Arc<rustls::sign::CertifiedKey>) -> StdResult<(), rustls::Error> {
+    pub fn add(&mut self, name: &str, ck: StdArc<rustls::sign::CertifiedKey>) -> StdResult<(), rustls::Error> {
         let name = name.to_ascii_lowercase_cow();
         // 1. Check if it's a wildcard early on
         let is_wildcard = name.starts_with("*.");
@@ -511,7 +514,7 @@ impl RelaxedResolvesServerCertUsingSni {
             .and_then(|c| rustls::client::verify_server_name(&c, &server_name))?;
 
         if self.default_cert.is_none() {
-            self.default_cert = Some(Arc::clone(&ck));
+            self.default_cert = Some(StdArc::clone(&ck));
         }
 
         // 4. Insert into the correct map
@@ -538,7 +541,7 @@ impl RelaxedResolvesServerCertUsingSni {
 }
 
 impl rustls::server::ResolvesServerCert for RelaxedResolvesServerCertUsingSni {
-    fn resolve(&self, client_hello: rustls::server::ClientHello) -> Option<Arc<rustls::sign::CertifiedKey>> {
+    fn resolve(&self, client_hello: rustls::server::ClientHello) -> Option<StdArc<rustls::sign::CertifiedKey>> {
         debug!("Resolving certificate with server name: {:?}...", client_hello.server_name());
 
         if let Some(sni) = client_hello.server_name() {

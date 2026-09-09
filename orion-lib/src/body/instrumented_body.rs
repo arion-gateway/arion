@@ -29,14 +29,37 @@ mod metrics_enabled {
     use super::*;
     use crate::{
         event_error::{DownstreamError, EventKind, TryInferFrom, UpstreamError},
-        utils::instrumented_stream::StreamMetrics,
+        utils::StreamMetrics,
     };
     use bytes::Buf;
     use pin_project::{pin_project, pinned_drop};
-    use std::sync::Arc;
+    use std::sync::Arc as StdArc;
+    use triomphe::Arc;
 
-    type MetricsClosure =
-        Box<dyn FnOnce(u64, &StreamMetrics, Option<EventKind>, ResponseFlags) + Send + Sync + 'static>;
+    /// Trait that enables call-once semantics through `Arc` without an extra `Box` layer.
+    ///
+    /// Implementors store the real closure in an `Option` and `take()` it on call,
+    /// so the closure is invoked exactly once even though the method takes `&mut self`.
+    /// This eliminates the previous `Arc<Box<dyn FnOnce(...)>>` double indirection,
+    /// saving one heap allocation per `InstrumentedBody` construction.
+    pub(crate) trait MetricsCallbackFn: Send + Sync + 'static {
+        fn call(&mut self, bytes: u64, metrics: &StreamMetrics, event: Option<EventKind>, flags: ResponseFlags);
+    }
+
+    /// Wrapper that turns any `FnOnce(...)` into a [`MetricsCallbackFn`].
+    struct MetricsCallback<F>(Option<F>);
+
+    impl<F> MetricsCallbackFn for MetricsCallback<F>
+    where
+        F: FnOnce(u64, &StreamMetrics, Option<EventKind>, ResponseFlags) + Send + Sync + 'static,
+    {
+        #[inline]
+        fn call(&mut self, bytes: u64, metrics: &StreamMetrics, event: Option<EventKind>, flags: ResponseFlags) {
+            if let Some(f) = self.0.take() {
+                f(bytes, metrics, event, flags);
+            }
+        }
+    }
 
     #[pin_project(PinnedDrop)]
     pub struct InstrumentedBody<B> {
@@ -44,18 +67,18 @@ mod metrics_enabled {
         pub inner: B,
         pub body_kind: BodyKind,
         pub body_bytes: u64,
-        pub stream_metrics: Option<Arc<StreamMetrics>>,
-        pub on_complete: Option<Arc<MetricsClosure>>,
+        pub(crate) stream_metrics: Option<Arc<StreamMetrics>>,
+        pub(crate) on_complete: Option<StdArc<dyn MetricsCallbackFn>>,
     }
 
     #[pinned_drop]
     impl<B> PinnedDrop for InstrumentedBody<B> {
         fn drop(self: std::pin::Pin<&mut Self>) {
             let this = self.project();
-            if let Some(arc_closure) = this.on_complete.take() {
-                if let Ok(closure) = Arc::try_unwrap(arc_closure) {
+            if let Some(mut arc_closure) = this.on_complete.take() {
+                if let Some(closure) = StdArc::get_mut(&mut arc_closure) {
                     if let Some(metrics) = this.stream_metrics.as_ref() {
-                        closure(*this.body_bytes, metrics.as_ref(), None, ResponseFlags::default());
+                        closure.call(*this.body_bytes, metrics.as_ref(), None, ResponseFlags::default());
                     }
                 }
             }
@@ -72,11 +95,22 @@ mod metrics_enabled {
     }
 
     impl<B: Default> InstrumentedBody<B> {
-        pub fn new<F>(body_kind: BodyKind, inner: B, stream_metrics: Option<Arc<StreamMetrics>>, on_complete: F) -> Self
+        pub(crate) fn new<F>(
+            body_kind: BodyKind,
+            inner: B,
+            stream_metrics: Option<Arc<StreamMetrics>>,
+            on_complete: F,
+        ) -> Self
         where
             F: FnOnce(u64, &StreamMetrics, Option<EventKind>, ResponseFlags) + Send + Sync + 'static,
         {
-            Self { inner, body_kind, body_bytes: 0, stream_metrics, on_complete: Some(Arc::new(Box::new(on_complete))) }
+            Self {
+                inner,
+                body_kind,
+                body_bytes: 0,
+                stream_metrics,
+                on_complete: Some(StdArc::new(MetricsCallback(Some(on_complete))) as StdArc<dyn MetricsCallbackFn>),
+            }
         }
 
         #[inline]
@@ -141,23 +175,20 @@ mod metrics_enabled {
                     }
                 },
                 Poll::Ready(Some(Err(err))) => {
-                    if let Some(arc_closure) = this.on_complete.take() {
-                        match Arc::try_unwrap(arc_closure) {
-                            Ok(closure) => {
-                                if let Some(metrics) = this.stream_metrics.as_ref() {
-                                    let event_error: Option<EventKind> = match *this.body_kind {
-                                        BodyKind::Request => DownstreamError::try_infer_from(err).map(Into::into),
-                                        BodyKind::Response => UpstreamError::try_infer_from(err).map(Into::into),
-                                    };
+                    if let Some(mut arc_closure) = this.on_complete.take() {
+                        if let Some(closure) = StdArc::get_mut(&mut arc_closure) {
+                            if let Some(metrics) = this.stream_metrics.as_ref() {
+                                let event_error: Option<EventKind> = match *this.body_kind {
+                                    BodyKind::Request => DownstreamError::try_infer_from(err).map(Into::into),
+                                    BodyKind::Response => UpstreamError::try_infer_from(err).map(Into::into),
+                                };
 
-                                    let flags = ResponseFlags::from((err, *this.body_kind));
-                                    closure(*this.body_bytes, metrics.as_ref(), event_error, flags);
-                                }
-                            },
-                            Err(arc) => {
-                                // Not the last clone, put it back!
-                                *this.on_complete = Some(arc);
-                            },
+                                let flags = ResponseFlags::from((err, *this.body_kind));
+                                closure.call(*this.body_bytes, metrics.as_ref(), event_error, flags);
+                            }
+                        } else {
+                            // Not the last clone, put it back!
+                            *this.on_complete = Some(arc_closure);
                         }
                     }
                 },
@@ -184,9 +215,10 @@ mod metrics_enabled {
 
 #[cfg(not(any(feature = "access-log", feature = "metrics")))]
 mod metrics_disabled {
-    use std::{marker::PhantomData, sync::Arc};
+    use std::marker::PhantomData;
+    use triomphe::Arc;
 
-    use crate::{event_error::EventKind, utils::instrumented_stream::StreamMetrics};
+    use crate::{event_error::EventKind, utils::StreamMetrics};
 
     #[allow(clippy::wildcard_imports)]
     use super::*;

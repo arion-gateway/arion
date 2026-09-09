@@ -5,7 +5,7 @@ use orion_configuration::config::core::DataSourceReadError;
 use smol_str::SmolStr;
 use thiserror::Error;
 
-use crate::body::timeout_body::TimeoutBodyError;
+use crate::body::{poly_body::PolyBodyError, timeout_body::TimeoutBodyError};
 
 #[derive(Debug, Error)]
 pub enum JwkError {
@@ -55,5 +55,5 @@ pub enum JwkError {
     Timeout(#[from] pingora_timeout::Elapsed),
 
     #[error("HTTP body timeout: {0}")]
-    HttpTimeoutError(#[from] TimeoutBodyError<hyper::Error>),
+    HttpTimeoutError(#[from] TimeoutBodyError<PolyBodyError>),
 }

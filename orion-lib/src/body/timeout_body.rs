@@ -44,11 +44,11 @@ pub type Timeout = PingoraTimeout<Pending<()>, FastTimeout>;
 
 #[pin_project]
 pub struct TimeoutBody<B> {
+    #[pin]
+    pub inner: B,
     pub timeout: Option<Duration>,
     #[pin]
     pub sleep: Option<Pin<Box<Timeout>>>,
-    #[pin]
-    pub inner: B,
 }
 
 impl<B> std::fmt::Debug for TimeoutBody<B>
@@ -68,21 +68,21 @@ where
     B: Default,
 {
     fn default() -> Self {
-        Self { timeout: None, sleep: None, inner: Default::default() }
+        Self { inner: Default::default(), timeout: None, sleep: None }
     }
 }
 
 impl<B> TimeoutBody<B> {
     /// Creates a new [`TimeoutBody`].
     pub fn new(timeout: Option<Duration>, body: B) -> Self {
-        TimeoutBody { timeout, sleep: None, inner: body }
+        TimeoutBody { inner: body, timeout, sleep: None }
     }
 
     pub fn map_into<B2>(self) -> TimeoutBody<B2>
     where
         B: Into<B2>,
     {
-        TimeoutBody { inner: self.inner.into(), timeout: self.timeout, sleep: self.sleep }
+        self.map_inner(Into::into)
     }
 
     pub fn map_inner<B2, F>(self, f: F) -> TimeoutBody<B2>

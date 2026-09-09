@@ -69,10 +69,11 @@ use std::convert::Infallible;
 use std::future::ready;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
+use triomphe::Arc;
 
 /// The total number of frames to prefetch before sending the request to the upstream service.
 const CHANNEL_BODY_PREFETCH_FRAMES: NonZeroUsize = {
@@ -1849,7 +1850,7 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
             .unwrap_or(http::StatusCode::OK);
         let body_bytes = Bytes::from(std::mem::take(&mut response_attempt.body));
         let body = Full::new(body_bytes);
-        let mut response = Response::new(TimeoutBody::new(None, PolyBody::from(body)));
+        let mut response = Response::new(TimeoutBody::new(None, PolyBody::from(body)).into());
         *response.status_mut() = status;
         if let Some(header_mutation) = response_attempt.headers.take() {
             let _ = apply_response_header_mutations(

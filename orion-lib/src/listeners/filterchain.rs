@@ -28,7 +28,7 @@ use crate::{
         },
     },
     secrets::{TlsConfigurator, WantsToBuildServer},
-    transport::AsyncReadWriteInstrumented,
+    utils::instrumented_stream::HasMetrics,
     AsyncInstrumentedStream, ConversionContext, Error, Result,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -54,8 +54,9 @@ use rustls::{server::Acceptor, ServerConfig};
 use scopeguard::defer;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
-use std::sync::Arc;
+use std::sync::Arc as StdArc;
 use tracing::{debug, warn};
+use triomphe::Arc;
 
 #[derive(Debug, Clone)]
 pub struct FilterchainType {
@@ -209,6 +210,8 @@ impl FilterchainType {
         let Some(rate_limit) = &self.config.network_global_rate_limit else {
             return Ok(());
         };
+        #[cfg(feature = "metrics")]
+        let static_stat_prefix = rate_limit.stat_prefix.to_static_str();
         match rate_limit.check(sni).await {
             Ok(()) => {
                 #[cfg(feature = "metrics")]
@@ -219,7 +222,7 @@ impl FilterchainType {
                     get_shard_id!(),
                     &[
                         KeyValue::new("listener", listener_name),
-                        KeyValue::new("filter", rate_limit.stat_prefix.to_static_str()),
+                        KeyValue::new("filter", static_stat_prefix),
                         KeyValue::new("result", filters::EVENT_OK)
                     ]
                 );
@@ -234,7 +237,7 @@ impl FilterchainType {
                     get_shard_id!(),
                     &[
                         KeyValue::new("listener", listener_name),
-                        KeyValue::new("filter", rate_limit.stat_prefix.to_static_str()),
+                        KeyValue::new("filter", static_stat_prefix),
                         KeyValue::new("result", filters::EVENT_RATE_LIMITED)
                     ]
                 );
@@ -309,7 +312,11 @@ impl FilterchainType {
                     CodecType::Http2 => hyper_server.http2_only(),
                     CodecType::Auto => hyper_server,
                 };
-                let trans_svc = http_connection_manager.transaction_context_svc(metadata, Arc::clone(&stream_metrics));
+                let trans_svc = HttpConnectionManager::transaction_context_svc(
+                    http_connection_manager,
+                    metadata,
+                    Arc::clone(&stream_metrics),
+                );
                 hyper_server
                     .serve_connection_with_upgrades(stream, trans_svc)
                     .await
@@ -344,12 +351,11 @@ impl FilterchainType {
                 let listener_name = tcp_proxy.listener_name;
                 let tls_config = config.tls_configurator.as_ref().map(TlsConfigurator::server_config);
 
-                let (stream, _alpns): (Box<dyn AsyncReadWriteInstrumented>, Option<AlpnCodecs>) =
-                    if let Some(tls_config) = tls_config {
-                        start_tls(listener_name, stream, tls_config, None).await?
-                    } else {
-                        (stream, None)
-                    };
+                let (stream, _alpns) = if let Some(tls_config) = tls_config {
+                    start_tls(listener_name, stream, tls_config, None).await?
+                } else {
+                    (stream, None)
+                };
 
                 debug!("Starting tcp proxy");
                 let res = tcp_proxy.serve_connection(stream, metadata).await;
@@ -371,10 +377,10 @@ fn negotiate_codec_type<'a>(codec_type: CodecType, client_alpns: impl Iterator<I
 async fn start_tls(
     listener_name: &'static str,
     stream: AsyncInstrumentedStream,
-    config: Arc<ServerConfig>,
+    config: StdArc<ServerConfig>,
     codec_type: Option<CodecType>,
 ) -> Result<(AsyncInstrumentedStream, Option<AlpnCodecs>)> {
-    let acceptor = tokio_rustls::LazyConfigAcceptor::new(Acceptor::default(), stream);
+    let acceptor = tokio_rustls::LazyConfigAcceptor::new(Acceptor::default(), Box::new(stream));
     tokio::pin!(acceptor);
     match acceptor.as_mut().await {
         Ok(accepted) => {
@@ -399,7 +405,7 @@ async fn start_tls(
                         //  but maybe we should set this at the listener level and let rustls handle it the handshake.
                         //  since the spec says that rustls has to send a specific error if the client offers only unsupported alpn
                         config.alpn_protocols = vec![negotiated_codec_type.as_ref().to_owned()];
-                        (Arc::new(config), Some(negotiated_codec_type))
+                        (StdArc::new(config), Some(negotiated_codec_type))
                     } else {
                         // this error message could be better but is a bit of a refactor to get the names
                         warn!("Couldn't agree on a common codec");
@@ -408,7 +414,7 @@ async fn start_tls(
                             .iter()
                             .map(|alpn| alpn.as_ref().to_owned())
                             .collect::<Vec<_>>();
-                        (Arc::new(config), None)
+                        (StdArc::new(config), None)
                     }
                 },
                 (Some(desired), None) => {
@@ -424,7 +430,7 @@ async fn start_tls(
                 (None, None | Some(_)) => (config, None),
             };
             let stream = accepted.into_stream(config).await.map_err(|e| format!("Can't accept {e:?}"))?;
-            Ok((Box::new(stream), negotiated_codec_type))
+            Ok((AsyncInstrumentedStream::server_tls(stream), negotiated_codec_type))
         },
         Err(err) => Err(format!("{listener_name} Can't start tls {err:?}").into()),
     }

@@ -1,4 +1,4 @@
-use std::{io, time::Instant};
+use std::{io, sync::Arc as StdArc, time::Instant};
 
 use bytes::Bytes;
 use http::{header::HOST, HeaderValue, Request, Response, StatusCode};
@@ -116,7 +116,7 @@ pub enum ToolInvocationOutcome {
 }
 
 pub async fn invoke_rest_tool(
-    tool: &std::sync::Arc<ToolEntry>,
+    tool: &StdArc<ToolEntry>,
     request: Request<OrionRequestBody>,
     upstream_limits: &UpstreamLimits,
     req_ctx: &RequestCtx,
@@ -143,7 +143,7 @@ pub async fn invoke_rest_tool(
 }
 
 async fn dispatch_rest_tool(
-    tool: &std::sync::Arc<ToolEntry>,
+    tool: &StdArc<ToolEntry>,
     mut request: Request<OrionRequestBody>,
     upstream_limits: &UpstreamLimits,
     req_ctx: &RequestCtx,
@@ -366,8 +366,8 @@ pub(crate) fn outcome_failure_code(outcome: &ToolInvocationOutcome) -> Option<&'
 pub(crate) fn record_tool_invocation(tool_name: &str, started: Instant, outcome: &ToolInvocationOutcome) {
     let shard_id = get_shard_id!();
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let tool_name = tool_name.to_static_str();
-    let tool_attrs = &[KeyValue::new("tool", tool_name)];
+    let static_tool_name = tool_name.to_static_str();
+    let tool_attrs = &[KeyValue::new("tool", static_tool_name)];
     with_metric!(mcp_metrics::TOOL_RQ_TOTAL, add, 1, shard_id, tool_attrs);
     with_histogram!(mcp_metrics::TOOL_RQ_TIME, record, elapsed_ms, shard_id, tool_attrs);
     if let Some(error_code) = outcome_failure_code(outcome) {
@@ -376,7 +376,7 @@ pub(crate) fn record_tool_invocation(tool_name: &str, started: Instant, outcome:
             add,
             1,
             shard_id,
-            &[KeyValue::new("tool", tool_name), KeyValue::new("error", error_code)]
+            &[KeyValue::new("tool", static_tool_name), KeyValue::new("error", error_code)]
         );
     }
 }
@@ -469,7 +469,7 @@ mod tests {
         let body = StreamBody::new(ReceiverStream::new(receiver));
         let response = Response::builder()
             .status(StatusCode::OK)
-            .body(TimeoutBody::new(Some(std::time::Duration::from_millis(1)), PolyBody::from(body)))
+            .body(TimeoutBody::new(Some(std::time::Duration::from_millis(1)), PolyBody::from(body)).into())
             .unwrap();
 
         let failure = collect_response_body(response, 1024).await.unwrap_err();

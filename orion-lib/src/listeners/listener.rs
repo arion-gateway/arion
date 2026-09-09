@@ -24,11 +24,11 @@ use super::{
 use crate::instrumentation;
 
 #[cfg(any(feature = "access-log", feature = "metrics"))]
-use crate::utils::instrumented_stream::StreamMetrics;
+use crate::utils::StreamMetrics;
 
 #[cfg(feature = "access-log")]
 use {
-    crate::access_log::{log_access_blocking, Target},
+    crate::access_log::{blocking_log_access, Target},
     orion_format::context::SocketAddrContext,
     orion_format::{context::ConnectionContext, LogFormatter},
 };
@@ -81,7 +81,7 @@ use std::{
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, OnceLock,
+        Arc as StdArc, OnceLock,
     },
     time::Instant,
 };
@@ -90,6 +90,7 @@ use tokio::{
     sync::broadcast::{self},
 };
 use tracing::{debug, info, warn};
+use triomphe::Arc;
 
 #[derive(Debug, Clone)]
 enum ListenerBinding {
@@ -128,12 +129,12 @@ impl TryFrom<ConversionContext<'_, ListenerConfig>> for PartialListener {
     type Error = Error;
     fn try_from(ctx: ConversionContext<'_, ListenerConfig>) -> std::result::Result<Self, Self::Error> {
         let ConversionContext { envoy_object: listener, secret_manager } = ctx;
-        let name = listener.name.to_static_str();
+        let static_listener_name = listener.name.to_static_str();
         let with_tls_inspector = listener.with_tls_inspector;
         let proxy_protocol_config = listener.proxy_protocol_config;
         let listener_local_rate_limit_config = listener.listener_local_rate_limit_config;
         let access_log = listener.access_log;
-        debug!("Listener {name} :TLS Inspector is {with_tls_inspector}");
+        debug!("Listener {static_listener_name} :TLS Inspector is {with_tls_inspector}");
 
         let binding = match listener.listener_type {
             ListenerType::Socket { address, bind_device } => {
@@ -152,13 +153,13 @@ impl TryFrom<ConversionContext<'_, ListenerConfig>> for PartialListener {
             let has_server_names = filter_chains.keys().any(|m| !m.server_names.is_empty());
             if has_server_names {
                 return Err((format!(
-                    "Listener '{name}' has server_names in filter_chain_match, but no TLS inspector so matches would always fail"
+                    "Listener '{static_listener_name}' has server_names in filter_chain_match, but no TLS inspector so matches would always fail"
                 )).into());
             }
         }
 
         Ok(PartialListener {
-            name,
+            name: static_listener_name,
             binding,
             filter_chains,
             with_tls_inspector,
@@ -219,7 +220,7 @@ pub struct ListenerContext {
     pub mcp: McpGatewayListenerContext,
 }
 
-static LISTENERS_CONTEXT: OnceLock<DashMap<&'static str, Arc<ListenerContext>>> = OnceLock::new();
+static LISTENERS_CONTEXT: OnceLock<DashMap<&'static str, StdArc<ListenerContext>>> = OnceLock::new();
 
 pub trait FilterListenerContext {
     fn get_filter_context(listener_name: &'static str) -> ArcRef<ListenerContext, Self>;
@@ -234,9 +235,9 @@ impl FilterListenerContext for McpGatewayListenerContext {
 }
 
 #[inline]
-fn get_listener_context(listener_name: &'static str) -> Arc<ListenerContext> {
+fn get_listener_context(listener_name: &'static str) -> StdArc<ListenerContext> {
     let dmap = LISTENERS_CONTEXT.get_or_init(DashMap::new);
-    Arc::clone(dmap.entry(listener_name).or_insert_with(|| Arc::new(ListenerContext::default())).value())
+    StdArc::clone(dmap.entry(listener_name).or_insert_with(|| StdArc::new(ListenerContext::default())).value())
 }
 
 #[derive(Debug)]
@@ -430,8 +431,10 @@ impl Listener {
                                                        upstream_local_addr: None,
                                                        upstream_peer_addr: None });
 
-                                                   let messages = conn_formatters.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-                                                   log_access_blocking(Target::Listener(listener_name.into()), messages)
+                                                   if !conn_formatters.is_empty() {
+                                                       let messages = conn_formatters.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
+                                                       let _ = blocking_log_access(Target::Listener(listener_name.into()), messages);
+                                                   }
                                                }
                                             })
                                         };
@@ -450,7 +453,7 @@ impl Listener {
                                             filter_chains,
                                             with_tls_inspector,
                                             ConnectionSource::Socket { local_address: local_address.unwrap_or(address), peer_addr, proxy_protocol_config },
-                                            Box::new(stream),
+                                            stream.into(),
                                             start,
                                         ).await;
                                     });

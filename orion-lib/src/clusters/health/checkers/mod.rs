@@ -22,7 +22,7 @@ mod tcp;
 #[cfg(test)]
 mod tests;
 
-use std::sync::Arc;
+use triomphe::Arc;
 
 use orion_configuration::config::cluster::health_check::{
     ClusterHealthCheck, GrpcHealthCheck, HttpHealthCheck, TcpHealthCheck,

@@ -21,10 +21,10 @@ use crate::runtime_context::get_runtime_id;
 use crate::transport::AsyncInstrumentedStream;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
+use triomphe::Arc;
 
 pub struct InternalConnection {
     pub stream: AsyncInstrumentedStream,

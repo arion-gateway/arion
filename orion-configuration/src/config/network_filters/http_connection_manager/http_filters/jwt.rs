@@ -1,4 +1,6 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
+
+use triomphe::Arc;
 
 use crate::config::{
     core::{DataSource, StringMatcher},

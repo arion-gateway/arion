@@ -15,8 +15,6 @@
 //
 //
 
-use std::sync::Arc;
-
 mod default_balancer;
 pub(crate) mod hash_policy;
 pub(crate) mod healthy;
@@ -31,5 +29,5 @@ pub(crate) mod wrr;
 pub use default_balancer::{DefaultBalancer, EndpointWithAuthority, EndpointWithLoad, WeightedEndpoint};
 
 pub trait Balancer<E> {
-    fn next_item(&mut self, hash: Option<u64>) -> Option<Arc<E>>;
+    fn next_item(&mut self, hash: Option<u64>) -> Option<&E>;
 }

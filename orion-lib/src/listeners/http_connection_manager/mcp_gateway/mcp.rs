@@ -11,7 +11,7 @@ use smallvec::{smallvec, SmallVec};
 use smol_str::{format_smolstr, SmolStr, ToSmolStr};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc as StdArc,
 };
 use tracing::{debug, info};
 use uuid::Uuid;
@@ -51,7 +51,7 @@ pub struct Session {
     pub listener_name: &'static str,
     pub session_id: SessionId,
     pub last_activity: AtomicInstant,
-    pub mcp_upstreams: DashMap<String, Arc<RunningService<RoleClient, InitializeRequestParams>>, ahash::RandomState>,
+    pub mcp_upstreams: DashMap<String, StdArc<RunningService<RoleClient, InitializeRequestParams>>, ahash::RandomState>,
     pub prompt: Mutex<Option<String>>,
     pub active_tools: DashSet<SmolStr, ahash::RandomState>,
 }
@@ -84,13 +84,13 @@ impl Default for Session {
 
 #[derive(Debug)]
 pub struct McpGatewayListenerContext {
-    session_map: Arc<DashMap<SessionId, Arc<Session>, ahash::RandomState>>,
+    session_map: StdArc<DashMap<SessionId, StdArc<Session>, ahash::RandomState>>,
     cleanup_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     cleanup_task_started: AtomicBool,
 }
 
 impl McpGatewayListenerContext {
-    fn cleanup(session_map: &DashMap<SessionId, Arc<Session>, ahash::RandomState>) {
+    fn cleanup(session_map: &DashMap<SessionId, StdArc<Session>, ahash::RandomState>) {
         let now = std::time::Instant::now();
         session_map.retain(|_, session| {
             let last_activity = session.last_activity.load(std::sync::atomic::Ordering::Relaxed);
@@ -107,7 +107,7 @@ impl McpGatewayListenerContext {
         if !self.cleanup_task_started.load(Ordering::Acquire) {
             let mut clean_task = self.cleanup_task.lock();
             if clean_task.is_none() {
-                let session_map = Arc::clone(&self.session_map);
+                let session_map = StdArc::clone(&self.session_map);
                 let task = tokio::spawn(async move {
                     loop {
                         pingora_timeout::sleep(SESSION_IDLE_TIMEOUT / 2).await;
@@ -124,7 +124,7 @@ impl McpGatewayListenerContext {
 impl Default for McpGatewayListenerContext {
     fn default() -> Self {
         Self {
-            session_map: Arc::new(DashMap::default()),
+            session_map: StdArc::new(DashMap::default()),
             cleanup_task: Mutex::new(None),
             cleanup_task_started: AtomicBool::new(false),
         }
@@ -142,7 +142,7 @@ pub enum SessionError {
 impl McpGatewayListenerContext {
     const MAX_SESSIONS_LIMIT: usize = 65536;
 
-    pub fn create_session(&self, listener_name: &'static str) -> Result<Arc<Session>, SessionError> {
+    pub fn create_session(&self, listener_name: &'static str) -> Result<StdArc<Session>, SessionError> {
         if self.session_map.len() >= Self::MAX_SESSIONS_LIMIT {
             debug!(target: "mcp_gateway", "create_session: session limit reached");
             return Err(SessionError::CreateLimitReached);
@@ -150,7 +150,7 @@ impl McpGatewayListenerContext {
 
         let session_id = SessionId(Uuid::new_v4().to_smolstr());
 
-        let session = Arc::new(Session {
+        let session = StdArc::new(Session {
             listener_name,
             session_id: session_id.clone(),
             last_activity: AtomicInstant::now(),
@@ -158,7 +158,7 @@ impl McpGatewayListenerContext {
             prompt: Mutex::new(None),
             active_tools: DashSet::with_hasher(ahash::RandomState::default()),
         });
-        self.session_map.insert(session_id, Arc::clone(&session));
+        self.session_map.insert(session_id, StdArc::clone(&session));
         Ok(session)
     }
 
@@ -171,7 +171,7 @@ impl McpGatewayListenerContext {
 #[derive(Debug)]
 pub struct McpGatewayInner {
     config: McpGatewayConfig,
-    tools: Arc<ToolsRegistry>,
+    tools: StdArc<ToolsRegistry>,
     tds_registration: Option<TdsRegistration>,
 }
 
@@ -198,15 +198,15 @@ pub enum MessageResult {
     Nothing,
     JsonRpcError(model::JsonRpcError),
     JsonRpcResponse(model::JsonRpcResponse<Value>),
-    JsonRpcResponseNewSession(model::JsonRpcResponse<Value>, Arc<Session>),
+    JsonRpcResponseNewSession(model::JsonRpcResponse<Value>, StdArc<Session>),
     JsonRpcNotificationResponse(model::JsonRpcNotification<ServerNotification>, model::JsonRpcResponse<Value>),
 }
 
 /// `McpGateway` filter
 #[derive(Debug, Clone)]
 pub struct McpGateway {
-    inner: Arc<McpGatewayInner>,
-    current_session: Option<Arc<Session>>,
+    inner: StdArc<McpGatewayInner>,
+    current_session: Option<StdArc<Session>>,
     request_id: model::RequestId,
     version: http::Version,
     initialize_request_params: Option<model::InitializeRequestParams>,
@@ -219,12 +219,12 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
         let embeddings_client = match config.semantic_search_tool.as_ref().and_then(|s| s.embeddings.clone()) {
             Some(cfg) => {
                 let cfg = cfg.normalized().map_err(ToolBuilderError::InvalidEmbeddingsConfig)?;
-                Some(Arc::new(embeddings::EmbeddingsClient::from_config(cfg)))
+                Some(StdArc::new(embeddings::EmbeddingsClient::from_config(cfg)))
             },
             None => None,
         };
 
-        let tools = Arc::new(ToolsRegistry::with_config(
+        let tools = StdArc::new(ToolsRegistry::with_config(
             config.tools.clone(),
             config.dynamic_mcp_servers.clone(),
             config.semantic_search_tool.clone(),
@@ -243,7 +243,7 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
         };
 
         Ok(Self {
-            inner: Arc::new(McpGatewayInner { config, tools, tds_registration }),
+            inner: StdArc::new(McpGatewayInner { config, tools, tds_registration }),
             current_session: None,
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,
@@ -255,7 +255,7 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
 impl FilterFactory for McpGateway {
     fn new_from(&self) -> Self {
         Self {
-            inner: Arc::clone(&self.inner),
+            inner: StdArc::clone(&self.inner),
             current_session: None,
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,
@@ -326,7 +326,7 @@ impl McpGateway {
             .version(self.version)
             .status(StatusCode::ACCEPTED);
 
-        let Ok(response) = builder.body(TimeoutBody::new(None, PolyBody::from(Empty::new()))) else {
+        let Ok(response) = builder.body(TimeoutBody::new(None, PolyBody::from(Empty::new())).into()) else {
             unreachable!("handle_mcp_delete_endpoint: Failed to build response body");
         };
 
@@ -385,7 +385,7 @@ impl McpGateway {
         //
         let mut session_id = request.get_mcp_session_id();
 
-        let session: Option<Arc<Session>> = match &session_id {
+        let session: Option<StdArc<Session>> = match &session_id {
             Some(session_id) => {
                 let Ok(session) = Self::get_valid_session(ctx, session_id) else {
                     let err = self.build_json_rpc_error(model::ErrorData::invalid_request("Session not found", None));
@@ -429,11 +429,11 @@ impl McpGateway {
             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: new session created");
             session_id = Some(new_session.session_id.clone());
             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: current session: {session_id:?} -> {:?}", new_session);
-            self.current_session = Some(Arc::clone(new_session));
+            self.current_session = Some(StdArc::clone(new_session));
         } else if let Some(session) = session {
             session_id = Some(session.session_id.clone());
             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: current session: {session_id:?} -> {:?}", session);
-            self.current_session = Some(Arc::clone(&session));
+            self.current_session = Some(StdArc::clone(&session));
         } else {
             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: current session: None (internal bug)!");
         }
@@ -521,7 +521,7 @@ impl McpGateway {
         req_version: http::Version,
         json_rpc_message: model::JsonRpcMessage,
         listener_name: &'static str,
-        session: Option<&Arc<Session>>,
+        session: Option<&StdArc<Session>>,
     ) -> Result<MessageResult, FilterDecision> {
         debug!(target: "mcp_gateway", "handle_rpc_json_message: session: {session:?}, listener: {listener_name}");
 
@@ -590,7 +590,7 @@ impl McpGateway {
         req_version: http::Version,
         rpc: model::JsonRpcRequest,
         listener_name: &'static str,
-        session: Option<&Arc<Session>>,
+        session: Option<&StdArc<Session>>,
     ) -> Result<MessageResult, FilterDecision> {
         if matches!(rpc.request.method.as_str(), InitializeResultMethod::VALUE) {
             debug!(target: "mcp_gateway", "handle_rpc_json_request: 'initialize' method received");
@@ -791,14 +791,14 @@ impl McpGateway {
     fn get_valid_session(
         ctx: &McpGatewayListenerContext,
         session_id: &SessionId,
-    ) -> Result<Arc<Session>, SessionError> {
+    ) -> Result<StdArc<Session>, SessionError> {
         let Some(session) = ctx.session_map.get(session_id) else {
             debug!(target: "mcp_gateway", "get_valid_session: valid session {} not found in session map", session_id);
             return Err(SessionError::NotFound);
         };
 
         session.last_activity.store(std::time::Instant::now(), std::sync::atomic::Ordering::Relaxed);
-        let session: Arc<Session> = Arc::clone(&session);
+        let session: StdArc<Session> = StdArc::clone(&session);
         debug!(target: "mcp_gateway", "get_valid_session: {session_id} -> {session:?}");
         Ok(session)
     }
@@ -840,7 +840,7 @@ impl McpGateway {
             builder = builder.header(name, *value);
         }
 
-        let Ok(resp) = builder.body(body) else {
+        let Ok(resp) = builder.body(body.into()) else {
             debug!(target: "mcp_gateway", "build_mcp_response: failed to build response body for session {}",
                 self.current_session.as_deref().map(|s| s.session_id.clone()).unwrap_or_default());
             return Err(FilterDecision::internal_server_error(

@@ -20,11 +20,12 @@ use hyper_util::rt::TokioIo;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncWrite};
 
 pub mod bind_device;
 pub mod connector;
 mod grpc_channel;
+pub(crate) mod http1_pool;
+pub(crate) mod http2_pool;
 pub(crate) mod http_channel;
 mod resolver;
 pub mod tcp_channel;
@@ -34,20 +35,16 @@ pub mod timer;
 pub mod tls_inspector;
 pub mod transport_socket;
 
-use crate::utils::instrumented_stream::HasMetrics;
-
 pub use self::{
     grpc_channel::{GrpcService, SimpleRoundRobinGrpcServiceLB},
     http_channel::{HttpChannel, HttpChannelBuilder, HttpChannels},
+    io::AsyncInstrumentedStream,
     proxy_protocol::ProxyProtocolReader,
     tcp_channel::TcpChannelConnector,
     transport_socket::UpstreamTransportSocketConfigurator,
 };
 
-pub trait AsyncReadWriteInstrumented: AsyncRead + AsyncWrite + HasMetrics + Send + Sync + Unpin {}
-impl<T> AsyncReadWriteInstrumented for T where T: AsyncRead + AsyncWrite + HasMetrics + Send + Sync + Unpin {}
-
-pub type AsyncInstrumentedStream = Box<dyn AsyncReadWriteInstrumented>;
+mod io;
 
 pub struct HttpConnection {
     inner: TokioIo<AsyncInstrumentedStream>,
@@ -108,5 +105,12 @@ impl hyper::rt::Write for HttpConnection {
     }
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        Pin::new(&mut self.inner).poll_write_vectored(cx, bufs)
     }
 }

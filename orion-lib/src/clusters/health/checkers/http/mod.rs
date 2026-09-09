@@ -18,7 +18,8 @@
 #[cfg(test)]
 mod tests;
 
-use std::{ops::Range, sync::Arc};
+use std::ops::Range;
+use triomphe::Arc;
 
 use bytes::Bytes;
 use http::{

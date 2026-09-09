@@ -74,7 +74,7 @@ use orion_metrics::metrics::{custom::CUSTOM_METRICS, http, user};
 
 #[cfg(feature = "access-log")]
 use {
-    crate::access_log::{is_access_log_enabled, log_access_blocking, Target},
+    crate::access_log::{blocking_log_access, is_access_log_enabled, Target},
     crate::event_error::UpstreamTransportEventError,
     orion_configuration::config::access_log::AccessLog,
     orion_format::context::{
@@ -88,11 +88,10 @@ use {
 use {parking_lot::Mutex, std::time::Instant};
 
 use ::http::HeaderValue;
-use arc_swap::ArcSwap;
+use arc_swap::ArcSwapOption;
 use core::time::Duration;
 use futures::future::BoxFuture;
 use hyper::{body::Incoming, header::HOST, service::Service, Request, Response, StatusCode};
-use orion_configuration::config::network_filters::http_connection_manager::route::RouteMatch;
 use orion_configuration::config::network_filters::http_connection_manager::{
     route::{Action, RouteMatchResult},
     CodecType, ConfigSource, ConfigSourceSpecifier, HttpConnectionManager as HttpConnectionManagerConfig, RdsSpecifier,
@@ -117,11 +116,13 @@ use crate::{
         metadata::{ConnMeta, DownstreamMetadata},
         synthetic_http_response::SyntheticHttpResponse,
     },
-    with_client_span, with_metric, with_server_span, ConversionContext, OrionRequestBody, OrionResponseBody, PolyBody,
-    Result, RouteConfiguration,
+    with_client_span, with_metric, with_server_span, ConversionContext, OrionClientBody, OrionRequestBody,
+    OrionResponseBody, PolyBody, Result, RouteConfiguration,
 };
 
-use crate::utils::instrumented_stream::StreamMetrics;
+#[cfg(any(feature = "access-log", feature = "metrics"))]
+use crate::utils::instrumented_stream::OnFlush;
+use crate::utils::StreamMetrics;
 
 use orion_configuration::config::network_filters::{
     http_connection_manager::{Route, VirtualHost, XffSettings},
@@ -130,9 +131,11 @@ use orion_configuration::config::network_filters::{
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use route::RouteContext;
 use smol_str::SmolStr;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::{fmt, future::Future, result::Result as StdResult, sync::Arc};
-use tokio::sync::watch;
+use std::{fmt, future::Future, result::Result as StdResult, sync::Arc as StdArc};
+use triomphe::{Arc, UniqueArc};
+
 use tracing::{debug, error};
 use upgrades as upgrade_utils;
 
@@ -188,7 +191,7 @@ impl Write for LengthCounter {
 // | 3. HttpPipelineSvc  (async fn, unboxed)                                                       |
 // |   Input:  RoutedHttpRequest<OrionRequestBody>                                                 |
 // |   Action: Filter chain + routing via RequestHandler (ctx passed explicitly).                  |
-// |   Output: Response<OrionRequestBody>                                                          |
+// |   Output: Response<OrionClientBody>                                                           |
 // +-----------------------------------------------------------------------------------------------+
 //
 // =================================================================================================
@@ -212,16 +215,20 @@ impl HttpConnectionManagerBuilder {
         let listener_name = self.listener_name.ok_or("listener name is not set")?;
         let filterchain_id = self.filterchain_id.unwrap_or(0);
         let partial = self.connection_manager;
-        let router_sender = watch::Sender::new(partial.router.map(Arc::new));
+        let initial_routing_state = partial.router.map(|router| {
+            StdArc::new(RoutingState {
+                route_configuration: router,
+                http_filters_per_route: partial.http_filters_per_route,
+            })
+        });
 
         Ok(HttpConnectionManager {
             listener_name,
             filterchain_id,
-            router_sender,
+            routing_state: ArcSwapOption::new(initial_routing_state),
             codec_type: partial.codec_type,
             dynamic_route_name: partial.dynamic_route_name,
             http_filters_hcm: partial.http_filters_hcm,
-            http_filters_per_route: ArcSwap::new(Arc::new(partial.http_filters_per_route)),
             enabled_upgrades: partial.enabled_upgrades,
             request_timeout: partial.request_timeout,
             xff_settings: partial.xff_settings,
@@ -256,7 +263,7 @@ pub struct PartialHttpConnectionManager {
     codec_type: CodecType,
     dynamic_route_name: Option<SmolStr>,
     http_filters_hcm: Vec<Arc<HttpFilter>>,
-    http_filters_per_route: HashMap<RouteMatch, Vec<Arc<HttpFilter>>>,
+    http_filters_per_route: HashMap<RouteIndex, Vec<Arc<HttpFilter>>>,
     enabled_upgrades: Vec<UpgradeType>,
     request_timeout: Option<Duration>,
     xff_settings: XffSettings,
@@ -343,15 +350,26 @@ impl AlpnCodecs {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RouteIndex {
+    pub vh_idx: usize,
+    pub route_idx: usize,
+}
+
+#[derive(Debug)]
+pub struct RoutingState {
+    pub route_configuration: RouteConfiguration,
+    pub http_filters_per_route: HashMap<RouteIndex, Vec<Arc<HttpFilter>>>,
+}
+
 #[derive(Debug)]
 pub struct HttpConnectionManager {
     pub listener_name: &'static str,
     pub filterchain_id: u64,
-    router_sender: watch::Sender<Option<Arc<RouteConfiguration>>>,
+    routing_state: ArcSwapOption<RoutingState>,
     pub codec_type: CodecType,
     dynamic_route_name: Option<SmolStr>,
     http_filters_hcm: Vec<Arc<HttpFilter>>,
-    http_filters_per_route: ArcSwap<HashMap<RouteMatch, Vec<Arc<HttpFilter>>>>,
     enabled_upgrades: Vec<UpgradeType>,
     request_timeout: Option<Duration>,
     xff_settings: XffSettings,
@@ -379,32 +397,34 @@ impl HttpConnectionManager {
     }
 
     pub fn update_route(&self, route: RouteConfiguration) {
-        self.http_filters_per_route.swap(Arc::new(per_route_http_filters(&route, &self.http_filters_hcm)));
-        let _ = self.router_sender.send_replace(Some(Arc::new(route)));
+        let http_filters_per_route = per_route_http_filters(&route, &self.http_filters_hcm);
+        let new_state = StdArc::new(RoutingState { route_configuration: route, http_filters_per_route });
+        self.routing_state.store(Some(new_state));
     }
 
     pub fn remove_route(&self) {
-        let _ = self.router_sender.send_replace(None);
+        self.routing_state.store(None);
     }
 
     #[allow(clippy::type_complexity)]
     pub(crate) fn transaction_context_svc(
-        self: &Arc<Self>,
+        this: &Arc<Self>,
         downstream: Arc<DownstreamMetadata>,
         stream_metrics: Arc<StreamMetrics>,
     ) -> TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
-        let pipeline_service = HttpPipelineSvc::new(Arc::clone(self));
-        let transaction_service =
-            TransactionSvc::new(Arc::clone(self), self.router_sender.subscribe(), pipeline_service);
-        TransactionLifecycleSvc::new(Arc::clone(self), downstream, stream_metrics, transaction_service)
+        let pipeline_service = HttpPipelineSvc::new(Arc::clone(this));
+        let transaction_service = TransactionSvc::new(Arc::clone(this), pipeline_service);
+        TransactionLifecycleSvc::new(Arc::clone(this), downstream, stream_metrics, transaction_service)
     }
 }
 
 #[derive(Debug)]
 pub struct CachedRoute<'a> {
-    route: &'a Route,
-    route_match: RouteMatchResult,
-    vh: &'a VirtualHost,
+    pub route: &'a Route,
+    pub route_match: RouteMatchResult,
+    pub vh: &'a VirtualHost,
+    pub vh_index: usize,
+    pub route_index: usize,
 }
 
 #[cfg(any(feature = "access-log", feature = "metrics"))]
@@ -416,7 +436,7 @@ pub struct TransactionState {
     pub upstream_start_instant: Option<std::time::Instant>,
     pub upstream_cluster_name: Option<&'static str>,
     #[cfg(feature = "access-log")]
-    loggers: Vec<LogFormatter>,
+    pub(crate) loggers: Option<Box<[orion_format::LogFormatter]>>,
 }
 
 #[cfg(any(feature = "access-log", feature = "metrics"))]
@@ -429,7 +449,11 @@ impl TransactionState {
             upstream_start_instant: None,
             upstream_cluster_name: None,
             #[cfg(feature = "access-log")]
-            loggers: access_log.iter().map(|al| al.get_logger().clone()).collect::<Vec<_>>(),
+            loggers: if access_log.is_empty() {
+                None
+            } else {
+                Some(access_log.iter().map(|al| al.get_logger().clone()).collect::<Vec<_>>().into_boxed_slice())
+            },
         }
     }
 }
@@ -440,8 +464,101 @@ pub type ShardId = std::thread::ThreadId;
 #[cfg(not(feature = "metrics"))]
 pub type ShardId = ();
 
+thread_local! {
+    static TX_CONTEXT_POOL: RefCell<Vec<UniqueArc<TransactionContext>>> = RefCell::new(Vec::with_capacity(128));
+}
+
+#[derive(Debug)]
+pub struct PooledTxCtx(Option<Arc<TransactionContext>>);
+
+impl PooledTxCtx {
+    #[allow(clippy::too_many_arguments)]
+    pub fn acquire(
+        request_id: Option<RequestId>,
+        user_partition_key: Option<&'static str>,
+        thread_id: ShardId,
+        #[cfg(feature = "access-log")] access_log: &[AccessLog],
+        #[cfg(feature = "tracing")] trace_ctx: Option<TraceContext>,
+        #[cfg(feature = "tracing")] upstream_tracing_key: Option<TracingKey>,
+        #[cfg(feature = "tracing")] server_span: Option<BoxedSpan>,
+    ) -> Self {
+        let unique = TX_CONTEXT_POOL.with(|pool| pool.borrow_mut().pop());
+        let arc = if let Some(mut ctx) = unique {
+            ctx.reset(
+                request_id,
+                user_partition_key,
+                thread_id,
+                #[cfg(feature = "access-log")]
+                access_log,
+                #[cfg(feature = "tracing")]
+                trace_ctx,
+                #[cfg(feature = "tracing")]
+                upstream_tracing_key,
+                #[cfg(feature = "tracing")]
+                server_span,
+            );
+            UniqueArc::shareable(ctx)
+        } else {
+            Arc::new(TransactionContext::new(
+                request_id,
+                user_partition_key,
+                thread_id,
+                #[cfg(feature = "access-log")]
+                access_log,
+                #[cfg(feature = "tracing")]
+                trace_ctx,
+                #[cfg(feature = "tracing")]
+                upstream_tracing_key,
+                #[cfg(feature = "tracing")]
+                server_span,
+            ))
+        };
+        Self(Some(arc))
+    }
+}
+
+impl Clone for PooledTxCtx {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl Default for PooledTxCtx {
+    fn default() -> Self {
+        Self(Some(Arc::new(TransactionContext::default())))
+    }
+}
+
+impl std::ops::Deref for PooledTxCtx {
+    type Target = TransactionContext;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().unwrap()
+    }
+}
+
+impl Drop for PooledTxCtx {
+    #[inline]
+    fn drop(&mut self) {
+        if let Some(arc) = self.0.take() {
+            if let Ok(unique) = Arc::try_unique(arc) {
+                TX_CONTEXT_POOL.with(|pool| {
+                    let mut pool = pool.borrow_mut();
+                    if pool.len() < 1024 {
+                        pool.push(unique);
+                    }
+                });
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct TransactionContext {
+    #[cfg(feature = "access-log")]
+    pub has_access_log: bool,
     #[allow(dead_code)]
     start_instant: std::time::Instant,
     request_id: Option<RequestId>,
@@ -480,6 +597,8 @@ impl TransactionPhase {
 impl Default for TransactionContext {
     fn default() -> Self {
         TransactionContext {
+            #[cfg(feature = "access-log")]
+            has_access_log: false,
             start_instant: std::time::Instant::now(),
             request_id: None,
             user_partition_key: None,
@@ -510,6 +629,52 @@ struct EventInfo {
 
 impl TransactionContext {
     #[allow(clippy::too_many_arguments)]
+    pub fn reset(
+        &mut self,
+        request_id: Option<RequestId>,
+        user_partition_key: Option<&'static str>,
+        thread_id: ShardId,
+        #[cfg(feature = "access-log")] access_log: &[AccessLog],
+        #[cfg(feature = "tracing")] trace_ctx: Option<TraceContext>,
+        #[cfg(feature = "tracing")] upstream_tracing_key: Option<TracingKey>,
+        #[cfg(feature = "tracing")] server_span: Option<BoxedSpan>,
+    ) {
+        #[cfg(feature = "access-log")]
+        {
+            self.has_access_log = !access_log.is_empty();
+        }
+        self.start_instant = std::time::Instant::now();
+        self.request_id = request_id;
+        self.user_partition_key = user_partition_key;
+
+        #[cfg(any(feature = "access-log", feature = "metrics"))]
+        {
+            *self.trans_state.get_mut() = TransactionState::new(
+                #[cfg(feature = "access-log")]
+                access_log,
+            );
+        }
+
+        #[cfg(feature = "tracing")]
+        {
+            self.trace_ctx = trace_ctx;
+            self.upstream_tracing_key = upstream_tracing_key;
+            self.span_state = server_span.map(|span| Arc::new(SpanState::new(Some(span))));
+        }
+
+        self.shard_id = thread_id;
+
+        #[cfg(any(feature = "access-log", feature = "metrics", feature = "tracing"))]
+        {
+            self.trans_phase = TransactionPhase::new();
+        }
+
+        #[cfg(feature = "instrumentation")]
+        {
+            self.clock = quanta::Clock::new();
+        }
+    }
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         request_id: Option<RequestId>,
         user_partition_key: Option<&'static str>,
@@ -520,6 +685,8 @@ impl TransactionContext {
         #[cfg(feature = "tracing")] server_span: Option<BoxedSpan>,
     ) -> Self {
         TransactionContext {
+            #[cfg(feature = "access-log")]
+            has_access_log: !access_log.is_empty(),
             start_instant: std::time::Instant::now(),
             request_id,
             user_partition_key,
@@ -567,19 +734,22 @@ impl TransactionContext {
     }
 
     #[cfg(feature = "access-log")]
-    pub fn with_loggers<F>(&self, f: F)
+    pub fn with_loggers<F>(&self, mut f: F)
     where
-        F: FnOnce(&mut [orion_format::LogFormatter]),
+        F: FnMut(&mut [orion_format::LogFormatter]),
     {
-        let mut state = self.trans_state.lock();
-        f(&mut state.loggers);
+        if self.has_access_log {
+            let mut state = self.trans_state.lock();
+            if let Some(loggers) = state.loggers.as_mut() {
+                f(loggers);
+            }
+        }
     }
 
     #[allow(unused_variables)]
     #[allow(clippy::too_many_lines)]
     #[allow(clippy::let_unit_value)]
-    #[allow(clippy::unused_self)]
-    fn trace_status_code(self: Arc<Self>, res: &Result<Response<OrionRequestBody>>, listener_name: &'static str) {
+    fn trace_status_code(&self, res: &Result<Response<OrionClientBody>>, listener_name: &'static str) {
         if let Ok(response) = &res {
             let status_code = response.status().as_u16();
 
@@ -587,199 +757,85 @@ impl TransactionContext {
                 .set_attribute(KeyValue::new(HTTP_RESPONSE_STATUS_CODE, i64::from(status_code))));
 
             #[cfg(feature = "metrics")]
-            if let Some(user_partition_key) = self.user_partition_key {
-                with_metric!(
-                    user::INVOCATIONS,
-                    add,
-                    1,
-                    self.shard_id(),
-                    &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                );
+            let listener_attr = [KeyValue::new("listener", listener_name)];
+
+            #[cfg(feature = "metrics")]
+            let user_attrs = self
+                .user_partition_key
+                .map(|key| [KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), key)]);
+
+            #[cfg(feature = "metrics")]
+            if let Some(ref attrs) = user_attrs {
+                with_metric!(user::INVOCATIONS, add, 1, self.shard_id(), attrs);
             }
 
             #[allow(clippy::match_same_arms)]
             match status_code {
                 100..200 => {
-                    with_metric!(
-                        http::DOWNSTREAM_RQ_1XX,
-                        add,
-                        1,
-                        self.shard_id(),
-                        &[KeyValue::new("listener", listener_name)]
-                    );
+                    with_metric!(http::DOWNSTREAM_RQ_1XX, add, 1, self.shard_id(), &listener_attr);
                     #[cfg(feature = "metrics")]
-                    if let Some(user_partition_key) = self.user_partition_key {
-                        with_metric!(
-                            user::HTTP_1XX_RESPONSES,
-                            add,
-                            1,
-                            self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                        );
-                    }
-                },
-                200..300 => {
-                    with_metric!(
-                        http::DOWNSTREAM_RQ_2XX,
-                        add,
-                        1,
-                        self.shard_id(),
-                        &[KeyValue::new("listener", listener_name)]
-                    );
-                    #[cfg(feature = "metrics")]
-                    if let Some(user_partition_key) = self.user_partition_key {
-                        with_metric!(
-                            user::HTTP_2XX_RESPONSES,
-                            add,
-                            1,
-                            self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                        );
-                    }
-                },
-                300..400 => {
-                    with_metric!(
-                        http::DOWNSTREAM_RQ_3XX,
-                        add,
-                        1,
-                        self.shard_id(),
-                        &[KeyValue::new("listener", listener_name)]
-                    );
-                    #[cfg(feature = "metrics")]
-                    if let Some(user_partition_key) = self.user_partition_key {
-                        with_metric!(
-                            user::HTTP_3XX_RESPONSES,
-                            add,
-                            1,
-                            self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                        );
-                    }
-                },
-                400..500 => {
-                    with_metric!(
-                        http::DOWNSTREAM_RQ_4XX,
-                        add,
-                        1,
-                        self.shard_id(),
-                        &[KeyValue::new("listener", listener_name)]
-                    );
-
-                    #[cfg(feature = "metrics")]
-                    if let Some(user_partition_key) = self.user_partition_key {
-                        with_metric!(
-                            user::USER_ERRORS,
-                            add,
-                            1,
-                            self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                        );
-                        with_metric!(
-                            user::TOTAL_ERRORS,
-                            add,
-                            1,
-                            self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                        );
-                        with_metric!(
-                            user::HTTP_4XX_RESPONSES,
-                            add,
-                            1,
-                            self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                        );
-
-                        match status_code {
-                            404 => {
-                                with_metric!(
-                                    user::HTTP_404_RESPONSES,
-                                    add,
-                                    1,
-                                    self.shard_id(),
-                                    &[KeyValue::new(
-                                        metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                        user_partition_key
-                                    )]
-                                );
-                            },
-                            429 => {
-                                with_metric!(
-                                    user::THROTTLES,
-                                    add,
-                                    1,
-                                    self.shard_id(),
-                                    &[KeyValue::new(
-                                        metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                        user_partition_key
-                                    )]
-                                );
-                            },
-                            _ => (),
+                    if let Some(ref a) = user_attrs {
+                        {
+                            with_metric!(user::HTTP_1XX_RESPONSES, add, 1, self.shard_id(), a);
                         }
                     }
                 },
-                500..600 => {
-                    with_metric!(
-                        http::DOWNSTREAM_RQ_5XX,
-                        add,
-                        1,
-                        self.shard_id(),
-                        &[KeyValue::new("listener", listener_name)]
-                    );
-
+                200..300 => {
+                    with_metric!(http::DOWNSTREAM_RQ_2XX, add, 1, self.shard_id(), &listener_attr);
                     #[cfg(feature = "metrics")]
-                    if let Some(user_partition_key) = self.user_partition_key {
-                        with_metric!(
-                            user::SYSTEM_ERRORS,
-                            add,
-                            1,
-                            self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                        );
-                        with_metric!(
-                            user::TOTAL_ERRORS,
-                            add,
-                            1,
-                            self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                        );
-                        with_metric!(
-                            user::HTTP_5XX_RESPONSES,
-                            add,
-                            1,
-                            self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                        );
+                    if let Some(ref a) = user_attrs {
+                        {
+                            with_metric!(user::HTTP_2XX_RESPONSES, add, 1, self.shard_id(), a);
+                        }
+                    }
+                },
+                300..400 => {
+                    with_metric!(http::DOWNSTREAM_RQ_3XX, add, 1, self.shard_id(), &listener_attr);
+                    #[cfg(feature = "metrics")]
+                    if let Some(ref a) = user_attrs {
+                        {
+                            with_metric!(user::HTTP_3XX_RESPONSES, add, 1, self.shard_id(), a);
+                        }
+                    }
+                },
+                400..500 => {
+                    with_metric!(http::DOWNSTREAM_RQ_4XX, add, 1, self.shard_id(), &listener_attr);
+                    #[cfg(feature = "metrics")]
+                    if let Some(ref a) = user_attrs {
+                        with_metric!(user::USER_ERRORS, add, 1, self.shard_id(), a);
+                        with_metric!(user::TOTAL_ERRORS, add, 1, self.shard_id(), a);
+                        with_metric!(user::HTTP_4XX_RESPONSES, add, 1, self.shard_id(), a);
+                        match status_code {
+                            404 => {
+                                with_metric!(user::HTTP_404_RESPONSES, add, 1, self.shard_id(), a);
+                            },
+                            429 => {
+                                with_metric!(user::THROTTLES, add, 1, self.shard_id(), a);
+                            },
+                            _ => {},
+                        }
+                    }
+                },
+                _ => {
+                    with_metric!(http::DOWNSTREAM_RQ_5XX, add, 1, self.shard_id(), &listener_attr);
+                    #[cfg(feature = "metrics")]
+                    if let Some(ref a) = user_attrs {
+                        with_metric!(user::SYSTEM_ERRORS, add, 1, self.shard_id(), a);
+                        with_metric!(user::TOTAL_ERRORS, add, 1, self.shard_id(), a);
+                        with_metric!(user::HTTP_5XX_RESPONSES, add, 1, self.shard_id(), a);
                         match status_code {
                             502 => {
-                                with_metric!(
-                                    user::HTTP_502_RESPONSES,
-                                    add,
-                                    1,
-                                    self.shard_id(),
-                                    &[KeyValue::new(
-                                        metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                        user_partition_key
-                                    )]
-                                );
+                                with_metric!(user::HTTP_502_RESPONSES, add, 1, self.shard_id(), a);
                             },
                             504 => {
-                                with_metric!(
-                                    user::HTTP_504_RESPONSES,
-                                    add,
-                                    1,
-                                    self.shard_id(),
-                                    &[KeyValue::new(
-                                        metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                        user_partition_key
-                                    )]
-                                );
+                                with_metric!(user::HTTP_504_RESPONSES, add, 1, self.shard_id(), a);
                             },
                             _ => (),
                         }
                     }
 
                     with_server_span!(self.span_state, |srv_span: &mut BoxedSpan| {
+                        srv_span.set_attribute(KeyValue::new(HTTP_RESPONSE_STATUS_CODE, 500));
                         srv_span.set_status(Status::error("5xx"));
                     });
 
@@ -787,7 +843,6 @@ impl TransactionContext {
                         clt_span.set_status(Status::error("5xx"));
                     });
                 },
-                _ => {},
             }
         } else {
             with_metric!(http::DOWNSTREAM_RQ_5XX, add, 1, self.shard_id(), &[KeyValue::new("listener", listener_name)]);
@@ -818,8 +873,8 @@ impl HttpPipelineSvc {
     async fn call(
         &self,
         req: RoutedHttpRequest<OrionRequestBody>,
-    ) -> StdResult<Response<OrionRequestBody>, crate::Error> {
-        let RoutedHttpRequest { http: HttpRequest { mut request, ctx }, route_conf } = req;
+    ) -> StdResult<Response<OrionClientBody>, crate::Error> {
+        let RoutedHttpRequest { http: HttpRequest { mut request, ctx }, routing_state } = req;
         let manager = self.manager.as_ref();
 
         #[allow(unused_variables)]
@@ -828,23 +883,23 @@ impl HttpPipelineSvc {
         let filterchain_id = manager.filterchain_id;
         let downstream_addr = ctx.conn.downstream_peer_address();
 
-        // check if this is the first request on the stream, and if so, record it in the metrics.
         if ctx.conn.stream_metrics.inc_requests() == 0 {
             #[cfg(feature = "metrics")]
             if let Some(user_partition_key) = ctx.tx.user_partition_key {
+                let user_attr_name = metrics::USER_KEY.attribute_name().unwrap_or("user");
                 with_metric!(
                     user::CONNECTIONS,
                     add,
                     1,
                     ctx.tx.shard_id,
-                    &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
+                    &[KeyValue::new(user_attr_name, user_partition_key)]
                 );
                 with_metric!(
                     user::CONNECTIONS_ACTIVE,
                     add,
                     1,
                     ctx.tx.shard_id,
-                    &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
+                    &[KeyValue::new(user_attr_name, user_partition_key)]
                 );
 
                 // store the user_partition_key to decrement CONNECTIONS_ACTIVE later, when the stream is closed.
@@ -856,7 +911,7 @@ impl HttpPipelineSvc {
         http_modifiers::apply_prerouting_functions(&mut request, downstream_addr, &manager.xff_settings);
 
         // process request, get the response..
-        let result = route_conf.to_response(&ctx, request, manager).await;
+        let result = routing_state.as_ref().to_response(&ctx, request, manager).await;
 
         // calculate the time to first byte..
         #[cfg(any(feature = "access-log", feature = "metrics"))]
@@ -878,20 +933,20 @@ impl HttpPipelineSvc {
             {
                 use crate::with_access_log;
 
-                with_access_log!(
-                    &mut ctx.tx.trans_state.lock().loggers,
-                    DownstreamResponseContext {
-                        response: &response,
-                        response_head_size: response_head_size(&response)
-                    }
-                )
+                ctx.tx.with_loggers(|loggers| {
+                    with_access_log!(
+                        loggers,
+                        DownstreamResponseContext {
+                            response: &response,
+                            response_head_size: response_head_size(&response)
+                        }
+                    )
+                });
             }
 
             #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
             let trans_ctx = ctx.tx;
-            let stream_metrics = ctx.conn.stream_metrics;
-            #[cfg(any(feature = "access-log", feature = "metrics"))]
-            let stream_metrics_for_flush = Arc::clone(&stream_metrics);
+            let stream_metrics = Arc::clone(&ctx.conn.stream_metrics);
 
             response.map(move |body| {
                 InstrumentedBody::new(
@@ -923,63 +978,40 @@ impl HttpPipelineSvc {
                                         &[opentelemetry::KeyValue::new("cluster", cluster)]
                                     );
                                     if let Some(user_key) = trans_ctx.user_partition_key {
+                                        let user_attr_name =
+                                            crate::metrics::USER_KEY.attribute_name().unwrap_or("user");
                                         crate::with_histogram!(
                                             user::UPSTREAM_RQ_TIME,
                                             record,
                                             elapsed_ms,
                                             shard_id,
-                                            &[opentelemetry::KeyValue::new(
-                                                crate::metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                                user_key
-                                            )]
+                                            &[opentelemetry::KeyValue::new(user_attr_name, user_key)]
                                         );
                                     }
                                 }
                             }
 
                             #[cfg(feature = "access-log")]
-                            with_access_log!(
-                                &mut trans_state.loggers,
-                                HttpResponseDurationContext { duration, tx_duration }
-                            );
+                            if let Some(loggers) = trans_state.loggers.as_mut() {
+                                with_access_log!(
+                                    loggers.as_mut(),
+                                    HttpResponseDurationContext { duration, tx_duration }
+                                );
+                            }
 
                             if trans_ctx.trans_phase.is_complete() {
-                                let trans_ctx_cb = Arc::clone(&trans_ctx);
-                                #[cfg(feature = "access-log")]
-                                let initial_event_cb = initial_event.clone();
-                                let body_error_cb = body_error.clone();
                                 drop(trans_state);
-
-                                stream_metrics.add_flush_callback(Box::new(move || {
-                                    #[allow(unused_mut)]
-                                    let mut trans_state = trans_ctx_cb.trans_state.lock();
-                                    #[allow(unused_variables)]
-                                    let ctx_bytes = trans_state.bytes;
-                                    #[allow(unused_variables)]
-                                    let ctx_flags = trans_state.flags;
-                                    #[allow(unused_variables)]
-                                    let ctx_event = trans_state.event.clone();
-                                    eval_http_finish_context(FinishContextParams {
-                                        stream_metrics: &stream_metrics_for_flush,
-                                        listener_name,
-                                        user_partition_key: trans_ctx_cb.user_partition_key,
-                                        filterchain_id,
-                                        bytes_received: ctx_bytes,
-                                        bytes_sent: body_bytes,
-                                        trans_start_time: trans_ctx_cb.start_instant,
-                                        #[cfg(feature = "metrics")]
-                                        m_ctx: MetricsFinishContext { shard_id: trans_ctx_cb.shard_id() },
-                                        #[cfg(feature = "access-log")]
-                                        al_ctx: AccessLogFinishContext {
-                                            event: EventInfo {
-                                                body_kind: BodyKind::Response,
-                                                event_kind: ctx_event.or(initial_event_cb).or(body_error_cb),
-                                                response_flags: ctx_flags | initial_flags | body_flags,
-                                            },
-                                            access_loggers: trans_state.loggers.as_mut(),
-                                        },
-                                    });
-                                }));
+                                stream_metrics.add_flush_callback(HttpTxnFlush {
+                                    trans_ctx: trans_ctx.clone(),
+                                    listener_name,
+                                    filterchain_id,
+                                    body_bytes,
+                                    body_is_response: true,
+                                    #[cfg(feature = "access-log")]
+                                    extra_event: initial_event.clone().or(body_error),
+                                    #[cfg(feature = "access-log")]
+                                    extra_flags: initial_flags | body_flags,
+                                });
                             } else {
                                 trans_state.bytes = body_bytes;
                                 #[cfg(feature = "access-log")]
@@ -1003,14 +1035,17 @@ impl HttpPipelineSvc {
     }
 }
 
-fn select_virtual_host<'a, T>(request: &Request<T>, virtual_hosts: &'a [VirtualHost]) -> Option<&'a VirtualHost> {
-    let mapped_vhs = virtual_hosts.iter().filter_map(|vh| {
+fn select_virtual_host<'a, T>(
+    request: &Request<T>,
+    virtual_hosts: &'a [VirtualHost],
+) -> Option<(usize, &'a VirtualHost)> {
+    let mapped_vhs = virtual_hosts.iter().enumerate().filter_map(|(idx, vh)| {
         let maybe_score = vh.domains.iter().map(|domain| domain.eval_lpm_request(request)).max().flatten();
-        maybe_score.map(|score| (vh, score))
+        maybe_score.map(|score| (idx, vh, score))
     });
 
-    let virtual_host_with_max_score = mapped_vhs.max_by_key(|(_, score)| score.clone());
-    virtual_host_with_max_score.map(|(vh, _)| vh)
+    let virtual_host_with_max_score = mapped_vhs.max_by(|a, b| a.2.cmp(&b.2));
+    virtual_host_with_max_score.map(|(idx, vh, _)| (idx, vh))
 }
 
 // has to be a trait due to foreign impl rules.
@@ -1025,16 +1060,17 @@ pub trait RequestHandler<R, A>: Sized {
 
 #[inline]
 fn match_request_route<'a, B>(request: &Request<B>, route_config: &'a RouteConfiguration) -> Option<CachedRoute<'a>> {
-    let chosen_vh = select_virtual_host(request, &route_config.virtual_hosts)?;
-    let (chosen_route, route_match_result) = chosen_vh
+    let (vh_index, chosen_vh) = select_virtual_host(request, &route_config.virtual_hosts)?;
+    let (route_index, (chosen_route, route_match_result)) = chosen_vh
         .routes
         .iter()
         .map(|route| (route, route.route_match.match_request(request)))
-        .find(|(_, match_result)| match_result.matched())?;
-    Some(CachedRoute { route: chosen_route, route_match: route_match_result, vh: chosen_vh })
+        .enumerate()
+        .find(|(_, (_, match_result))| match_result.matched())?;
+    Some(CachedRoute { route: chosen_route, route_match: route_match_result, vh: chosen_vh, vh_index, route_index })
 }
 
-impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for Arc<RouteConfiguration> {
+impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for &RoutingState {
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
@@ -1042,7 +1078,7 @@ impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for Arc<R
         mut request: Request<OrionRequestBody>,
         connection_manager: &HttpConnectionManager,
     ) -> Result<Response<OrionResponseBody>> {
-        let route_conf = &self;
+        let route_conf = &self.route_configuration;
         let mut cached_route = match_request_route(&request, route_conf);
         let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
 
@@ -1058,8 +1094,9 @@ impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for Arc<R
                 ));
             };
 
-            let guard = connection_manager.http_filters_per_route.load();
-            let route_filters = guard.get(&chosen_route.route.route_match);
+            let route_filters = self
+                .http_filters_per_route
+                .get(&RouteIndex { vh_idx: chosen_route.vh_index, route_idx: chosen_route.route_index });
 
             let Some(route_filters) = route_filters else {
                 break 'filter_loop FilterDecision::Continue;
@@ -1182,13 +1219,15 @@ impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for Arc<R
                     }
 
                     #[cfg(feature = "access-log")]
-                    if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
-                        crate::access_log::AccessLogHook::IncomingResponse,
-                        response.headers(),
-                        &mut ctx.tx.trans_state.lock().loggers,
-                    ) {
-                        tracing::warn!("Failed to process access log header for IncomingResponse: {err}");
-                    }
+                    ctx.tx.with_loggers(|loggers| {
+                        if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
+                            crate::access_log::AccessLogHook::IncomingResponse,
+                            response.headers(),
+                            loggers,
+                        ) {
+                            tracing::warn!("Failed to process access log header for IncomingResponse: {err}");
+                        }
+                    });
 
                     apply_mutations_on_response(
                         &mut response,
@@ -1210,6 +1249,18 @@ impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for Arc<R
         }
 
         Ok(response)
+    }
+}
+
+impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for StdArc<RoutingState> {
+    #[inline]
+    async fn to_response(
+        self,
+        ctx: &RequestCtx,
+        request: Request<OrionRequestBody>,
+        connection_manager: &HttpConnectionManager,
+    ) -> Result<Response<OrionResponseBody>> {
+        self.as_ref().to_response(ctx, request, connection_manager).await
     }
 }
 
@@ -1273,12 +1324,12 @@ fn apply_mutations_on_response<B>(
 #[derive(Clone, Debug)]
 pub struct RequestCtx {
     pub conn: ConnMeta,
-    pub tx: Arc<TransactionContext>,
+    pub tx: PooledTxCtx,
 }
 
 impl RequestCtx {
     #[inline]
-    pub fn new(conn: ConnMeta, tx: Arc<TransactionContext>) -> Self {
+    pub fn new(conn: ConnMeta, tx: PooledTxCtx) -> Self {
         Self { conn, tx }
     }
 
@@ -1295,7 +1346,7 @@ impl RequestCtx {
 
 impl Default for RequestCtx {
     fn default() -> Self {
-        Self { conn: ConnMeta::default(), tx: Arc::new(TransactionContext::default()) }
+        Self { conn: ConnMeta::default(), tx: PooledTxCtx::default() }
     }
 }
 
@@ -1315,14 +1366,14 @@ impl<B> HttpRequest<B> {
 /// `HttpRequest` after route configuration has been resolved.
 pub struct RoutedHttpRequest<B> {
     pub http: HttpRequest<B>,
-    pub route_conf: Arc<RouteConfiguration>,
+    pub routing_state: StdArc<RoutingState>,
 }
 
 #[derive(Clone)]
 pub struct TransactionLifecycleSvc<S> {
     conn: ConnMeta,
     manager: Arc<HttpConnectionManager>,
-    inner: S,
+    inner: Arc<S>,
 }
 
 impl<S> TransactionLifecycleSvc<S> {
@@ -1332,12 +1383,12 @@ impl<S> TransactionLifecycleSvc<S> {
         stream_metrics: Arc<StreamMetrics>,
         inner: S,
     ) -> Self {
-        Self { conn: ConnMeta::new(downstream, stream_metrics), manager, inner }
+        Self { conn: ConnMeta::new(downstream, stream_metrics), manager, inner: Arc::new(inner) }
     }
 }
 
 impl Service<Request<Incoming>> for TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
-    type Response = Response<OrionRequestBody>;
+    type Response = Response<OrionClientBody>;
     type Error = Box<dyn std::error::Error + Send + Sync>;
     type Future = BoxFuture<'static, StdResult<Self::Response, Self::Error>>;
 
@@ -1392,11 +1443,10 @@ impl Service<Request<Incoming>> for TransactionLifecycleSvc<TransactionSvc<HttpP
         }
 
         #[cfg(feature = "metrics")]
-        let sni = conn.downstream.sni.clone();
-
-        #[cfg(feature = "metrics")]
-        let user_partition_key =
-            metrics::extract_user_partition_key((request.headers(), sni.as_ref()), metrics::USER_KEY.source());
+        let user_partition_key = metrics::extract_user_partition_key(
+            (request.headers(), conn.downstream.sni.as_ref()),
+            metrics::USER_KEY.source(),
+        );
 
         #[cfg(not(feature = "metrics"))]
         let user_partition_key = None;
@@ -1404,7 +1454,7 @@ impl Service<Request<Incoming>> for TransactionLifecycleSvc<TransactionSvc<HttpP
         #[allow(clippy::let_unit_value)]
         let shard_id = get_shard_id!();
 
-        let trans_ctx = Arc::new(TransactionContext::new(
+        let trans_ctx = PooledTxCtx::acquire(
             request_id,
             user_partition_key,
             shard_id,
@@ -1416,17 +1466,17 @@ impl Service<Request<Incoming>> for TransactionLifecycleSvc<TransactionSvc<HttpP
             upstream_tracing_key,
             #[cfg(feature = "tracing")]
             server_span,
-        ));
+        );
 
         #[cfg(feature = "tracing")]
         if let Some(trace_ctx) = trans_ctx.trace_ctx.as_ref() {
             self.manager.http_tracer.update_tracing_headers(trace_ctx, &mut request);
         }
 
-        let ctx = RequestCtx::new(conn, Arc::clone(&trans_ctx));
+        let ctx = RequestCtx::new(conn, trans_ctx.clone());
         let http_req = HttpRequest { request, ctx };
 
-        let inner = self.inner.clone();
+        let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             let response = inner.call(http_req).await;
 
@@ -1452,34 +1502,23 @@ impl Service<Request<Incoming>> for TransactionLifecycleSvc<TransactionSvc<HttpP
 #[derive(Clone)]
 pub struct TransactionSvc<S> {
     manager: Arc<HttpConnectionManager>,
-    router: tokio::sync::watch::Receiver<Option<Arc<RouteConfiguration>>>,
     inner: S,
 }
 
 impl<S> TransactionSvc<S> {
-    pub fn new(
-        manager: Arc<HttpConnectionManager>,
-        router: tokio::sync::watch::Receiver<Option<Arc<RouteConfiguration>>>,
-        inner: S,
-    ) -> Self {
-        Self { manager, router, inner }
+    pub fn new(manager: Arc<HttpConnectionManager>, inner: S) -> Self {
+        Self { manager, inner }
     }
 }
 
 impl TransactionSvc<HttpPipelineSvc> {
     #[allow(clippy::too_many_lines)]
-    async fn call(&self, req: HttpRequest<Incoming>) -> StdResult<Response<OrionRequestBody>, crate::Error> {
+    async fn call(&self, req: HttpRequest<Incoming>) -> StdResult<Response<OrionClientBody>, crate::Error> {
         let HttpRequest { request, ctx } = req;
         let listener_name = self.manager.listener_name;
-        let route_conf = self.router.borrow().clone();
+        let routing_state = (*self.manager.routing_state.load()).clone();
 
-        with_metric!(
-            http::DOWNSTREAM_RQ_TOTAL,
-            add,
-            1,
-            ctx.tx.shard_id(),
-            &[KeyValue::new("listener", listener_name)]
-        );
+        with_metric!(http::DOWNSTREAM_RQ_TOTAL, add, 1, ctx.tx.shard_id(), &[KeyValue::new("listener", listener_name)]);
         with_metric!(
             http::DOWNSTREAM_RQ_ACTIVE,
             add,
@@ -1504,13 +1543,15 @@ impl TransactionSvc<HttpPipelineSvc> {
         }
 
         #[cfg(feature = "access-log")]
-        if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
-            crate::access_log::AccessLogHook::IncomingRequest,
-            request.headers(),
-            &mut ctx.tx.trans_state.lock().loggers,
-        ) {
-            tracing::warn!("Failed to process access log header for IncomingRequest: {err}");
-        }
+        ctx.tx.with_loggers(|loggers| {
+            if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
+                crate::access_log::AccessLogHook::IncomingRequest,
+                request.headers(),
+                loggers,
+            ) {
+                tracing::warn!("Failed to process access log header for IncomingRequest: {err}");
+            }
+        });
 
         #[allow(unused_variables)]
         let shard_id = ctx.tx.shard_id();
@@ -1523,7 +1564,7 @@ impl TransactionSvc<HttpPipelineSvc> {
 
         eval_http_init_context(&request, &ctx.tx, Some(ctx.conn.downstream.as_ref()));
 
-        let Some(route_conf) = route_conf else {
+        let Some(routing_state) = routing_state else {
             return Ok(handle_route_conf_not_found(
                 request.version(),
                 &ctx.tx,
@@ -1546,10 +1587,8 @@ impl TransactionSvc<HttpPipelineSvc> {
         }
 
         let stream_metrics = Arc::clone(&ctx.conn.stream_metrics);
-        #[cfg(any(feature = "access-log", feature = "metrics"))]
-        let stream_metrics_for_flush = Arc::clone(&stream_metrics);
         #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
-        let trans_ctx = Arc::clone(&ctx.tx);
+        let trans_ctx = ctx.tx.clone();
         let http = HttpRequest { request, ctx }.map_body(|body| {
             let body = TimeoutBody::new(req_timeout, PolyBody::from(body));
             InstrumentedBody::new(
@@ -1565,47 +1604,26 @@ impl TransactionSvc<HttpPipelineSvc> {
                         let duration = trans_ctx.start_instant.elapsed();
 
                         #[cfg(feature = "access-log")]
-                        with_access_log!(
-                            &mut trans_state.loggers,
-                            HttpRequestDurationContext { duration, tx_duration: duration }
-                        );
+                        if let Some(loggers) = trans_state.loggers.as_mut() {
+                            with_access_log!(
+                                loggers.as_mut(),
+                                HttpRequestDurationContext { duration, tx_duration: duration }
+                            );
+                        }
 
                         if trans_ctx.trans_phase.is_complete() {
-                            let trans_ctx_cb = Arc::clone(&trans_ctx);
-                            let body_error_cb = body_error.clone();
                             drop(trans_state);
-
-                            stream_metrics.add_flush_callback(Box::new(move || {
-                                #[allow(unused_mut)]
-                                let mut trans_state = trans_ctx_cb.trans_state.lock();
-                                #[allow(unused_variables)]
-                                let ctx_bytes = trans_state.bytes;
-                                #[allow(unused_variables)]
-                                let ctx_flags = trans_state.flags;
-                                #[allow(unused_variables)]
-                                let ctx_event = trans_state.event.clone();
-
-                                eval_http_finish_context(FinishContextParams {
-                                    stream_metrics: &stream_metrics_for_flush,
-                                    listener_name,
-                                    user_partition_key: trans_ctx_cb.user_partition_key,
-                                    filterchain_id,
-                                    bytes_received: body_bytes,
-                                    bytes_sent: ctx_bytes,
-                                    trans_start_time: trans_ctx_cb.start_instant,
-                                    #[cfg(feature = "metrics")]
-                                    m_ctx: MetricsFinishContext { shard_id: trans_ctx_cb.shard_id() },
-                                    #[cfg(feature = "access-log")]
-                                    al_ctx: AccessLogFinishContext {
-                                        event: EventInfo {
-                                            body_kind: BodyKind::Request,
-                                            event_kind: ctx_event.or(body_error_cb),
-                                            response_flags: ctx_flags | body_flags,
-                                        },
-                                        access_loggers: trans_state.loggers.as_mut(),
-                                    },
-                                });
-                            }));
+                            stream_metrics.add_flush_callback(HttpTxnFlush {
+                                trans_ctx: trans_ctx.clone(),
+                                listener_name,
+                                filterchain_id,
+                                body_bytes,
+                                body_is_response: false,
+                                #[cfg(feature = "access-log")]
+                                extra_event: body_error,
+                                #[cfg(feature = "access-log")]
+                                extra_flags: body_flags,
+                            });
                         } else {
                             trans_state.bytes = body_bytes;
                             #[cfg(feature = "access-log")]
@@ -1627,8 +1645,8 @@ impl TransactionSvc<HttpPipelineSvc> {
         });
 
         #[cfg(feature = "access-log")]
-        let trans_ctx_clone = Arc::clone(&http.ctx.tx);
-        let response = self.inner.call(RoutedHttpRequest { http, route_conf }).await;
+        let trans_ctx_clone = http.ctx.tx.clone();
+        let response = self.inner.call(RoutedHttpRequest { http, routing_state }).await;
 
         #[cfg(feature = "metrics")]
         if let Ok(response) = &response {
@@ -1649,13 +1667,15 @@ impl TransactionSvc<HttpPipelineSvc> {
 
         #[cfg(feature = "access-log")]
         if let Ok(response) = &response {
-            if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
-                crate::access_log::AccessLogHook::DownstreamResponse,
-                response.headers(),
-                &mut trans_ctx_clone.trans_state.lock().loggers,
-            ) {
-                tracing::warn!("Failed to process access log header for DownstreamResponse: {err}");
-            }
+            trans_ctx_clone.with_loggers(|loggers| {
+                if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
+                    crate::access_log::AccessLogHook::DownstreamResponse,
+                    response.headers(),
+                    loggers,
+                ) {
+                    tracing::warn!("Failed to process access log header for DownstreamResponse: {err}");
+                }
+            });
         }
         response
     }
@@ -1683,34 +1703,85 @@ fn eval_http_init_context<R>(
         let server_name = metadata.and_then(|md| md.sni.as_ref().map(SmolStr::as_str));
 
         #[cfg(feature = "access-log")]
-        with_access_log!(
-            &mut trans_ctx.trans_state.lock().loggers,
-            InitHttpContext {
-                start_time: std::time::SystemTime::now(),
-                downstream_request: request,
-                request_head_size: request_head_size(request),
-                trace_id,
-                server_name,
-                socket_address: SocketAddrContext {
-                    downstream_local_addr: metadata.map(|md| md.connection.local_address()),
-                    downstream_peer_addr: metadata.map(|md| md.connection.peer_address()),
-                    upstream_local_addr: None,
-                    upstream_peer_addr: None,
+        trans_ctx.with_loggers(|loggers| {
+            with_access_log!(
+                loggers,
+                InitHttpContext {
+                    start_time: std::time::SystemTime::now(),
+                    downstream_request: request,
+                    request_head_size: request_head_size(request),
+                    trace_id,
+                    server_name,
+                    socket_address: SocketAddrContext {
+                        downstream_local_addr: metadata.map(|md| md.connection.local_address()),
+                        downstream_peer_addr: metadata.map(|md| md.connection.peer_address()),
+                        upstream_local_addr: None,
+                        upstream_peer_addr: None,
+                    }
                 }
-            }
-        );
+            );
+        });
     }
 }
 
 #[cfg(feature = "access-log")]
 struct AccessLogFinishContext<'a> {
     event: EventInfo,
-    access_loggers: &'a mut Vec<LogFormatter>,
+    access_loggers: Option<&'a mut [LogFormatter]>,
 }
 
 #[cfg(feature = "metrics")]
 struct MetricsFinishContext {
     shard_id: ShardId,
+}
+
+#[cfg(any(feature = "access-log", feature = "metrics"))]
+pub(crate) struct HttpTxnFlush {
+    trans_ctx: PooledTxCtx,
+    listener_name: &'static str,
+    filterchain_id: u64,
+    body_bytes: u64,
+    body_is_response: bool,
+    #[cfg(feature = "access-log")]
+    extra_event: Option<EventKind>,
+    #[cfg(feature = "access-log")]
+    extra_flags: ResponseFlags,
+}
+
+#[cfg(any(feature = "access-log", feature = "metrics"))]
+impl OnFlush for HttpTxnFlush {
+    fn run(self, stream_metrics: &StreamMetrics) {
+        let mut trans_state = self.trans_ctx.trans_state.lock();
+        let ctx_bytes = trans_state.bytes;
+        #[cfg(feature = "access-log")]
+        let ctx_flags = trans_state.flags;
+        #[cfg(feature = "access-log")]
+        let ctx_event = trans_state.event.clone();
+
+        let (bytes_received, bytes_sent) =
+            if self.body_is_response { (ctx_bytes, self.body_bytes) } else { (self.body_bytes, ctx_bytes) };
+
+        eval_http_finish_context(FinishContextParams {
+            stream_metrics,
+            listener_name: self.listener_name,
+            user_partition_key: self.trans_ctx.user_partition_key,
+            filterchain_id: self.filterchain_id,
+            bytes_received,
+            bytes_sent,
+            trans_start_time: self.trans_ctx.start_instant,
+            #[cfg(feature = "metrics")]
+            m_ctx: MetricsFinishContext { shard_id: self.trans_ctx.shard_id() },
+            #[cfg(feature = "access-log")]
+            al_ctx: AccessLogFinishContext {
+                event: EventInfo {
+                    body_kind: if self.body_is_response { BodyKind::Response } else { BodyKind::Request },
+                    event_kind: ctx_event.or(self.extra_event),
+                    response_flags: ctx_flags | self.extra_flags,
+                },
+                access_loggers: trans_state.loggers.as_mut().map(|b| &mut **b),
+            },
+        });
+    }
 }
 
 #[cfg(any(feature = "access-log", feature = "metrics"))]
@@ -1743,6 +1814,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
 
     #[cfg(feature = "metrics")]
     if let Some(user_partition_key) = params.user_partition_key {
+        let user_attr_name = metrics::USER_KEY.attribute_name().unwrap_or("user");
         with_histogram!(
             user::LATENCY,
             record,
@@ -1751,7 +1823,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
                 latency.as_millis() as u64
             },
             params.m_ctx.shard_id,
-            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
+            &[KeyValue::new(user_attr_name, user_partition_key)]
         );
     }
 
@@ -1760,7 +1832,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
 
     #[cfg(feature = "access-log")]
     with_access_log!(
-        &mut *params.al_ctx.access_loggers,
+        params.al_ctx.access_loggers.as_mut().map(|x| &mut **x).unwrap_or(&mut []),
         FinishContext {
             duration,
             bytes_received: params.bytes_received,
@@ -1790,7 +1862,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
     );
 
     #[cfg(feature = "access-log")]
-    let mut loggers: Vec<LogFormatter> = std::mem::take(params.al_ctx.access_loggers);
+    let mut loggers: Option<&mut [LogFormatter]> = params.al_ctx.access_loggers;
 
     #[cfg(feature = "metrics")]
     let user_partition_key = params.user_partition_key;
@@ -1819,33 +1891,33 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
 
     #[cfg(feature = "metrics")]
     if let Some(user_partition_key) = user_partition_key {
+        let user_attr_name = metrics::USER_KEY.attribute_name().unwrap_or("user");
         with_metric!(
             user::BYTES_TX,
             add,
             wire_bytes_received,
             shard_id,
-            &[
-                KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key),
-                KeyValue::new("listener", params.listener_name)
-            ]
+            &[KeyValue::new(user_attr_name, user_partition_key), KeyValue::new("listener", params.listener_name)]
         );
         with_metric!(
             user::BYTES_RX,
             add,
             wire_bytes_sent,
             shard_id,
-            &[
-                KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key),
-                KeyValue::new("listener", params.listener_name)
-            ]
+            &[KeyValue::new(user_attr_name, user_partition_key), KeyValue::new("listener", params.listener_name)]
         );
     }
 
     #[cfg(feature = "access-log")]
-    {
-        with_access_log!(&mut loggers, WireContext { wire_bytes_received, wire_bytes_sent });
-        let messages = loggers.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-        log_access_blocking(Target::ListenerFilterChain(params.listener_name.into(), params.filterchain_id), messages);
+    if let Some(loggers) = loggers {
+        if !loggers.is_empty() {
+            with_access_log!(&mut *loggers, WireContext { wire_bytes_received, wire_bytes_sent });
+            let messages = loggers.iter_mut().map(|l| l.clone().into_message()).collect::<Vec<_>>();
+            let _ = blocking_log_access(
+                Target::ListenerFilterChain(params.listener_name.into(), params.filterchain_id),
+                messages,
+            );
+        }
     }
 }
 
@@ -1854,12 +1926,12 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
 #[allow(unused_variables)]
 fn instrument_early_failure_response(
     response: Response<crate::OrionResponseBody>,
-    trans_ctx: &Arc<TransactionContext>,
+    trans_ctx: &PooledTxCtx,
     stream_metrics: Option<&Arc<StreamMetrics>>,
     listener_name: &'static str,
     user_partition_key: Option<&'static str>,
     filterchain_id: u64,
-) -> Response<OrionRequestBody> {
+) -> Response<OrionClientBody> {
     #[cfg(feature = "access-log")]
     let first_byte_instant = Instant::now();
 
@@ -1873,10 +1945,12 @@ fn instrument_early_failure_response(
     }
 
     #[cfg(feature = "access-log")]
-    with_access_log!(
-        &mut trans_ctx.trans_state.lock().loggers,
-        DownstreamResponseContext { response: &response, response_head_size: response_head_size(&response) }
-    );
+    trans_ctx.with_loggers(|loggers| {
+        with_access_log!(
+            loggers,
+            DownstreamResponseContext { response: &response, response_head_size: response_head_size(&response) }
+        );
+    });
 
     #[cfg(feature = "access-log")]
     let (initial_flags, initial_event) = {
@@ -1885,11 +1959,9 @@ fn instrument_early_failure_response(
     };
 
     #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
-    let trans_ctx = Arc::clone(trans_ctx);
+    let trans_ctx = trans_ctx.clone();
 
     let stream_metrics = stream_metrics.cloned();
-    #[cfg(any(feature = "access-log", feature = "metrics"))]
-    let stream_metrics_for_flush = stream_metrics.clone();
     response.map(|body| {
         InstrumentedBody::new(
             BodyKind::Response,
@@ -1910,47 +1982,24 @@ fn instrument_early_failure_response(
                         #[allow(unused_variables)]
                         let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
 
-                        with_access_log!(&mut trans_state.loggers, HttpResponseDurationContext { duration, tx_duration })
+                        if let Some(loggers) = trans_state.loggers.as_mut() {
+                            with_access_log!(loggers.as_mut(), HttpResponseDurationContext { duration, tx_duration })
+                        }
                     };
 
                     if trans_ctx.trans_phase.is_complete() {
-                        let trans_ctx_cb = Arc::clone(&trans_ctx);
-                        #[cfg(feature = "access-log")]
-                        let initial_event_cb = initial_event.clone();
-                        let body_error_cb = body_error.clone();
                         drop(trans_state);
-
-                        stream_metrics.add_flush_callback(Box::new(move || {
-                            #[allow(unused_mut)]
-                            let mut trans_state = trans_ctx_cb.trans_state.lock();
-                            #[allow(unused_variables)]
-                            let ctx_bytes = trans_state.bytes;
-                            #[allow(unused_variables)]
-                            let ctx_flags = trans_state.flags;
-                            #[allow(unused_variables)]
-                            let ctx_event = trans_state.event.clone();
-
-                            eval_http_finish_context(FinishContextParams {
-                                stream_metrics: stream_metrics_for_flush.as_ref().unwrap(),
-                                listener_name,
-                                user_partition_key: trans_ctx_cb.user_partition_key,
-                                filterchain_id,
-                                bytes_received: ctx_bytes,
-                                bytes_sent: body_bytes,
-                                trans_start_time: trans_ctx_cb.start_instant,
-                                #[cfg(feature = "metrics")]
-                                m_ctx: MetricsFinishContext { shard_id: trans_ctx_cb.shard_id() },
-                                #[cfg(feature = "access-log")]
-                                al_ctx: AccessLogFinishContext {
-                                    event: EventInfo {
-                                        body_kind: BodyKind::Response,
-                                        event_kind: ctx_event.or(initial_event_cb).or(body_error_cb),
-                                        response_flags: ctx_flags | initial_flags | body_flags,
-                                    },
-                                    access_loggers: trans_state.loggers.as_mut(),
-                                },
-                            });
-                        }));
+                        stream_metrics.add_flush_callback(HttpTxnFlush {
+                            trans_ctx: trans_ctx.clone(),
+                            listener_name,
+                            filterchain_id,
+                            body_bytes,
+                            body_is_response: true,
+                            #[cfg(feature = "access-log")]
+                            extra_event: initial_event.clone().or(body_error),
+                            #[cfg(feature = "access-log")]
+                            extra_flags: initial_flags | body_flags,
+                        });
                     } else {
                         trans_state.bytes = body_bytes;
                         #[cfg(feature = "access-log")]
@@ -1981,83 +2030,88 @@ const MAX_URI_LENGTH: usize = 2048;
 #[allow(clippy::too_many_arguments)]
 fn reject_request_if_invalid(
     request: &Request<Incoming>,
-    trans_ctx: &Arc<TransactionContext>,
+    trans_ctx: &PooledTxCtx,
     stream_metrics: Option<&Arc<StreamMetrics>>,
     listener_name: &'static str,
     user_partition_key: Option<&'static str>,
     filterchain_id: u64,
-) -> Option<Response<crate::OrionRequestBody>> {
+) -> Option<Response<crate::OrionClientBody>> {
     // check if request has no host header, or if it has multiple ones (invalid for http1.1)
     //
-    let response = if matches!(request.version(), ::http::Version::HTTP_11) {
-        match request.headers().get_all(HOST).iter().count() {
-            1 => None,
-            n => {
-                debug!("Invalid number of host headers: {}", n);
-                Some(
-                    SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into())
-                        .with_close_connection(true)
-                        .into_response(request.version()),
-                )
-            },
+    if matches!(request.version(), ::http::Version::HTTP_11) {
+        let count = request.headers().get_all(HOST).iter().count();
+        if count != 1 {
+            debug!("Invalid number of host headers: {}", count);
+            let r = SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into())
+                .with_close_connection(true)
+                .into_response(request.version());
+            return Some(instrument_early_failure_response(
+                r,
+                trans_ctx,
+                stream_metrics,
+                listener_name,
+                user_partition_key,
+                filterchain_id,
+            ));
         }
-    } else {
-        None
-    };
+    }
 
     // check if method is too long...
     //
-    let response = response.or_else(|| {
-        (request.method().as_str().len() > MAX_METHOD_LENGTH).then(|| {
-            debug!("Too long method: {} bytes", request.method().as_str());
-            SyntheticHttpResponse::custom_error(
-                StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
-                None,
-                EventFailure::DirectResponse.into(),
-                ResponseFlags::default(),
-            )
-            .into_response(request.version())
-        })
-    });
-
-    //check if uri/line is too long...
-    //
-    let response = response.or_else(|| {
-        let mut counter = LengthCounter(0);
-        _ = write!(&mut counter, "{}", request.uri());
-        (counter.0 > MAX_URI_LENGTH).then(|| {
-            debug!("Too long uri: {} bytes", counter.0);
-            SyntheticHttpResponse::custom_error(
-                StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
-                None,
-                EventFailure::DirectResponse.into(),
-                ResponseFlags::default(),
-            )
-            .into_response(request.version())
-        })
-    });
-
-    response.map(|r| {
-        instrument_early_failure_response(
+    if request.method().as_str().len() > MAX_METHOD_LENGTH {
+        debug!("Too long method: {} bytes", request.method().as_str());
+        let r = SyntheticHttpResponse::custom_error(
+            StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+            None,
+            EventFailure::DirectResponse.into(),
+            ResponseFlags::default(),
+        )
+        .into_response(request.version());
+        return Some(instrument_early_failure_response(
             r,
             trans_ctx,
             stream_metrics,
             listener_name,
             user_partition_key,
             filterchain_id,
+        ));
+    }
+
+    // check if uri/line is too long...
+    //
+    let mut counter = LengthCounter(0);
+    let _ = write!(&mut counter, "{}", request.uri());
+    if counter.0 > MAX_URI_LENGTH {
+        debug!("Too long uri: {} bytes", counter.0);
+        let r = SyntheticHttpResponse::custom_error(
+            StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+            None,
+            EventFailure::DirectResponse.into(),
+            ResponseFlags::default(),
         )
-    })
+        .into_response(request.version());
+        return Some(instrument_early_failure_response(
+            r,
+            trans_ctx,
+            stream_metrics,
+            listener_name,
+            user_partition_key,
+            filterchain_id,
+        ));
+    }
+
+    None
 }
 
 #[allow(clippy::too_many_arguments)]
 fn handle_route_conf_not_found(
     version: ::http::Version,
-    trans_ctx: &Arc<TransactionContext>,
+    trans_ctx: &PooledTxCtx,
     stream_metrics: Option<&Arc<StreamMetrics>>,
     listener_name: &'static str,
     user_partition_key: Option<&'static str>,
     filterchain_id: u64,
-) -> Response<crate::OrionRequestBody> {
+) -> Response<crate::OrionClientBody> {
     // immediately return a SyntheticHttpResponse, and calculate the first byte instant
     let response = SyntheticHttpResponse::not_found(
         EventFailure::RouteNotFound.into(),
@@ -2094,16 +2148,16 @@ mod tests {
         assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), None);
 
         let request = Request::builder().header("host", "domain1.com:8000").body(()).unwrap();
-        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some(&vh1));
+        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some((0, &vh1)));
 
         let request = Request::builder().header("host", "domain1.com").body(()).unwrap();
-        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some(&vh1));
+        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some((0, &vh1)));
 
         let request = Request::builder().header("host", "domain3.com").body(()).unwrap();
-        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some(&vh3));
+        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some((2, &vh3)));
 
         let request = Request::builder().header("host", "blah.domain3.com").body(()).unwrap();
-        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some(&vh3));
+        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some((2, &vh3)));
 
         let request = Request::builder().header("host", "blah.domain3.com:8000").body(()).unwrap();
         assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), None);

@@ -37,9 +37,9 @@ use std::{
     borrow::Cow,
     cell::RefCell,
     collections::{btree_map::Entry as BTreeEntry, BTreeMap},
-    sync::Arc,
 };
 use tracing::{debug, warn};
+use triomphe::Arc;
 
 type ClusterID = &'static str;
 type ClustersMap = BTreeMap<ClusterID, ClusterType>;

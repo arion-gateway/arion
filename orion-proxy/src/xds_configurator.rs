@@ -40,7 +40,7 @@ use pingora_timeout::fast_timeout::fast_timeout;
 use smol_str::SmolStr;
 #[cfg(feature = "tracing")]
 use smol_str::ToSmolStr;
-use std::{sync::Arc, time::Duration};
+use std::{sync::Arc as StdArc, time::Duration};
 use tokio::{
     select,
     sync::{
@@ -49,6 +49,7 @@ use tokio::{
     },
 };
 use tracing::{debug, info, warn};
+use triomphe::Arc;
 
 const RETRY_INTERVAL: Duration = Duration::from_secs(10);
 const ROUTE_UPDATE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -59,7 +60,7 @@ pub struct XdsConfigurationHandler {
     listeners_senders: Vec<Sender<ListenerConfigurationChange>>,
     route_senders: Vec<Sender<RouteConfigurationChange>>,
     health_updates_receiver: Receiver<EndpointHealthUpdate>,
-    extension_handlers: Vec<Arc<dyn XdsExtensionHandler>>,
+    extension_handlers: Vec<StdArc<dyn XdsExtensionHandler>>,
 }
 
 impl XdsConfigurationHandler {
@@ -83,7 +84,7 @@ impl XdsConfigurationHandler {
         }
     }
 
-    pub fn with_extension_handlers(mut self, handlers: Vec<Arc<dyn XdsExtensionHandler>>) -> Self {
+    pub fn with_extension_handlers(mut self, handlers: Vec<StdArc<dyn XdsExtensionHandler>>) -> Self {
         self.extension_handlers = handlers;
         self
     }
@@ -135,7 +136,7 @@ impl XdsConfigurationHandler {
     pub async fn connect(
         node: &Node,
         ads_cluster_names: Vec<String>,
-    ) -> Result<Option<(DeltaDiscoveryClient, Arc<DeltaDiscoverySubscriptionManager>, ChildTask<()>)>> {
+    ) -> Result<Option<(DeltaDiscoveryClient, StdArc<DeltaDiscoverySubscriptionManager>, ChildTask<()>)>> {
         if ads_cluster_names.is_empty() {
             info!("No xDS clusters configured");
             return Ok(None);
@@ -157,7 +158,7 @@ impl XdsConfigurationHandler {
         })
         .into();
 
-        Ok(Some((client, Arc::new(subscription_manager), worker_task)))
+        Ok(Some((client, StdArc::new(subscription_manager), worker_task)))
     }
 
     pub async fn run_loop(

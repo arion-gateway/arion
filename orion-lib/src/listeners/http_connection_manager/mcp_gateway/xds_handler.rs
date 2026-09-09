@@ -1,7 +1,7 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::{Arc, Once, OnceLock, Weak},
+    sync::{Arc as StdArc, Once, OnceLock, Weak},
 };
 
 use dashmap::DashMap;
@@ -31,20 +31,20 @@ const SUPPORTED_TYPE_URLS: &[&str] = &[MCP_TOOL_TYPE_URL, MCP_DYNAMIC_SERVER_TYP
 
 type SubscriptionsByScope = DashMap<SmolStr, Vec<Weak<ToolsRegistry>>, ahash::RandomState>;
 
-static MCP_XDS_HANDLER: OnceLock<Arc<McpXdsHandler>> = OnceLock::new();
+static MCP_XDS_HANDLER: OnceLock<StdArc<McpXdsHandler>> = OnceLock::new();
 static PENDING_MCP_XDS_SUBSCRIPTIONS: OnceLock<SubscriptionsByScope> = OnceLock::new();
 
-pub fn init_mcp_xds_handler(subscriber: Arc<DeltaDiscoverySubscriptionManager>) -> Arc<McpXdsHandler> {
-    let handler = Arc::clone(MCP_XDS_HANDLER.get_or_init(|| Arc::new(McpXdsHandler::new(subscriber))));
+pub fn init_mcp_xds_handler(subscriber: StdArc<DeltaDiscoverySubscriptionManager>) -> StdArc<McpXdsHandler> {
+    let handler = StdArc::clone(MCP_XDS_HANDLER.get_or_init(|| StdArc::new(McpXdsHandler::new(subscriber))));
     drain_pending_subscriptions(pending_subscriptions(), &handler);
     handler
 }
 
-pub fn get_mcp_xds_handler() -> Option<&'static Arc<McpXdsHandler>> {
+pub fn get_mcp_xds_handler() -> Option<&'static StdArc<McpXdsHandler>> {
     MCP_XDS_HANDLER.get()
 }
 
-pub fn subscribe_for_updates(scope: SmolStr, registry: &Arc<ToolsRegistry>) {
+pub fn subscribe_for_updates(scope: SmolStr, registry: &StdArc<ToolsRegistry>) {
     if let Some(handler) = get_mcp_xds_handler() {
         handler.register(scope, registry);
     } else {
@@ -56,7 +56,7 @@ pub fn subscribe_for_updates(scope: SmolStr, registry: &Arc<ToolsRegistry>) {
     }
 }
 
-pub fn unsubscribe_from_updates(scope: &str, registry: &Arc<ToolsRegistry>) {
+pub fn unsubscribe_from_updates(scope: &str, registry: &StdArc<ToolsRegistry>) {
     if let Some(handler) = get_mcp_xds_handler() {
         handler.unregister(scope, registry);
     }
@@ -67,14 +67,14 @@ fn pending_subscriptions() -> &'static SubscriptionsByScope {
     PENDING_MCP_XDS_SUBSCRIPTIONS.get_or_init(|| DashMap::with_hasher(ahash::RandomState::new()))
 }
 
-fn queue_subscription(subscriptions: &SubscriptionsByScope, scope: SmolStr, registry: &Arc<ToolsRegistry>) {
-    subscriptions.entry(scope).or_default().push(Arc::downgrade(registry));
+fn queue_subscription(subscriptions: &SubscriptionsByScope, scope: SmolStr, registry: &StdArc<ToolsRegistry>) {
+    subscriptions.entry(scope).or_default().push(StdArc::downgrade(registry));
 }
 
-fn remove_subscription(subscriptions: &SubscriptionsByScope, scope: &str, registry: &Arc<ToolsRegistry>) {
+fn remove_subscription(subscriptions: &SubscriptionsByScope, scope: &str, registry: &StdArc<ToolsRegistry>) {
     let Some(mut entry) = subscriptions.get_mut(scope) else { return };
     entry.retain(|weak| match weak.upgrade() {
-        Some(arc) => !Arc::ptr_eq(&arc, registry),
+        Some(arc) => !StdArc::ptr_eq(&arc, registry),
         None => false,
     });
     let empty = entry.is_empty();
@@ -98,12 +98,12 @@ fn drain_pending_subscriptions(subscriptions: &SubscriptionsByScope, handler: &M
 pub struct McpXdsHandler {
     // `Weak` so dropped registries self-clean without explicit unregister.
     subscriptions_by_scope: SubscriptionsByScope,
-    subscriber: Arc<DeltaDiscoverySubscriptionManager>,
+    subscriber: StdArc<DeltaDiscoverySubscriptionManager>,
     subscribe_once: Once,
 }
 
 impl McpXdsHandler {
-    pub fn new(subscriber: Arc<DeltaDiscoverySubscriptionManager>) -> Self {
+    pub fn new(subscriber: StdArc<DeltaDiscoverySubscriptionManager>) -> Self {
         Self {
             subscriptions_by_scope: DashMap::with_hasher(ahash::RandomState::new()),
             subscriber,
@@ -111,15 +111,15 @@ impl McpXdsHandler {
         }
     }
 
-    pub fn register(&self, scope: SmolStr, registry: &Arc<ToolsRegistry>) {
+    pub fn register(&self, scope: SmolStr, registry: &StdArc<ToolsRegistry>) {
         debug!(target: "mcp_gateway", "Registering TDS registry for scope: {scope}");
-        self.subscriptions_by_scope.entry(scope).or_default().push(Arc::downgrade(registry));
+        self.subscriptions_by_scope.entry(scope).or_default().push(StdArc::downgrade(registry));
         self.try_subscribe();
     }
 
     fn try_subscribe(&self) {
         self.subscribe_once.call_once(|| {
-            let sub = Arc::clone(&self.subscriber);
+            let sub = StdArc::clone(&self.subscriber);
             tokio::spawn(async move {
                 for url in SUPPORTED_TYPE_URLS {
                     if let Err(e) = sub.subscribe("*".to_owned(), TypeUrl::Extension((*url).to_owned())).await {
@@ -132,7 +132,7 @@ impl McpXdsHandler {
         });
     }
 
-    pub fn unregister(&self, scope: &str, registry: &Arc<ToolsRegistry>) {
+    pub fn unregister(&self, scope: &str, registry: &StdArc<ToolsRegistry>) {
         remove_subscription(&self.subscriptions_by_scope, scope, registry);
         debug!(target: "mcp_gateway", "Unregistered TDS registry for scope: {scope}");
     }
@@ -158,7 +158,7 @@ impl McpXdsHandler {
         Ok((&resource_id[..scope_len], name))
     }
 
-    fn live_registries(&self, scope: &str) -> Vec<Arc<ToolsRegistry>> {
+    fn live_registries(&self, scope: &str) -> Vec<StdArc<ToolsRegistry>> {
         let mut out = Vec::new();
         if let Some(mut entry) = self.subscriptions_by_scope.get_mut(scope) {
             entry.retain(|weak| match weak.upgrade() {
@@ -301,13 +301,13 @@ mod tests {
     use orion_xds::xds::client::SubscriptionEvent;
     use tokio::sync::mpsc;
 
-    fn empty_registry() -> Arc<ToolsRegistry> {
-        Arc::new(ToolsRegistry::with_config(Vec::new(), Vec::new(), None, None).unwrap())
+    fn empty_registry() -> StdArc<ToolsRegistry> {
+        StdArc::new(ToolsRegistry::with_config(Vec::new(), Vec::new(), None, None).unwrap())
     }
 
-    fn test_sub_mgr() -> (Arc<DeltaDiscoverySubscriptionManager>, mpsc::Receiver<SubscriptionEvent>) {
+    fn test_sub_mgr() -> (StdArc<DeltaDiscoverySubscriptionManager>, mpsc::Receiver<SubscriptionEvent>) {
         let (tx, rx) = mpsc::channel::<SubscriptionEvent>(8);
-        (Arc::new(DeltaDiscoverySubscriptionManager::from_sender(tx)), rx)
+        (StdArc::new(DeltaDiscoverySubscriptionManager::from_sender(tx)), rx)
     }
 
     fn stub_handler() -> McpXdsHandler {
@@ -378,7 +378,7 @@ mod tests {
 
         let queued = subscriptions.get(&scope).expect("scope should remain queued");
         assert_eq!(queued.len(), 1);
-        assert!(queued[0].upgrade().is_some_and(|arc| Arc::ptr_eq(&arc, &r2)));
+        assert!(queued[0].upgrade().is_some_and(|arc| StdArc::ptr_eq(&arc, &r2)));
     }
 
     #[tokio::test]
@@ -397,7 +397,7 @@ mod tests {
 
         assert!(subscriptions.is_empty());
         assert_eq!(scope_len(&handler, &scope), 1);
-        assert!(handler.live_registries(&scope).iter().all(|arc| Arc::ptr_eq(arc, &live)));
+        assert!(handler.live_registries(&scope).iter().all(|arc| StdArc::ptr_eq(arc, &live)));
     }
 
     #[tokio::test]
@@ -412,7 +412,7 @@ mod tests {
 
         handler.unregister(&scope, &r1);
         assert_eq!(scope_len(&handler, &scope), 1);
-        assert!(handler.live_registries(&scope).iter().all(|a| Arc::ptr_eq(a, &r2)));
+        assert!(handler.live_registries(&scope).iter().all(|a| StdArc::ptr_eq(a, &r2)));
 
         handler.unregister(&scope, &r2);
         assert!(!handler.subscriptions_by_scope.contains_key(scope.as_str()));
@@ -430,7 +430,7 @@ mod tests {
         drop(r1);
         let live = handler.live_registries(&scope);
         assert_eq!(live.len(), 1);
-        assert!(Arc::ptr_eq(&live[0], &r2));
+        assert!(StdArc::ptr_eq(&live[0], &r2));
         assert_eq!(scope_len(&handler, &scope), 1);
     }
 
@@ -467,7 +467,7 @@ mod tests {
 
         let handler = stub_handler();
         let client = embeddings::EmbeddingsClient::test_failing();
-        let registry = Arc::new(
+        let registry = StdArc::new(
             ToolsRegistry::with_config(
                 Vec::new(),
                 Vec::new(),

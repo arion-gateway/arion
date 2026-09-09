@@ -2,12 +2,14 @@ use std::{
     io,
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, LazyLock,
+        atomic::{AtomicU64, Ordering},
+        LazyLock,
     },
     task::{Context, Poll},
     time::Duration,
 };
+
+use triomphe::Arc;
 
 use atomicoption::AtomicOption;
 
@@ -19,12 +21,14 @@ use parking_lot::Mutex;
 use pin_project::pin_project;
 use quanta::Clock;
 use smallvec::SmallVec;
+use std::sync::atomic::AtomicBool;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 #[cfg(feature = "metrics")]
 use crate::{get_shard_id, metrics, with_metric};
 
-use crate::{transport::AsyncReadWriteInstrumented, utils::rewindable_stream::RewindableHeadAsyncStream};
+use super::StreamMetrics as ConnMetrics;
+use crate::utils::rewindable_stream::RewindableHeadAsyncStream;
 
 // Tracks the exact operation that caused the error
 #[derive(Debug)]
@@ -33,38 +37,48 @@ pub enum ErrorSource {
     Write(io::Error),
 }
 
-type Callback = Box<dyn FnOnce() + Send>;
-
-pub struct CallbackQueue {
-    has_pending: AtomicBool,
-    queue: Mutex<SmallVec<[Callback; 4]>>,
+pub trait OnFlush: Send + Sized + 'static {
+    fn run(self, metrics: &StreamMetrics<Self>);
 }
 
-impl CallbackQueue {
+impl OnFlush for () {
+    fn run(self, _metrics: &StreamMetrics<Self>) {}
+}
+
+pub struct CallbackQueue<T> {
+    has_pending: AtomicBool,
+    queue: Mutex<SmallVec<[T; 4]>>,
+}
+
+impl<T> CallbackQueue<T> {
     pub fn new() -> Self {
         Self { has_pending: AtomicBool::new(false), queue: Mutex::new(SmallVec::new()) }
     }
 
-    pub fn push(&self, cb: Callback) {
+    pub fn push(&self, cb: T) {
         let mut queue = self.queue.lock();
         queue.push(cb);
         self.has_pending.store(true, Ordering::Release);
     }
 
-    pub fn drain(&self) -> Option<SmallVec<[Callback; 4]>> {
-        if self.has_pending.load(Ordering::Acquire) {
-            let mut queue = self.queue.lock();
-            let rc = queue.drain(..).collect();
-            self.has_pending.store(false, Ordering::Release);
-            return Some(rc);
+    pub fn drain(&self) -> Option<SmallVec<[T; 4]>> {
+        if !self.has_pending.load(Ordering::Acquire) {
+            return None;
         }
-        None
+        let mut queue = self.queue.lock();
+        if queue.is_empty() {
+            self.has_pending.store(false, Ordering::Release);
+            return None;
+        }
+        let taken = std::mem::take(&mut *queue);
+        self.has_pending.store(false, Ordering::Release);
+        Some(taken)
     }
 }
 
 static WALL_CLOCK: LazyLock<Clock> = LazyLock::new(Clock::new);
 
-pub struct StreamMetrics {
+pub struct StreamMetrics<C: OnFlush = ()> {
     total_bytes_read: AtomicU64,
     total_bytes_written: AtomicU64,
     txn_bytes_read_start: AtomicU64,
@@ -73,19 +87,18 @@ pub struct StreamMetrics {
     requests_counter: AtomicU64,
     error: AtomicOption<ErrorSource>,
     #[allow(clippy::type_complexity)]
-    drop_fn: AtomicOption<Box<dyn FnOnce(&StreamMetrics, Duration) + Send>>,
-    #[allow(clippy::type_complexity)]
-    flush_callbacks: CallbackQueue,
+    drop_fn: AtomicOption<Box<dyn FnOnce(&StreamMetrics<C>, Duration) + Send>>,
+    flush_callbacks: CallbackQueue<C>,
     user_partition_key: AtomicOption<&'static str>,
 }
 
-impl Default for StreamMetrics {
+impl<C: OnFlush> Default for StreamMetrics<C> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl std::fmt::Debug for StreamMetrics {
+impl<C: OnFlush> std::fmt::Debug for StreamMetrics<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let error = match self.error.as_ref(Ordering::Relaxed) {
             None => None,
@@ -101,13 +114,12 @@ impl std::fmt::Debug for StreamMetrics {
             .field("requests_counter", &self.requests_counter)
             .field("error", &error)
             .field("drop_fn", &self.drop_fn.is_some(Ordering::Relaxed))
-            .field("flush_callbacks", &"...")
             .field("user_partition_key", &user_partition_key)
             .finish()
     }
 }
 
-impl Drop for StreamMetrics {
+impl<C: OnFlush> Drop for StreamMetrics<C> {
     fn drop(&mut self) {
         self.on_flush();
         if let Some(drop_fn) = self.drop_fn.take(Ordering::Acquire) {
@@ -127,14 +139,14 @@ impl Drop for StreamMetrics {
     }
 }
 
-impl StreamMetrics {
-    pub fn new() -> StreamMetrics {
+impl<C: OnFlush> StreamMetrics<C> {
+    pub fn new() -> StreamMetrics<C> {
         Self {
             total_bytes_read: AtomicU64::new(0),
             total_bytes_written: AtomicU64::new(0),
             txn_bytes_read_start: AtomicU64::new(0),
             txn_bytes_written_start: AtomicU64::new(0),
-            raw_clock: AtomicU64::new(0),
+            raw_clock: AtomicU64::new(WALL_CLOCK.raw()),
             requests_counter: AtomicU64::new(0),
             error: AtomicOption::none(),
             drop_fn: AtomicOption::none(),
@@ -144,7 +156,7 @@ impl StreamMetrics {
     }
 
     #[inline]
-    pub fn add_flush_callback(&self, cb: Box<dyn FnOnce() + Send>) {
+    pub fn add_flush_callback(&self, cb: C) {
         self.flush_callbacks.push(cb);
     }
 
@@ -152,14 +164,14 @@ impl StreamMetrics {
     pub fn on_flush(&self) {
         if let Some(callbacks) = self.flush_callbacks.drain() {
             for cb in callbacks {
-                cb();
+                cb.run(self);
             }
         }
     }
 
     #[inline]
     #[allow(clippy::type_complexity)]
-    pub fn with_drop_fn(&self, drop_fn: Box<dyn FnOnce(&StreamMetrics, Duration) + Send>) {
+    pub fn with_drop_fn(&self, drop_fn: Box<dyn FnOnce(&StreamMetrics<C>, Duration) + Send>) {
         self.drop_fn.store(Ordering::Release, drop_fn);
     }
 
@@ -192,6 +204,7 @@ impl StreamMetrics {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn requests_counter(&self) -> u64 {
         self.requests_counter.load(Ordering::Relaxed)
     }
@@ -227,12 +240,20 @@ impl StreamMetrics {
 
     #[inline]
     fn on_read(&self, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
         self.total_bytes_read.fetch_add(bytes, Ordering::Relaxed);
+        self.update_raw_clock();
     }
 
     #[inline]
     fn on_write(&self, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
         self.total_bytes_written.fetch_add(bytes, Ordering::Relaxed);
+        self.update_raw_clock();
     }
 
     #[inline]
@@ -258,12 +279,12 @@ impl StreamMetrics {
 pub struct InstrumentedStream<S> {
     #[pin]
     inner: S,
-    metrics: Arc<StreamMetrics>,
+    metrics: Arc<ConnMetrics>,
 }
 
 impl<S> InstrumentedStream<S> {
     pub fn new(inner: S) -> InstrumentedStream<S> {
-        Self { inner, metrics: Arc::new(StreamMetrics::new()) }
+        Self { inner, metrics: Arc::new(ConnMetrics::new()) }
     }
 
     #[inline]
@@ -279,7 +300,7 @@ impl<S> InstrumentedStream<S> {
     }
 
     #[inline]
-    pub fn metrics(&self) -> &StreamMetrics {
+    pub(crate) fn metrics(&self) -> &ConnMetrics {
         self.metrics.as_ref()
     }
 }
@@ -293,7 +314,6 @@ impl<S: AsyncRead> AsyncRead for InstrumentedStream<S> {
             res @ Poll::Ready(Ok(())) => {
                 let bytes = buf.filled().len() - before;
                 this.metrics.on_read(bytes as u64);
-                this.metrics.update_raw_clock();
                 res
             },
             Poll::Ready(Err(e)) => {
@@ -311,7 +331,29 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
         match this.inner.poll_write(cx, buf) {
             Poll::Ready(Ok(bytes)) => {
                 this.metrics.on_write(bytes as u64);
-                this.metrics.update_raw_clock();
+                Poll::Ready(Ok(bytes))
+            },
+            Poll::Ready(Err(e)) => {
+                this.metrics.on_write_error(&e);
+                Poll::Ready(Err(e))
+            },
+            res => res,
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.project();
+        match this.inner.poll_write_vectored(cx, bufs) {
+            Poll::Ready(Ok(bytes)) => {
+                this.metrics.on_write(bytes as u64);
                 Poll::Ready(Ok(bytes))
             },
             Poll::Ready(Err(e)) => {
@@ -353,40 +395,30 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
     }
 }
 
-pub trait HasMetrics {
-    fn metrics(&self) -> &StreamMetrics;
-    fn shared_metrics(&self) -> Arc<StreamMetrics>;
+pub(crate) trait HasMetrics {
+    fn metrics(&self) -> &ConnMetrics;
+    fn shared_metrics(&self) -> Arc<ConnMetrics>;
 }
 
 impl<S> HasMetrics for InstrumentedStream<S> {
-    fn metrics(&self) -> &StreamMetrics {
+    fn metrics(&self) -> &ConnMetrics {
         self.metrics.as_ref()
     }
 
-    fn shared_metrics(&self) -> Arc<StreamMetrics> {
+    fn shared_metrics(&self) -> Arc<ConnMetrics> {
         Arc::clone(&self.metrics)
-    }
-}
-
-impl HasMetrics for tokio_rustls::server::TlsStream<Box<dyn AsyncReadWriteInstrumented>> {
-    fn metrics(&self) -> &StreamMetrics {
-        self.get_ref().0.metrics()
-    }
-
-    fn shared_metrics(&self) -> Arc<StreamMetrics> {
-        self.get_ref().0.shared_metrics()
     }
 }
 
 impl<R> HasMetrics for RewindableHeadAsyncStream<R>
 where
-    R: AsyncReadWriteInstrumented + HasMetrics + ?Sized,
+    R: HasMetrics + AsyncRead + AsyncWrite + Unpin + ?Sized,
 {
-    fn metrics(&self) -> &StreamMetrics {
+    fn metrics(&self) -> &ConnMetrics {
         self.get_ref().metrics()
     }
 
-    fn shared_metrics(&self) -> Arc<StreamMetrics> {
+    fn shared_metrics(&self) -> Arc<ConnMetrics> {
         self.get_ref().shared_metrics()
     }
 }

@@ -165,7 +165,8 @@ mod tests {
     use orion_lib::clusters::{add_cluster, cluster::PartialClusterType};
     use parking_lot::RwLock;
     use smol_str::SmolStr;
-    use std::{num::NonZeroU32, sync::Arc, time::Instant};
+    use std::{num::NonZeroU32, time::Instant};
+    use triomphe::Arc;
 
     fn make_admin_state() -> AdminState {
         AdminState {

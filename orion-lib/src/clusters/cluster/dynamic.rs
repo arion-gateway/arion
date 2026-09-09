@@ -26,7 +26,7 @@ use orion_configuration::config::{
     transport::BindDevice,
 };
 
-use std::sync::Arc;
+use triomphe::Arc;
 
 use crate::{
     clusters::{

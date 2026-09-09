@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::sync::{Arc, OnceLock};
 use std::thread::ThreadId;
 
-use crate::key_value::KeyValueMap;
+use crate::str_pair::StrMap;
 use http::{HeaderMap, HeaderName};
 use opentelemetry::{global, KeyValue};
 use orion_configuration::config::metrics::CustomMetric;
@@ -89,16 +89,20 @@ impl CustomMetricCounters {
         for metric in metrics {
             match metric {
                 CustomMetric::Counter { name, description, header_name: http_header_name, attribute_name } => {
-                    let name = name.to_static_str();
-                    let description = description.to_static_str();
+                    let static_name = name.to_static_str();
+                    let static_description = description.to_static_str();
 
-                    let metric_obj =
-                        Arc::new(Metric::new(crate::metrics::PREFIX_CUSTOM, name, description, ShardedU64::new()));
+                    let metric_obj = Arc::new(Metric::new(
+                        crate::metrics::PREFIX_CUSTOM,
+                        static_name,
+                        static_description,
+                        ShardedU64::new(),
+                    ));
                     let metric_clone = metric_obj.clone();
 
                     let _ = global::meter(const_format::concatcp!("orion.", crate::metrics::PREFIX_CUSTOM))
-                        .u64_observable_counter(name)
-                        .with_description(description)
+                        .u64_observable_counter(static_name)
+                        .with_description(static_description)
                         .with_callback(move |observer| {
                             let values = metric_clone.value.load_all();
                             values.iter().for_each(|(key, value)| {
@@ -134,17 +138,18 @@ impl CustomMetricCounters {
                     attribute_name,
                     buckets,
                 } => {
-                    let name = name.to_static_str();
-                    let description = description.to_static_str();
+                    let static_name = name.to_static_str();
+                    let static_description = description.to_static_str();
 
                     let otel_histogram =
                         global::meter(const_format::concatcp!("orion.", crate::metrics::PREFIX_CUSTOM))
-                            .u64_histogram(name)
-                            .with_description(description)
+                            .u64_histogram(static_name)
+                            .with_description(static_description)
                             .build();
 
                     let sharded = ShardedHistogram::new(buckets.clone(), Some(otel_histogram));
-                    let metric_obj = Arc::new(Metric::new(crate::metrics::PREFIX_CUSTOM, name, description, sharded));
+                    let metric_obj =
+                        Arc::new(Metric::new(crate::metrics::PREFIX_CUSTOM, static_name, static_description, sharded));
 
                     let attr_name = attribute_name
                         .as_ref()
@@ -167,16 +172,20 @@ impl CustomMetricCounters {
                     });
                 },
                 CustomMetric::Gauge { name, description, header_name: http_header_name, attribute_name } => {
-                    let name = name.to_static_str();
-                    let description = description.to_static_str();
+                    let static_name = name.to_static_str();
+                    let static_description = description.to_static_str();
 
-                    let metric_obj =
-                        Arc::new(Metric::new(crate::metrics::PREFIX_CUSTOM, name, description, Gauge::new()));
+                    let metric_obj = Arc::new(Metric::new(
+                        crate::metrics::PREFIX_CUSTOM,
+                        static_name,
+                        static_description,
+                        Gauge::new(),
+                    ));
                     let metric_clone = metric_obj.clone();
 
                     let _ = global::meter(const_format::concatcp!("orion.", crate::metrics::PREFIX_CUSTOM))
-                        .u64_observable_gauge(name)
-                        .with_description(description)
+                        .u64_observable_gauge(static_name)
+                        .with_description(static_description)
                         .with_callback(move |observer| {
                             let values = metric_clone.value.load_all();
                             values.iter().for_each(|(key, value)| {
@@ -222,7 +231,7 @@ impl CustomMetrics {
     }
 
     #[inline]
-    pub fn with_key_value<'a>(&self, hook: MetricsHook, kv: &KeyValueMap<'a>, extra_attributes: &[KeyValue]) {
+    pub fn with_key_value<'a>(&self, hook: MetricsHook, kv: &StrMap<'a>, extra_attributes: &[KeyValue]) {
         self.process_metrics(hook, extra_attributes, |name| kv.get(name.as_str()).copied());
     }
 

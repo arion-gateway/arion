@@ -6,8 +6,8 @@
 #![allow(clippy::manual_let_else)]
 #![allow(clippy::too_many_lines)]
 
-use std::sync::Arc;
 use std::sync::LazyLock;
+use triomphe::Arc;
 
 use crate::body::timeout_body::TimeoutBody;
 use crate::listeners::http_connection_manager::RequestCtx;
@@ -335,7 +335,7 @@ fn orion_send_direct_response(mut caller: Caller<'_, WasmState>, resp_ptr: u32, 
     };
 
     let (parts, body) = direct_resp.response.into_parts();
-    let response = Response::from_parts(parts, TimeoutBody::new(None, PolyBody::from(Full::from(body))));
+    let response = Response::from_parts(parts, TimeoutBody::new(None, PolyBody::from(Full::from(body))).into());
 
     caller.data_mut().direct_response = Some(response);
 
@@ -365,7 +365,7 @@ fn orion_set_custom_metrics(mut caller: Caller<'_, WasmState>, buffer_ptr: u32, 
             };
 
         if let Some(custom_metrics) = orion_metrics::metrics::custom::CUSTOM_METRICS.get() {
-            let mut kv = orion_metrics::key_value::KeyValueMap::default();
+            let mut kv = orion_metrics::str_pair::StrMap::default();
             for (k, v) in &pairs {
                 kv.insert(k, v);
             }

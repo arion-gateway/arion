@@ -16,7 +16,8 @@
 //
 
 use orion_error::Context;
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc as StdArc};
+use triomphe::Arc;
 
 use super::{
     connector::{ConnectUsing, UnifiedConnector},
@@ -97,7 +98,7 @@ impl TcpChannelConnector {
                             );
                         }));
 
-                        let stream: AsyncInstrumentedStream = Box::new(instrumented);
+                        let stream = AsyncInstrumentedStream::from(instrumented);
 
                         (stream, cluster_name, upstream_local_addr, upstream_peer_addr)
                     },
@@ -156,10 +157,10 @@ async fn configure_tls(
     let client_config = tls_config.clone().into_inner();
     let server_name = ServerName::try_from(tls_config.sni().to_owned())
         .map_err(|e| -> crate::Error { format!("Invalid server name: {e}").into() })?;
-    let tls_connector = TlsConnector::from(Arc::new(client_config));
+    let tls_connector = TlsConnector::from(StdArc::new(client_config));
     let tls_stream = tls_connector
-        .connect(server_name, stream)
+        .connect(server_name, Box::new(stream))
         .await
         .map_err(|e| -> crate::Error { format!("TLS connection failed: {e}").into() })?;
-    Ok(Box::new(InstrumentedStream::new(tls_stream)))
+    Ok(AsyncInstrumentedStream::client_tls(InstrumentedStream::new(tls_stream)))
 }

@@ -47,7 +47,9 @@ use orion_configuration::config::Runtime;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
-use crate::body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody};
+use crate::body::{
+    instrumented_body::InstrumentedBody, on_end_body::OnEndBody, response_flags::BodyKind, timeout_body::TimeoutBody,
+};
 pub use crate::configuration::{build_listener_factories, get_listeners_and_clusters, get_secrets_and_clusters};
 
 pub use clusters::{
@@ -90,8 +92,11 @@ impl Default for OrionRequestBody {
     }
 }
 
-/// The Orion Response Body: a poly body with timeout
-pub type OrionResponseBody = TimeoutBody<PolyBody>;
+/// The Orion Response Body: a poly body with timeout and an optional pool permit.
+pub type OrionResponseBody = OnEndBody<TimeoutBody<PolyBody>>;
+
+/// Downstream response body sent to the client: instrumentation over [`OrionResponseBody`].
+pub(crate) type OrionClientBody = InstrumentedBody<OrionResponseBody>;
 
 /// Example with Result:
 /// Captures the error in 'e' and returns early from the function `main()`

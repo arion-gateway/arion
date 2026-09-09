@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use triomphe::Arc;
 
 use http::{status::StatusCode, Request};
 use orion_interner::InternedStr;
