@@ -125,7 +125,7 @@ use crate::utils::instrumented_stream::OnFlush;
 use crate::utils::StreamMetrics;
 
 use orion_configuration::config::network_filters::{
-    http_connection_manager::{Route, VirtualHost, XffSettings},
+    http_connection_manager::{HeaderModifiersAdd, HeaderModifiersRemove, Route, VirtualHost, XffSettings},
     tracing::{TracingConfig, TracingKey},
 };
 use orion_format::types::ResponseFlags as FmtResponseFlags;
@@ -215,12 +215,8 @@ impl HttpConnectionManagerBuilder {
         let listener_name = self.listener_name.ok_or("listener name is not set")?;
         let filterchain_id = self.filterchain_id.unwrap_or(0);
         let partial = self.connection_manager;
-        let initial_routing_state = partial.router.map(|router| {
-            StdArc::new(RoutingState {
-                route_configuration: router,
-                http_filters_per_route: partial.http_filters_per_route,
-            })
-        });
+        let initial_routing_state =
+            partial.router.map(|router| StdArc::new(RoutingState::new(router, partial.http_filters_per_route)));
 
         Ok(HttpConnectionManager {
             listener_name,
@@ -362,6 +358,19 @@ pub struct RoutingState {
     pub http_filters_per_route: HashMap<RouteIndex, Vec<Arc<HttpFilter>>>,
 }
 
+impl RoutingState {
+    pub fn new(
+        mut route_configuration: RouteConfiguration,
+        http_filters_per_route: HashMap<RouteIndex, Vec<Arc<HttpFilter>>>,
+    ) -> Self {
+        // Belt-and-braces: the cached mutation flags must reflect the config actually
+        // served, regardless of which construction path produced it (Envoy conversion,
+        // struct literal, deserialization). Runs once per config load/update.
+        route_configuration.recompute_mutation_flags();
+        Self { route_configuration, http_filters_per_route }
+    }
+}
+
 #[derive(Debug)]
 pub struct HttpConnectionManager {
     pub listener_name: &'static str,
@@ -398,7 +407,7 @@ impl HttpConnectionManager {
 
     pub fn update_route(&self, route: RouteConfiguration) {
         let http_filters_per_route = per_route_http_filters(&route, &self.http_filters_hcm);
-        let new_state = StdArc::new(RoutingState { route_configuration: route, http_filters_per_route });
+        let new_state = StdArc::new(RoutingState::new(route, http_filters_per_route));
         self.routing_state.store(Some(new_state));
     }
 
@@ -1275,19 +1284,33 @@ fn apply_mutations_on_request<B>(
     VirtualHost: ModifiersExtractor<Request<B>>,
     RouteConfiguration: ModifiersExtractor<Request<B>>,
 {
-    let apply_pair = |target: &mut Request<B>, (remove, add)| {
-        target.apply_mutation(remove);
-        target.apply_mutation((add, conn));
+    // Fast path: single cached bool, computed once per config load. Covers the common
+    // case of no mutations configured anywhere.
+    if !route_config.has_request_mutations {
+        return;
+    }
+    let (rc_remove, rc_add) = ModifiersExtractor::<Request<B>>::extract(route_config);
+    let (vh_remove, vh_add) = ModifiersExtractor::<Request<B>>::extract(cached_route.vh);
+    let (route_remove, route_add) = ModifiersExtractor::<Request<B>>::extract(cached_route.route);
+
+    // Second layer: skip levels with no mutations (e.g. only route-level configured).
+    let apply_pair = |target: &mut Request<B>, remove: &HeaderModifiersRemove, add: &HeaderModifiersAdd| {
+        if !remove.0.is_empty() {
+            target.apply_mutation(remove);
+        }
+        if !add.0.is_empty() {
+            target.apply_mutation((add, conn));
+        }
     };
 
     if most_specific_header_mutations_wins {
-        apply_pair(target, ModifiersExtractor::<Request<B>>::extract(route_config));
-        apply_pair(target, ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
-        apply_pair(target, ModifiersExtractor::<Request<B>>::extract(cached_route.route));
+        apply_pair(target, rc_remove, rc_add);
+        apply_pair(target, vh_remove, vh_add);
+        apply_pair(target, route_remove, route_add);
     } else {
-        apply_pair(target, ModifiersExtractor::<Request<B>>::extract(cached_route.route));
-        apply_pair(target, ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
-        apply_pair(target, ModifiersExtractor::<Request<B>>::extract(route_config));
+        apply_pair(target, route_remove, route_add);
+        apply_pair(target, vh_remove, vh_add);
+        apply_pair(target, rc_remove, rc_add);
     }
 }
 
@@ -1302,19 +1325,32 @@ fn apply_mutations_on_response<B>(
     VirtualHost: ModifiersExtractor<Response<B>>,
     RouteConfiguration: ModifiersExtractor<Response<B>>,
 {
-    let apply_pair = |target: &mut Response<B>, (remove, add)| {
-        target.apply_mutation(remove);
-        target.apply_mutation((add, conn));
+    // Fast path: see `apply_mutations_on_request`.
+    if !route_config.has_response_mutations {
+        return;
+    }
+    let (rc_remove, rc_add) = ModifiersExtractor::<Response<B>>::extract(route_config);
+    let (vh_remove, vh_add) = ModifiersExtractor::<Response<B>>::extract(cached_route.vh);
+    let (route_remove, route_add) = ModifiersExtractor::<Response<B>>::extract(cached_route.route);
+
+    // Second layer: skip levels with no mutations.
+    let apply_pair = |target: &mut Response<B>, remove: &HeaderModifiersRemove, add: &HeaderModifiersAdd| {
+        if !remove.0.is_empty() {
+            target.apply_mutation(remove);
+        }
+        if !add.0.is_empty() {
+            target.apply_mutation((add, conn));
+        }
     };
 
     if most_specific_header_mutations_wins {
-        apply_pair(target, ModifiersExtractor::<Response<B>>::extract(route_config));
-        apply_pair(target, ModifiersExtractor::<Response<B>>::extract(cached_route.vh));
-        apply_pair(target, ModifiersExtractor::<Response<B>>::extract(cached_route.route));
+        apply_pair(target, rc_remove, rc_add);
+        apply_pair(target, vh_remove, vh_add);
+        apply_pair(target, route_remove, route_add);
     } else {
-        apply_pair(target, ModifiersExtractor::<Response<B>>::extract(cached_route.route));
-        apply_pair(target, ModifiersExtractor::<Response<B>>::extract(cached_route.vh));
-        apply_pair(target, ModifiersExtractor::<Response<B>>::extract(route_config));
+        apply_pair(target, route_remove, route_add);
+        apply_pair(target, vh_remove, vh_add);
+        apply_pair(target, rc_remove, rc_add);
     }
 }
 

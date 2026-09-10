@@ -272,6 +272,8 @@ mod config_dump_tests {
                                 response_headers_to_add: HeaderModifiersAdd(vec![]),
                                 request_headers_to_add: HeaderModifiersAdd(vec![]),
                                 request_headers_to_remove: HeaderModifiersRemove(vec![]),
+                                has_request_mutations: false,
+                                has_response_mutations: false,
                                 virtual_hosts: vec![VirtualHost {
                                     name: SmolStr::new_static("vh1"),
                                     domains: vec![],

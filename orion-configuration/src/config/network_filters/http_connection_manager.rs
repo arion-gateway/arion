@@ -116,6 +116,43 @@ pub struct RouteConfiguration {
     pub response_headers_to_add: HeaderModifiersAdd,
     pub response_headers_to_remove: HeaderModifiersRemove,
     pub virtual_hosts: Vec<VirtualHost>,
+    /// Cached at config-load time: whether any request/response header mutations exist
+    /// at any level (global, virtual host, route). The per-request hot path checks these
+    /// single bools instead of scanning 6 vecs. Never set by hand: `recompute_mutation_flags`
+    /// (called by `TryFrom` and by `RoutingState::new` before serving) keeps them in sync.
+    #[serde(skip)]
+    pub has_request_mutations: bool,
+    #[serde(skip)]
+    pub has_response_mutations: bool,
+}
+
+impl RouteConfiguration {
+    /// Recompute the cached `has_*_mutations` flags from the actual config content.
+    /// Cheap (runs once per config load/update, off the hot path); early-exits once
+    /// both flags are set.
+    pub fn recompute_mutation_flags(&mut self) {
+        let mut req = !self.request_headers_to_add.0.is_empty() || !self.request_headers_to_remove.0.is_empty();
+        let mut resp = !self.response_headers_to_add.0.is_empty() || !self.response_headers_to_remove.0.is_empty();
+        for vh in &self.virtual_hosts {
+            req = req || !vh.request_headers_to_add.0.is_empty() || !vh.request_headers_to_remove.0.is_empty();
+            resp = resp || !vh.response_headers_to_add.0.is_empty() || !vh.response_headers_to_remove.0.is_empty();
+            for route in &vh.routes {
+                req =
+                    req || !route.request_headers_to_add.0.is_empty() || !route.request_headers_to_remove.0.is_empty();
+                resp = resp
+                    || !route.response_headers_to_add.0.is_empty()
+                    || !route.response_headers_to_remove.0.is_empty();
+                if req && resp {
+                    break;
+                }
+            }
+            if req && resp {
+                break;
+            }
+        }
+        self.has_request_mutations = req;
+        self.has_response_mutations = resp;
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -562,6 +599,39 @@ mod tests {
         assert!(MatchHostScoreLPM::Wildcard < MatchHostScoreLPM::Suffix("foo.bar.test.com".len()));
         assert!(MatchHostScoreLPM::Wildcard == MatchHostScoreLPM::Wildcard);
     }
+
+    #[test]
+    fn mutation_flags_track_all_levels() {
+        let mut config = RouteConfiguration {
+            name: "test".into(),
+            most_specific_header_mutations_wins: false,
+            request_headers_to_add: HeaderModifiersAdd(vec![]),
+            request_headers_to_remove: HeaderModifiersRemove(vec![]),
+            response_headers_to_add: HeaderModifiersAdd(vec![]),
+            response_headers_to_remove: HeaderModifiersRemove(vec![]),
+            virtual_hosts: vec![],
+            has_request_mutations: false,
+            has_response_mutations: false,
+        };
+        config.recompute_mutation_flags();
+        assert!(!config.has_request_mutations);
+        assert!(!config.has_response_mutations);
+
+        // global request level flips only the request flag
+        config.request_headers_to_remove = HeaderModifiersRemove(vec![http::HeaderName::from_static("x-remove")]);
+        config.recompute_mutation_flags();
+        assert!(config.has_request_mutations);
+        assert!(!config.has_response_mutations);
+
+        // vh-level response mutation flips the response flag
+        config.virtual_hosts = vec![VirtualHost {
+            response_headers_to_remove: HeaderModifiersRemove(vec![http::HeaderName::from_static("x-resp")]),
+            ..Default::default()
+        }];
+        config.recompute_mutation_flags();
+        assert!(config.has_request_mutations);
+        assert!(config.has_response_mutations);
+    }
 }
 
 #[cfg(feature = "envoy-conversions")]
@@ -950,7 +1020,7 @@ mod envoy_conversions {
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 let virtual_hosts = convert_non_empty_vec!(virtual_hosts)?;
-                Ok(Self {
+                let mut config = Self {
                     name: SmolStr::from(&name),
                     virtual_hosts,
                     most_specific_header_mutations_wins,
@@ -958,7 +1028,11 @@ mod envoy_conversions {
                     request_headers_to_remove: HeaderModifiersRemove(request_headers_to_remove),
                     response_headers_to_add: HeaderModifiersAdd(response_headers_to_add),
                     response_headers_to_remove: HeaderModifiersRemove(response_headers_to_remove),
-                })
+                    has_request_mutations: false,
+                    has_response_mutations: false,
+                };
+                config.recompute_mutation_flags();
+                Ok(config)
             })()
             .with_name(name)
         }
