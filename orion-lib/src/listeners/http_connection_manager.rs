@@ -217,6 +217,7 @@ impl HttpConnectionManagerBuilder {
         let partial = self.connection_manager;
         let initial_routing_state =
             partial.router.map(|router| StdArc::new(RoutingState::new(router, partial.http_filters_per_route)));
+        let websocket_enabled_by_default = upgrade_utils::is_websocket_enabled_by_hcm(&partial.enabled_upgrades);
 
         Ok(HttpConnectionManager {
             listener_name,
@@ -225,7 +226,7 @@ impl HttpConnectionManagerBuilder {
             codec_type: partial.codec_type,
             dynamic_route_name: partial.dynamic_route_name,
             http_filters_hcm: partial.http_filters_hcm,
-            enabled_upgrades: partial.enabled_upgrades,
+            websocket_enabled_by_default,
             request_timeout: partial.request_timeout,
             xff_settings: partial.xff_settings,
             request_id_handler: RequestIdManager::new(
@@ -379,7 +380,10 @@ pub struct HttpConnectionManager {
     pub codec_type: CodecType,
     dynamic_route_name: Option<SmolStr>,
     http_filters_hcm: Vec<Arc<HttpFilter>>,
-    enabled_upgrades: Vec<UpgradeType>,
+    /// Cached at build time: whether the `enabled_upgrades` list contains websocket.
+    /// The per-request hot path reads this single bool instead of scanning the `Vec`.
+    /// (`enabled_upgrades` itself is not retained: this was its only reader.)
+    websocket_enabled_by_default: bool,
     request_timeout: Option<Duration>,
     xff_settings: XffSettings,
     request_id_handler: RequestIdManager,
@@ -1169,8 +1173,7 @@ impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for &Rout
                     response
                 },
                 _ => {
-                    let websocket_enabled_by_default =
-                        upgrade_utils::is_websocket_enabled_by_hcm(&connection_manager.enabled_upgrades);
+                    let websocket_enabled_by_default = connection_manager.websocket_enabled_by_default;
 
                     let mut response = match &cached_route.route.action {
                         Action::DirectResponse(dr) => dr.to_response(ctx, request, &cached_route.route.name).await,
