@@ -881,7 +881,7 @@ impl HttpPipelineSvc {
     #[allow(clippy::too_many_lines)]
     async fn call(
         &self,
-        req: RoutedHttpRequest<OrionRequestBody>,
+        req: RoutedHttpRequest<'_, OrionRequestBody>,
     ) -> StdResult<Response<OrionClientBody>, crate::Error> {
         let RoutedHttpRequest { http: HttpRequest { mut request, ctx }, routing_state } = req;
         let manager = self.manager.as_ref();
@@ -920,7 +920,7 @@ impl HttpPipelineSvc {
         http_modifiers::apply_prerouting_functions(&mut request, downstream_addr, &manager.xff_settings);
 
         // process request, get the response..
-        let result = routing_state.as_ref().to_response(&ctx, request, manager).await;
+        let result = routing_state.to_response(&ctx, request, manager).await;
 
         // calculate the time to first byte..
         #[cfg(any(feature = "access-log", feature = "metrics"))]
@@ -1261,18 +1261,6 @@ impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for &Rout
     }
 }
 
-impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for StdArc<RoutingState> {
-    #[inline]
-    async fn to_response(
-        self,
-        ctx: &RequestCtx,
-        request: Request<OrionRequestBody>,
-        connection_manager: &HttpConnectionManager,
-    ) -> Result<Response<OrionResponseBody>> {
-        self.as_ref().to_response(ctx, request, connection_manager).await
-    }
-}
-
 fn apply_mutations_on_request<B>(
     target: &mut Request<B>,
     route_config: &RouteConfiguration,
@@ -1400,9 +1388,14 @@ impl<B> HttpRequest<B> {
 }
 
 /// `HttpRequest` after route configuration has been resolved.
-pub struct RoutedHttpRequest<B> {
+///
+/// Holds a borrow of the `ArcSwap` guard's `RoutingState` instead of a cloned `StdArc`:
+/// inner stages are unboxed futures on the same task, so nothing requires owned
+/// (`'static`) access here — the guard keeps the config alive across `.await`
+/// exactly like the cloned `Arc` did.
+pub struct RoutedHttpRequest<'a, B> {
     pub http: HttpRequest<B>,
-    pub routing_state: StdArc<RoutingState>,
+    pub routing_state: &'a RoutingState,
 }
 
 #[derive(Clone)]
@@ -1552,7 +1545,7 @@ impl TransactionSvc<HttpPipelineSvc> {
     async fn call(&self, req: HttpRequest<Incoming>) -> StdResult<Response<OrionClientBody>, crate::Error> {
         let HttpRequest { request, ctx } = req;
         let listener_name = self.manager.listener_name;
-        let routing_state = (*self.manager.routing_state.load()).clone();
+        let routing_state_guard = self.manager.routing_state.load();
 
         with_metric!(http::DOWNSTREAM_RQ_TOTAL, add, 1, ctx.tx.shard_id(), &[KeyValue::new("listener", listener_name)]);
         with_metric!(
@@ -1600,7 +1593,7 @@ impl TransactionSvc<HttpPipelineSvc> {
 
         eval_http_init_context(&request, &ctx.tx, Some(ctx.conn.downstream.as_ref()));
 
-        let Some(routing_state) = routing_state else {
+        let Some(routing_state) = routing_state_guard.as_deref() else {
             return Ok(handle_route_conf_not_found(
                 request.version(),
                 &ctx.tx,
