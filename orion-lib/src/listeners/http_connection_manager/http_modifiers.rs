@@ -193,35 +193,41 @@ fn determine_trusted_client_address(
     downstream_addr: SocketAddr,
     xff_settings: &XffSettings,
 ) -> (IpAddr, bool) {
-    let mut trusted_client_address = downstream_addr.ip();
-    let mut xff_contains_single_ip = false;
-    let xff_ips: Vec<IpAddr> = existing_xff
-        .map_or_else(Vec::new, |value| value.split(',').filter_map(|ip_str| ip_str.trim().parse().ok()).collect());
+    let downstream_ip = downstream_addr.ip();
 
-    let num_xff_ips = xff_ips.len();
+    // Fast path: with default edge settings (`use_remote_address` without trusted hops)
+    // the XFF list is never consulted — skip parsing the header entirely.
+    if xff_settings.use_remote_address && xff_settings.xff_num_trusted_hops == 0 {
+        return (downstream_ip, false);
+    }
+    let Some(xff) = existing_xff else {
+        return (downstream_ip, false);
+    };
 
-    if !xff_settings.use_remote_address && !xff_ips.is_empty() {
+    // Valid XFF entries from right to left. Every case below only needs elements near
+    // the right end, so iterate without collecting: zero allocation, and work bounded
+    // by config (`hops`) instead of header length.
+    let mut from_right = xff.split(',').rev().filter_map(|ip_str| ip_str.trim().parse::<IpAddr>().ok());
+
+    if !xff_settings.use_remote_address {
         if xff_settings.xff_num_trusted_hops > 0 {
+            // (hops+1)-th valid entry from the right == index `len-hops-1` from the left.
             let hops = xff_settings.xff_num_trusted_hops as usize;
-            // Use checked_sub or get() to safely access the IP from the right side
-            if let Some(&ip) = num_xff_ips.checked_sub(hops + 1).and_then(|idx| xff_ips.get(idx)) {
-                trusted_client_address = ip;
-            }
-        } else {
-            // .last() is a safe alternative to [len - 1]
-            if let Some(&ip) = xff_ips.last() {
-                trusted_client_address = ip;
-                xff_contains_single_ip = num_xff_ips == 1;
-            }
+            return (from_right.nth(hops).unwrap_or(downstream_ip), false);
         }
-    } else if xff_settings.use_remote_address && xff_settings.xff_num_trusted_hops > 0 && !xff_ips.is_empty() {
-        let hops = xff_settings.xff_num_trusted_hops as usize;
-        if let Some(&ip) = num_xff_ips.checked_sub(hops).and_then(|idx| xff_ips.get(idx)) {
-            trusted_client_address = ip;
-        }
+        return match from_right.next() {
+            Some(last) => {
+                let single = from_right.next().is_none();
+                (last, single)
+            },
+            None => (downstream_ip, false),
+        };
     }
 
-    (trusted_client_address, xff_contains_single_ip)
+    // `use_remote_address` with trusted hops (`hops >= 1` here): hops-th valid entry
+    // from the right == index `len-hops` from the left.
+    let hops = xff_settings.xff_num_trusted_hops as usize;
+    (from_right.nth(hops - 1).unwrap_or(downstream_ip), false)
 }
 
 pub trait HeaderMapModifier<M> {
@@ -771,5 +777,102 @@ mod tests {
 
         assert_eq!(request.headers().get(USER_AGENT), Some(&test.into_header_value().unwrap()));
         assert_eq!(request.headers().len(), 2);
+    }
+
+    #[test]
+    fn trusted_client_address_covers_all_branches() {
+        let downstream = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 5)), 80);
+        let downstream_ip = downstream.ip();
+        let settings = |use_remote: bool, hops: u32| XffSettings {
+            use_remote_address: use_remote,
+            skip_xff_append: false,
+            xff_num_trusted_hops: hops,
+        };
+        let v4 = |a: u8, b: u8, c: u8, d: u8| IpAddr::V4(Ipv4Addr::new(a, b, c, d));
+
+        // Fast path: `use_remote_address` without trusted hops never consults XFF,
+        // whatever the header contains.
+        for xff in [None, Some(""), Some("203.0.113.7"), Some("garbage, also-garbage, 1.1.1.1")] {
+            assert_eq!(
+                determine_trusted_client_address(xff, downstream, &settings(true, 0)),
+                (downstream_ip, false),
+                "fast path, xff={xff:?}"
+            );
+        }
+
+        // Missing, empty or fully-invalid XFF falls back to downstream in every mode.
+        for (use_remote, hops) in [(true, 1), (true, 5), (false, 0), (false, 2)] {
+            for xff in [None, Some(""), Some("   "), Some("not-an-ip, ???")] {
+                assert_eq!(
+                    determine_trusted_client_address(xff, downstream, &settings(use_remote, hops)),
+                    (downstream_ip, false),
+                    "fallback, use_remote={use_remote} hops={hops} xff={xff:?}"
+                );
+            }
+        }
+
+        // `!use_remote`, 0 hops: last valid entry + single-entry flag.
+        let no_trusted = settings(false, 0);
+        assert_eq!(
+            determine_trusted_client_address(Some("10.0.0.1"), downstream, &no_trusted),
+            (v4(10, 0, 0, 1), true)
+        );
+        assert_eq!(
+            determine_trusted_client_address(Some("10.0.0.1, 10.0.0.2"), downstream, &no_trusted),
+            (v4(10, 0, 0, 2), false)
+        );
+        assert_eq!(
+            determine_trusted_client_address(Some("  10.0.0.1  ,  10.0.0.2 "), downstream, &no_trusted),
+            (v4(10, 0, 0, 2), false)
+        );
+        // Invalid entries are skipped; a single remaining valid entry still counts as single.
+        assert_eq!(
+            determine_trusted_client_address(Some("10.0.0.1, garbage"), downstream, &no_trusted),
+            (v4(10, 0, 0, 1), true)
+        );
+        assert_eq!(
+            determine_trusted_client_address(Some("garbage, 10.0.0.1, 10.0.0.2"), downstream, &no_trusted),
+            (v4(10, 0, 0, 2), false)
+        );
+        assert_eq!(
+            determine_trusted_client_address(Some("::1"), downstream, &no_trusted),
+            (IpAddr::from([0, 0, 0, 0, 0, 0, 0, 1]), true)
+        );
+
+        // `!use_remote` with trusted hops: index `len-hops-1` over valid entries only.
+        let xff = Some("10.0.0.1, 10.0.0.2, 10.0.0.3");
+        assert_eq!(determine_trusted_client_address(xff, downstream, &settings(false, 1)), (v4(10, 0, 0, 2), false));
+        assert_eq!(determine_trusted_client_address(xff, downstream, &settings(false, 2)), (v4(10, 0, 0, 1), false));
+        // Hops beyond the list length fall back to downstream.
+        for hops in [3, 99, u32::MAX] {
+            assert_eq!(
+                determine_trusted_client_address(xff, downstream, &settings(false, hops)),
+                (downstream_ip, false),
+                "out-of-range hops={hops}"
+            );
+        }
+        // Indexing counts valid entries only, like the old collected `Vec` did.
+        assert_eq!(
+            determine_trusted_client_address(
+                Some("10.0.0.1, junk, 10.0.0.2, 10.0.0.3"),
+                downstream,
+                &settings(false, 1)
+            ),
+            (v4(10, 0, 0, 2), false)
+        );
+
+        // `use_remote` with trusted hops: index `len-hops` over valid entries only.
+        assert_eq!(determine_trusted_client_address(xff, downstream, &settings(true, 1)), (v4(10, 0, 0, 3), false));
+        assert_eq!(determine_trusted_client_address(xff, downstream, &settings(true, 2)), (v4(10, 0, 0, 2), false));
+        assert_eq!(determine_trusted_client_address(xff, downstream, &settings(true, 3)), (v4(10, 0, 0, 1), false));
+        assert_eq!(determine_trusted_client_address(xff, downstream, &settings(true, 4)), (downstream_ip, false));
+        assert_eq!(
+            determine_trusted_client_address(
+                Some("junk, 10.0.0.1, 10.0.0.2, 10.0.0.3"),
+                downstream,
+                &settings(true, 3)
+            ),
+            (v4(10, 0, 0, 1), false)
+        );
     }
 }

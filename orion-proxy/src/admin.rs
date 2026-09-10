@@ -15,7 +15,6 @@
 //
 //
 
-use std::time::Instant;
 use std::time::{Duration, Instant};
 use triomphe::Arc;
 
