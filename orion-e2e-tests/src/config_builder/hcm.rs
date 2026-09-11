@@ -18,9 +18,14 @@ use orion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::{
             accesslog::v3::{access_log::ConfigType as AccessLogConfigType, AccessLog as EnvoyAccessLog},
+            common::mutation_rules::v3::{
+                header_mutation::{Action as MutationAction, RemoveOnMatch},
+                HeaderMutation as EnvoyHeaderMutation,
+            },
             core::v3::{
                 config_source::ConfigSourceSpecifier, substitution_format_string::Format as SubstitutionFormat,
-                AggregatedConfigSource, ConfigSource, SubstitutionFormatString,
+                AggregatedConfigSource, ConfigSource, HeaderValue as EnvoyHeaderValue,
+                HeaderValueOption as EnvoyHeaderValueOption, SubstitutionFormatString, TypedExtensionConfig,
             },
             route::v3::RouteConfiguration,
         },
@@ -41,7 +46,9 @@ use orion_data_plane_api::envoy_data_plane_api::{
                     HttpConnectionManager as EnvoyHcm, HttpFilter, Rds,
                 },
             },
+            http::early_header_mutation::header_mutation::v3::HeaderMutation as EnvoyEarlyHeaderMutationConfig,
         },
+        r#type::matcher::v3::{string_matcher::MatchPattern, StringMatcher},
     },
     google::protobuf::{Any, BoolValue},
     orion::extensions::filters::http::user_rate_limit::v3::UserRateLimiter as OrionUserRateLimiter,
@@ -71,12 +78,16 @@ impl CodecType {
 #[derive(Debug, Clone, Default)]
 pub struct HcmBuilder {
     proto: EnvoyHcm,
+    early_mutations: Vec<EnvoyHeaderMutation>,
 }
 
 impl HcmBuilder {
     #[must_use]
     pub fn new() -> Self {
-        Self { proto: EnvoyHcm { stat_prefix: "ingress_http".into(), ..Default::default() } }
+        Self {
+            proto: EnvoyHcm { stat_prefix: "ingress_http".into(), ..Default::default() },
+            early_mutations: Vec::new(),
+        }
     }
 
     #[must_use]
@@ -127,6 +138,41 @@ impl HcmBuilder {
     #[must_use]
     pub fn request_timeout(mut self, timeout: Duration) -> Self {
         self.proto.request_timeout = Some(super::duration_to_proto(timeout));
+        self
+    }
+
+    /// Adds an early header mutation removing the named request header.
+    /// Early mutations run before any other HCM header processing (Envoy parity).
+    #[must_use]
+    pub fn early_remove_header(mut self, name: impl Into<String>) -> Self {
+        self.early_mutations.push(EnvoyHeaderMutation { action: Some(MutationAction::Remove(name.into())) });
+        self
+    }
+
+    /// Adds an early header mutation appending (or adding) a request header.
+    #[must_use]
+    pub fn early_append_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.early_mutations.push(EnvoyHeaderMutation {
+            action: Some(MutationAction::Append(EnvoyHeaderValueOption {
+                header: Some(EnvoyHeaderValue { key: name.into(), value: value.into(), ..Default::default() }),
+                ..Default::default()
+            })),
+        });
+        self
+    }
+
+    /// Adds an early header mutation removing every request header whose name
+    /// starts with `prefix`.
+    #[must_use]
+    pub fn early_remove_on_match_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.early_mutations.push(EnvoyHeaderMutation {
+            action: Some(MutationAction::RemoveOnMatch(RemoveOnMatch {
+                key_matcher: Some(StringMatcher {
+                    match_pattern: Some(MatchPattern::Prefix(prefix.into())),
+                    ..Default::default()
+                }),
+            })),
+        });
         self
     }
 
@@ -455,7 +501,26 @@ impl HcmBuilder {
     #[must_use]
     pub fn build(mut self) -> EnvoyHcm {
         self.add_router_filter();
+        self.add_early_header_mutation_extension();
         self.proto
+    }
+
+    fn add_early_header_mutation_extension(&mut self) {
+        if self.early_mutations.is_empty() {
+            return;
+        }
+        let config = EnvoyEarlyHeaderMutationConfig { mutations: std::mem::take(&mut self.early_mutations) };
+        let any = Any {
+            type_url:
+                "type.googleapis.com/envoy.extensions.http.early_header_mutation.header_mutation.v3.HeaderMutation"
+                    .into(),
+            value: config.encode_to_vec(),
+        };
+        self.proto.early_header_mutation_extensions.push(TypedExtensionConfig {
+            name: "early_header_mutation".into(),
+            typed_config: Some(any),
+            ..Default::default()
+        });
     }
 
     fn add_router_filter(&mut self) {
