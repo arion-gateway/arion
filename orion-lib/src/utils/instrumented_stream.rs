@@ -160,7 +160,7 @@ impl<C: OnFlush> StreamMetrics<C> {
         self.flush_callbacks.push(cb);
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn on_flush(&self) {
         if let Some(callbacks) = self.flush_callbacks.drain() {
             for cb in callbacks {
@@ -169,7 +169,7 @@ impl<C: OnFlush> StreamMetrics<C> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     #[allow(clippy::type_complexity)]
     pub fn with_drop_fn(&self, drop_fn: Box<dyn FnOnce(&StreamMetrics<C>, Duration) + Send>) {
         self.drop_fn.store(Ordering::Release, drop_fn);
@@ -183,43 +183,43 @@ impl<C: OnFlush> StreamMetrics<C> {
         (read, written)
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn txn_bytes_read(&self) -> u64 {
         self.total_bytes_read.load(Ordering::Relaxed) - self.txn_bytes_read_start.load(Ordering::Relaxed)
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn txn_bytes_written(&self) -> u64 {
         self.total_bytes_written.load(Ordering::Relaxed) - self.txn_bytes_written_start.load(Ordering::Relaxed)
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn bytes_read(&self) -> u64 {
         self.total_bytes_read.load(Ordering::Relaxed)
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn bytes_written(&self) -> u64 {
         self.total_bytes_written.load(Ordering::Relaxed)
     }
 
-    #[inline]
+    #[inline(always)]
     #[allow(dead_code)]
     pub fn requests_counter(&self) -> u64 {
         self.requests_counter.load(Ordering::Relaxed)
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn inc_requests(&self) -> u64 {
         self.requests_counter.fetch_add(1, Ordering::Relaxed)
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn update_raw_clock(&self) {
         self.raw_clock.store(WALL_CLOCK.raw(), Ordering::Relaxed)
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn set_user_partition_key(&self, key: &'static str) {
         self.user_partition_key.store(Ordering::Release, key);
     }
@@ -232,28 +232,26 @@ impl<C: OnFlush> StreamMetrics<C> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn reset_txn(&self) {
         self.txn_bytes_read_start.store(self.bytes_read(), Ordering::Relaxed);
         self.txn_bytes_written_start.store(self.bytes_written(), Ordering::Relaxed);
     }
 
-    #[inline]
+    #[inline(always)]
     fn on_read(&self, bytes: u64) {
-        if bytes == 0 {
-            return;
+        if bytes != 0 {
+            self.total_bytes_read.fetch_add(bytes, Ordering::Relaxed);
+            self.update_raw_clock();
         }
-        self.total_bytes_read.fetch_add(bytes, Ordering::Relaxed);
-        self.update_raw_clock();
     }
 
-    #[inline]
+    #[inline(always)]
     fn on_write(&self, bytes: u64) {
-        if bytes == 0 {
-            return;
+        if bytes != 0 {
+            self.total_bytes_written.fetch_add(bytes, Ordering::Relaxed);
+            self.update_raw_clock();
         }
-        self.total_bytes_written.fetch_add(bytes, Ordering::Relaxed);
-        self.update_raw_clock();
     }
 
     #[inline]
@@ -317,8 +315,8 @@ impl<S: AsyncRead> AsyncRead for InstrumentedStream<S> {
                 res
             },
             Poll::Ready(Err(e)) => {
-                this.metrics.on_read_error(&e);
-                Poll::Ready(Err(e))
+                // Delegate to a cold, non-inlined function
+                handle_read_error(this.metrics, e)
             },
             res => res,
         }
@@ -333,10 +331,7 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
                 this.metrics.on_write(bytes as u64);
                 Poll::Ready(Ok(bytes))
             },
-            Poll::Ready(Err(e)) => {
-                this.metrics.on_write_error(&e);
-                Poll::Ready(Err(e))
-            },
+            Poll::Ready(Err(e)) => handle_write_error(this.metrics, e),
             res => res,
         }
     }
@@ -356,10 +351,7 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
                 this.metrics.on_write(bytes as u64);
                 Poll::Ready(Ok(bytes))
             },
-            Poll::Ready(Err(e)) => {
-                this.metrics.on_write_error(&e);
-                Poll::Ready(Err(e))
-            },
+            Poll::Ready(Err(e)) => handle_write_error(this.metrics, e),
             res => res,
         }
     }
@@ -371,10 +363,7 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
                 this.metrics.on_flush();
                 Poll::Ready(Ok(()))
             },
-            Poll::Ready(Err(e)) => {
-                this.metrics.on_write_error(&e);
-                Poll::Ready(Err(e))
-            },
+            Poll::Ready(Err(e)) => handle_write_error(this.metrics, e),
             Poll::Pending => Poll::Pending,
         }
     }
@@ -386,10 +375,7 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
                 this.metrics.on_flush();
                 Poll::Ready(Ok(()))
             },
-            Poll::Ready(Err(e)) => {
-                this.metrics.on_write_error(&e);
-                Poll::Ready(Err(e))
-            },
+            Poll::Ready(Err(e)) => handle_write_error(this.metrics, e),
             Poll::Pending => Poll::Pending,
         }
     }
@@ -421,4 +407,20 @@ where
     fn shared_metrics(&self) -> Arc<ConnMetrics> {
         self.get_ref().shared_metrics()
     }
+}
+
+#[cold]
+#[inline(never)]
+fn handle_read_error<C: OnFlush, T>(metrics: &StreamMetrics<C>, e: std::io::Error) -> Poll<std::io::Result<T>> {
+    // Process error metrics out of the hot path
+    metrics.on_read_error(&e);
+    Poll::Ready(Err(e))
+}
+
+#[cold]
+#[inline(never)]
+fn handle_write_error<C: OnFlush, T>(metrics: &StreamMetrics<C>, e: std::io::Error) -> Poll<std::io::Result<T>> {
+    // Process error metrics out of the hot path
+    metrics.on_write_error(&e);
+    Poll::Ready(Err(e))
 }
