@@ -33,7 +33,10 @@ use crate::config::access_log::AccessLog;
 
 use crate::config::{
     common::*,
-    network_filters::{http_connection_manager::header_modifier::HeaderValueOption, tracing::TracingConfig},
+    network_filters::{
+        early_header_mutation::EarlyHeaderMutation, http_connection_manager::header_modifier::HeaderValueOption,
+        tracing::TracingConfig,
+    },
 };
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -67,7 +70,10 @@ pub struct HttpConnectionManager {
     pub preserve_external_request_id: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub always_set_request_id_in_response: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tracing: Option<TracingConfig>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub early_header_mutation: Vec<EarlyHeaderMutation>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -248,7 +254,7 @@ impl FromStr for MatchHost {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 /// Score given to the request host matching to a given rule defined in the config
 ///
-/// Exact match always get prioritizied over Suffix matches. The integer content
+/// Exact match always get prioritized over Suffix matches. The integer content
 /// represents how many character match for the request string in the uri.authority.
 /// Hosts/domain matching order is derived implicitly from the enum lexicographic order
 /// enum values are manually overwritten to avoid unwanted reordering
@@ -650,7 +656,10 @@ mod envoy_conversions {
     use crate::config::{
         common::*,
         core::RustType,
-        network_filters::http_connection_manager::{HeaderModifiersAdd, HeaderModifiersRemove},
+        network_filters::{
+            early_header_mutation::mutations_from_typed_extension,
+            http_connection_manager::{HeaderModifiersAdd, HeaderModifiersRemove},
+        },
     };
     use http::{HeaderName, StatusCode};
     use orion_data_plane_api::envoy_data_plane_api::envoy::{
@@ -783,7 +792,7 @@ mod envoy_conversions {
                 // use_remote_address,
                 // xff_num_trusted_hops,
                 original_ip_detection_extensions,
-                early_header_mutation_extensions,
+                // early_header_mutation_extensions,
                 internal_address_config,
                 // skip_xff_append,
                 via,
@@ -889,6 +898,15 @@ mod envoy_conversions {
                 .transpose()
                 .map_err(|_e| GenericError::from_msg("failed to convert tracing object"))?;
 
+            let early_header_mutation = early_header_mutation_extensions
+                .into_iter()
+                .map(mutations_from_typed_extension)
+                .collect::<Result<Vec<_>, _>>()
+                .with_node("early_header_mutation_extensions")?
+                .into_iter()
+                .flatten()
+                .collect();
+
             Ok(Self {
                 codec_type,
                 http_filters,
@@ -901,6 +919,7 @@ mod envoy_conversions {
                 preserve_external_request_id,
                 always_set_request_id_in_response,
                 tracing,
+                early_header_mutation,
             })
         }
     }
