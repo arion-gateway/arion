@@ -24,9 +24,13 @@ use crate::{
 use http::{header, HeaderMap, HeaderName, HeaderValue, Method, Request, Response};
 use orion_configuration::config::{
     cluster::http_protocol_options::Codec,
-    network_filters::http_connection_manager::{
-        header_modifier::{HeaderAppendAction, HeaderValueOption},
-        HeaderModifiersAdd, HeaderModifiersRemove, Route, RouteConfiguration, VirtualHost, XffSettings,
+    core::{StringMatcher, StringMatcherPattern},
+    network_filters::{
+        early_header_mutation::EarlyHeaderMutation,
+        http_connection_manager::{
+            header_modifier::{HeaderAppendAction, HeaderValueOption},
+            HeaderModifiersAdd, HeaderModifiersRemove, Route, RouteConfiguration, VirtualHost, XffSettings,
+        },
     },
 };
 use orion_format::context::{DownstreamContext, DownstreamResponseContext};
@@ -51,7 +55,12 @@ pub fn apply_prerouting_functions<T>(
     request: &mut Request<T>,
     downstream_addr: SocketAddr,
     xff_settings: &XffSettings,
+    conn: &ConnMeta,
+    early_mutations: &[EarlyHeaderMutation],
 ) {
+    // Envoy parity: early header mutations run before any other HCM header
+    // processing (XFF append, trusted address, ...).
+    request.apply_mutation((early_mutations, conn));
     apply_xff_headers(request, downstream_addr, xff_settings);
 }
 
@@ -267,6 +276,38 @@ impl<B> HeaderMapModifier<(&HeaderModifiersAdd, &ConnMeta)> for Response<B> {
         for modifier in &modifier.0 {
             modifier.apply_to_response(self, conn);
         }
+    }
+}
+
+impl<B> HeaderMapModifier<(&[EarlyHeaderMutation], &ConnMeta)> for Request<B> {
+    #[inline]
+    fn apply_mutation(&mut self, (mutations, conn): (&[EarlyHeaderMutation], &ConnMeta)) {
+        for mutation in mutations {
+            match mutation {
+                EarlyHeaderMutation::Remove(name) => {
+                    self.headers_mut().remove(name);
+                },
+                EarlyHeaderMutation::Append(option) => {
+                    option.apply_to_request(self, conn);
+                },
+                EarlyHeaderMutation::RemoveOnMatch(pattern) => {
+                    remove_matching_headers(self.headers_mut(), pattern);
+                },
+            }
+        }
+    }
+}
+
+// Removes every header whose name matches `pattern`. Header names are always
+// lowercase in `http::HeaderMap`, while the pattern may carry any casing, so
+// the match is case-insensitive (header names are case-insensitive per
+// RFC 9110; the pattern alone carries no case flag). `Regex` is unaffected
+// by this, matching Envoy semantics where `ignore_case` does not apply to it.
+fn remove_matching_headers(headers: &mut HeaderMap, pattern: &StringMatcherPattern) {
+    let matcher = StringMatcher { ignore_case: true, pattern: pattern.clone() };
+    let matched: Vec<HeaderName> = headers.keys().filter(|name| matcher.matches(name.as_str())).cloned().collect();
+    for name in matched {
+        headers.remove(name);
     }
 }
 
@@ -874,5 +915,101 @@ mod tests {
             ),
             (v4(10, 0, 0, 1), false)
         );
+    }
+
+    fn append_mutation(key: HeaderName, value: &str) -> EarlyHeaderMutation {
+        EarlyHeaderMutation::Append(HeaderValueOption {
+            header: HeaderKeyValue { key, value: HeaderFormatter::try_new(value).unwrap() },
+            append_action: HeaderAppendAction::AppendIfExistsOrAdd,
+            keep_empty_value: false,
+        })
+    }
+
+    #[test]
+    fn test_early_mutation_remove() {
+        let mut request = Request::builder().uri("http://example.com").body(()).unwrap();
+        request.headers_mut().insert("x-remove-me", "1".parse().unwrap());
+        request.headers_mut().insert("x-keep-me", "2".parse().unwrap());
+
+        let mutations = vec![EarlyHeaderMutation::Remove("x-remove-me".parse().unwrap())];
+        request.apply_mutation((mutations.as_slice(), &ConnMeta::default()));
+
+        assert!(request.headers().get("x-remove-me").is_none());
+        assert_eq!(request.headers().get("x-keep-me").unwrap(), "2");
+    }
+
+    #[test]
+    fn test_early_mutation_append() {
+        let mut request = Request::builder().uri("http://example.com").body(()).unwrap();
+
+        let mutations = vec![append_mutation(LOCATION, "hello")];
+        request.apply_mutation((mutations.as_slice(), &ConnMeta::default()));
+
+        assert_eq!(request.headers().get(LOCATION).unwrap(), "hello");
+    }
+
+    #[test]
+    fn test_early_mutation_remove_on_match() {
+        let mut request = Request::builder().uri("http://example.com").body(()).unwrap();
+        for (name, value) in [("x-secret-token", "1"), ("x-secret-key", "2"), ("x-public", "3"), ("content-type", "4")]
+        {
+            request.headers_mut().insert(name, value.parse().unwrap());
+        }
+
+        // prefix match removes both `x-secret-*` headers, nothing else.
+        let mutations = vec![EarlyHeaderMutation::RemoveOnMatch(StringMatcherPattern::Prefix("x-secret-".into()))];
+        request.apply_mutation((mutations.as_slice(), &ConnMeta::default()));
+
+        assert!(request.headers().get("x-secret-token").is_none());
+        assert!(request.headers().get("x-secret-key").is_none());
+        assert_eq!(request.headers().get("x-public").unwrap(), "3");
+        assert_eq!(request.headers().get("content-type").unwrap(), "4");
+    }
+
+    #[test]
+    fn test_early_mutation_remove_on_match_case_insensitive() {
+        let mut request = Request::builder().uri("http://example.com").body(()).unwrap();
+        request.headers_mut().insert("x-mixed", "1".parse().unwrap());
+
+        // header names are lowercase in `HeaderMap`; an uppercase pattern must still match.
+        let mutations = vec![EarlyHeaderMutation::RemoveOnMatch(StringMatcherPattern::Exact("X-MIXED".into()))];
+        request.apply_mutation((mutations.as_slice(), &ConnMeta::default()));
+
+        assert!(request.headers().get("x-mixed").is_none());
+    }
+
+    #[test]
+    fn test_early_mutation_remove_on_match_regex() {
+        let mut request = Request::builder().uri("http://example.com").body(()).unwrap();
+        request.headers_mut().insert("x-trace-123", "1".parse().unwrap());
+        request.headers_mut().insert("x-trace-abc", "2".parse().unwrap());
+        request.headers_mut().insert("x-other", "3".parse().unwrap());
+
+        let mutations = vec![EarlyHeaderMutation::RemoveOnMatch(StringMatcherPattern::Regex(
+            regex::Regex::new(r"x-trace-\d+").unwrap(),
+        ))];
+        request.apply_mutation((mutations.as_slice(), &ConnMeta::default()));
+
+        assert!(request.headers().get("x-trace-123").is_none());
+        assert_eq!(request.headers().get("x-trace-abc").unwrap(), "2");
+        assert_eq!(request.headers().get("x-other").unwrap(), "3");
+    }
+
+    #[test]
+    fn test_early_mutations_apply_in_order_before_xff() {
+        let mut request = Request::builder().uri("http://example.com").body(()).unwrap();
+        request.headers_mut().insert("x-remove-me", "1".parse().unwrap());
+        let downstream_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 5)), 80);
+        let xff_settings = XffSettings { use_remote_address: true, skip_xff_append: false, xff_num_trusted_hops: 0 };
+
+        let mutations =
+            vec![EarlyHeaderMutation::Remove("x-remove-me".parse().unwrap()), append_mutation(LOCATION, "hello")];
+        apply_prerouting_functions(&mut request, downstream_addr, &xff_settings, &ConnMeta::default(), &mutations);
+
+        // early mutations applied ...
+        assert!(request.headers().get("x-remove-me").is_none());
+        assert_eq!(request.headers().get(LOCATION).unwrap(), "hello");
+        // ... and XFF processing still ran afterwards (Envoy parity).
+        assert_eq!(request.headers().get("x-envoy-external-address").unwrap(), "192.0.2.5");
     }
 }

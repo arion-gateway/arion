@@ -125,6 +125,7 @@ use crate::utils::instrumented_stream::OnFlush;
 use crate::utils::StreamMetrics;
 
 use orion_configuration::config::network_filters::{
+    early_header_mutation::EarlyHeaderMutation,
     http_connection_manager::{HeaderModifiersAdd, HeaderModifiersRemove, Route, VirtualHost, XffSettings},
     tracing::{TracingConfig, TracingKey},
 };
@@ -238,6 +239,7 @@ impl HttpConnectionManagerBuilder {
                 Some(tracing) => HttpTracer::new().with_config(tracing),
                 None => HttpTracer::new(),
             },
+            early_header_mutation: partial.early_header_mutation,
             #[cfg(feature = "access-log")]
             access_log: partial.access_log,
         })
@@ -268,6 +270,7 @@ pub struct PartialHttpConnectionManager {
     preserve_external_request_id: bool,
     always_set_request_id_in_response: bool,
     tracing: Option<TracingConfig>,
+    early_header_mutation: Vec<EarlyHeaderMutation>,
     #[cfg(feature = "access-log")]
     access_log: Vec<AccessLog>,
 }
@@ -316,6 +319,7 @@ impl TryFrom<ConversionContext<'_, HttpConnectionManagerConfig>> for PartialHttp
             preserve_external_request_id,
             always_set_request_id_in_response,
             tracing: configuration.tracing,
+            early_header_mutation: configuration.early_header_mutation,
             #[cfg(feature = "access-log")]
             access_log: configuration.access_log,
         })
@@ -388,6 +392,7 @@ pub struct HttpConnectionManager {
     xff_settings: XffSettings,
     request_id_handler: RequestIdManager,
     pub http_tracer: HttpTracer,
+    early_header_mutation: Vec<EarlyHeaderMutation>,
     #[cfg(feature = "access-log")]
     access_log: Vec<AccessLog>,
 }
@@ -920,8 +925,15 @@ impl HttpPipelineSvc {
             }
         }
 
-        // apply the request header modifiers
-        http_modifiers::apply_prerouting_functions(&mut request, downstream_addr, &manager.xff_settings);
+        // apply the request header modifiers: early mutations first (Envoy parity),
+        // then XFF and the rest of the prerouting functions.
+        http_modifiers::apply_prerouting_functions(
+            &mut request,
+            downstream_addr,
+            &manager.xff_settings,
+            &ctx.conn,
+            &manager.early_header_mutation,
+        );
 
         // process request, get the response..
         let result = routing_state.to_response(&ctx, request, manager).await;

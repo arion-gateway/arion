@@ -15,6 +15,8 @@
 //
 //
 
+pub mod early_header_mutation;
+pub use early_header_mutation::EarlyHeaderMutation;
 pub mod http_connection_manager;
 pub use http_connection_manager::HttpConnectionManager;
 pub mod network_connection_limit;
