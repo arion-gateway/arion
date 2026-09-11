@@ -31,6 +31,7 @@ use crate::{
     utils::instrumented_stream::HasMetrics,
     AsyncInstrumentedStream, ConversionContext, Error, Result,
 };
+use hyper::{body::Incoming, service::service_fn, Request};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as HyperServerBuilder;
 use orion_configuration::config::{
@@ -317,8 +318,19 @@ impl FilterchainType {
                     metadata,
                     Arc::clone(&stream_metrics),
                 );
+                // `service_fn` keeps the per-request future monomorphized (stack-allocated,
+                // polled in place): no `Box::pin` allocation on the hot path.
+                // NOTE: the closure returns `handle_request`'s concrete future directly
+                // instead of wrapping it in an `async move` block: an inferred async
+                // block inside the closure creates an inference cycle with the generic
+                // bounds below, pinning lifetimes and breaking `Send` of the connection
+                // future. Returning the concrete future keeps all lifetimes determined.
+                let svc = service_fn(move |req: Request<Incoming>| {
+                    let svc = trans_svc.clone();
+                    svc.handle_request(req)
+                });
                 hyper_server
-                    .serve_connection_with_upgrades(stream, trans_svc)
+                    .serve_connection_with_upgrades(stream, svc)
                     .await
                     .inspect_err(|err| debug!("{listener_name} : HTTP connection error: {err}"))
                     .map_err(Error::from)

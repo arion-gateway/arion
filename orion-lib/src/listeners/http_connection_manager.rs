@@ -90,8 +90,7 @@ use {parking_lot::Mutex, std::time::Instant};
 use ::http::HeaderValue;
 use arc_swap::ArcSwapOption;
 use core::time::Duration;
-use futures::future::BoxFuture;
-use hyper::{body::Incoming, header::HOST, service::Service, Request, Response, StatusCode};
+use hyper::{body::Incoming, header::HOST, Request, Response, StatusCode};
 use orion_configuration::config::network_filters::http_connection_manager::{
     route::{Action, RouteMatchResult},
     CodecType, ConfigSource, ConfigSourceSpecifier, HttpConnectionManager as HttpConnectionManagerConfig, RdsSpecifier,
@@ -162,8 +161,9 @@ impl Write for LengthCounter {
 // HTTP Connection Manager - Request Pipeline Architecture
 // =================================================================================================
 //
-// Hyper requires a single `Service<Request<Incoming>>` with a `'static` future. Only that boundary
-// is boxed. Inner stages are plain async methods on typed envelopes (no extra `BoxFuture`).
+// Hyper drives the pipeline through `hyper::service::service_fn` (see `filterchain.rs`):
+// the per-request future is the monomorphized `async` state machine below, polled in
+// place on the connection task. Nothing is boxed — no per-request heap allocation.
 //
 // +-----------------------------------------------------------------------------------------------+
 // | Hyper Server (hyper::server::conn::http1 / http2)                                             |
@@ -172,7 +172,7 @@ impl Write for LengthCounter {
 //                                |
 //                                v
 // +-----------------------------------------------------------------------------------------------+
-// | 1. TransactionLifecycleSvc  (hyper::Service, sole BoxFuture)                                  |
+// | 1. TransactionLifecycleSvc  (unboxed async fn, via `service_fn`)                           |
 // |   Input:  Request<Incoming>                                                                   |
 // |   Action: Attach ConnMeta, request ID, span, TransactionContext → RequestCtx.                 |
 // |           Map crate::Error → Box<dyn Error> for Hyper.                                        |
@@ -1431,16 +1431,15 @@ impl<S> TransactionLifecycleSvc<S> {
     }
 }
 
-impl Service<Request<Incoming>> for TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
-    type Response = Response<OrionClientBody>;
-    type Error = Box<dyn std::error::Error + Send + Sync>;
-    type Future = BoxFuture<'static, StdResult<Self::Response, Self::Error>>;
-
-    fn call(&self, incoming_request: Request<Incoming>) -> Self::Future {
-        let conn = self.conn.clone();
+impl TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
+    pub async fn handle_request(
+        self,
+        incoming_request: Request<Incoming>,
+    ) -> StdResult<Response<OrionClientBody>, Box<dyn std::error::Error + Send + Sync>> {
+        let Self { conn, manager, inner } = self;
         let incoming_request_id = RequestId::from_request(&incoming_request);
         let incoming_version = incoming_request.version();
-        let listener_name = self.manager.listener_name;
+        let listener_name = manager.listener_name;
 
         let access_log_enabled = {
             #[cfg(feature = "access-log")]
@@ -1454,7 +1453,7 @@ impl Service<Request<Incoming>> for TransactionLifecycleSvc<TransactionSvc<HttpP
         let is_internal = http_modifiers::is_internal_ip(conn.downstream_peer_address().ip());
 
         #[allow(unused_mut)]
-        let (mut request, request_id) = self.manager.request_id_handler.apply_policy(
+        let (mut request, request_id) = manager.request_id_handler.apply_policy(
             incoming_request,
             access_log_enabled,
             incoming_request_id.as_ref(),
@@ -1463,13 +1462,13 @@ impl Service<Request<Incoming>> for TransactionLifecycleSvc<TransactionSvc<HttpP
 
         #[cfg(feature = "tracing")]
         let trace_context =
-            self.manager.http_tracer.try_build_trace_context(&request, incoming_request_id.or(request_id.clone()));
+            manager.http_tracer.try_build_trace_context(&request, incoming_request_id.or(request_id.clone()));
 
         #[cfg(feature = "tracing")]
-        let tracing_key = self.manager.get_tracing_key();
+        let tracing_key = manager.get_tracing_key();
 
         #[cfg(feature = "tracing")]
-        let mut server_span = self.manager.http_tracer.try_create_span(
+        let mut server_span = manager.http_tracer.try_create_span(
             trace_context.as_ref(),
             &tracing_key,
             SpanKind::Server,
@@ -1478,7 +1477,7 @@ impl Service<Request<Incoming>> for TransactionLifecycleSvc<TransactionSvc<HttpP
 
         #[cfg(feature = "tracing")]
         let upstream_tracing_key = (trace_context.as_ref().is_some_and(TraceContext::should_sample)
-            && self.manager.http_tracer.upstream_spans_enabled())
+            && manager.http_tracer.upstream_spans_enabled())
         .then_some(tracing_key);
 
         #[cfg(feature = "tracing")]
@@ -1503,7 +1502,7 @@ impl Service<Request<Incoming>> for TransactionLifecycleSvc<TransactionSvc<HttpP
             user_partition_key,
             shard_id,
             #[cfg(feature = "access-log")]
-            &self.manager.access_log,
+            &manager.access_log,
             #[cfg(feature = "tracing")]
             trace_context,
             #[cfg(feature = "tracing")]
@@ -1514,32 +1513,29 @@ impl Service<Request<Incoming>> for TransactionLifecycleSvc<TransactionSvc<HttpP
 
         #[cfg(feature = "tracing")]
         if let Some(trace_ctx) = trans_ctx.trace_ctx.as_ref() {
-            self.manager.http_tracer.update_tracing_headers(trace_ctx, &mut request);
+            manager.http_tracer.update_tracing_headers(trace_ctx, &mut request);
         }
 
         let ctx = RequestCtx::new(conn, trans_ctx.clone());
         let http_req = HttpRequest { request, ctx };
 
-        let inner = Arc::clone(&self.inner);
-        Box::pin(async move {
-            let response = inner.call(http_req).await;
+        let response = inner.call(http_req).await;
 
-            trans_ctx.trace_status_code(&response, listener_name);
-            let response = if let Err(err) = response {
-                error!("Error during handling HTTP transaction: {}", err);
-                let msg = err.to_string();
-                let response = SyntheticHttpResponse::internal_server_error(
-                    EventKind::Upstream(err.into()),
-                    ResponseFlags(orion_format::types::ResponseFlags::LOCAL_RESET),
-                )
-                .with_body(msg)
-                .into_response(incoming_version);
-                Ok(response.map(|body| InstrumentedBody::new(BodyKind::Response, body, None, |_, _, _, _| {})))
-            } else {
-                response
-            };
-            response.map_err(|e| Box::new(e.into_inner()) as Box<dyn std::error::Error + Send + Sync>)
-        })
+        trans_ctx.trace_status_code(&response, listener_name);
+        let response = if let Err(err) = response {
+            error!("Error during handling HTTP transaction: {}", err);
+            let msg = err.to_string();
+            let response = SyntheticHttpResponse::internal_server_error(
+                EventKind::Upstream(err.into()),
+                ResponseFlags(orion_format::types::ResponseFlags::LOCAL_RESET),
+            )
+            .with_body(msg)
+            .into_response(incoming_version);
+            Ok(response.map(|body| InstrumentedBody::new(BodyKind::Response, body, None, |_, _, _, _| {})))
+        } else {
+            response
+        };
+        response.map_err(|e| Box::new(e.into_inner()) as Box<dyn std::error::Error + Send + Sync>)
     }
 }
 
