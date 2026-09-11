@@ -305,6 +305,7 @@ mod config_dump_tests {
                             preserve_external_request_id: false,
                             always_set_request_id_in_response: false,
                             tracing: None,
+                            early_header_mutation: vec![],
                         }),
                     },
                 );
