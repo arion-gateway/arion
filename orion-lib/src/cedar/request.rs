@@ -1,6 +1,9 @@
-use cedar_policy::{Context, EntityId, EntityTypeName, EntityUid, RestrictedExpression};
+use cedar_policy::{Context, EntityId, EntityTypeName, EntityUid};
+use cedar_policy_core::ast::{Context as CoreContext, RestrictedExpr};
+use cedar_policy_core::extensions::Extensions;
 use serde_json::Value;
 use smallvec::SmallVec;
+use smol_str::SmolStr;
 use std::str::FromStr;
 
 use super::error::Error;
@@ -26,51 +29,55 @@ pub fn principal_from_jwt(claims: &JwtClaims, entity_type: &EntityTypeName) -> R
     Ok(entity_uid_from_type(entity_type, sub))
 }
 
-fn json_value_to_restricted_expr(value: &Value) -> Result<RestrictedExpression, Error> {
+fn json_value_to_restricted_expr(value: &Value) -> Result<RestrictedExpr, Error> {
     match value {
-        Value::String(s) => Ok(RestrictedExpression::new_string(s.clone())),
+        // `val(&str)` copies once into `SmolStr` (often inline, no heap).
+        // The old `cedar-policy` path did `s.clone()` (String) + `SmolStr::new` (second copy).
+        Value::String(s) => Ok(RestrictedExpr::val(s.as_str())),
         Value::Number(n) => n
             .as_i64()
-            .map(RestrictedExpression::new_long)
+            .map(RestrictedExpr::val)
             .ok_or_else(|| Error::Context(format!("unsupported number in Cedar context: {n}"))),
-        Value::Bool(b) => Ok(RestrictedExpression::new_bool(*b)),
+        Value::Bool(b) => Ok(RestrictedExpr::val(*b)),
         Value::Array(arr) => {
             let items: Result<Vec<_>, _> = arr.iter().map(json_value_to_restricted_expr).collect();
-            Ok(RestrictedExpression::new_set(items?))
+            Ok(RestrictedExpr::set(items?))
         },
         Value::Object(map) => {
-            let fields: Result<Vec<(String, RestrictedExpression)>, _> =
-                map.iter().map(|(k, v)| json_value_to_restricted_expr(v).map(|e| (k.clone(), e))).collect();
-            RestrictedExpression::new_record(fields?).map_err(|e| Error::Context(e.to_string()))
+            let fields: Result<Vec<(SmolStr, RestrictedExpr)>, _> =
+                map.iter().map(|(k, v)| json_value_to_restricted_expr(v).map(|e| (SmolStr::new(k), e))).collect();
+            RestrictedExpr::record(fields?).map_err(|e| Error::Context(e.to_string()))
         },
         Value::Null => Err(Error::Context("null values are not supported in Cedar context".to_owned())),
     }
 }
 
 #[inline]
-fn optional_long(key: &'static str, value: Option<u64>) -> Result<Option<(String, RestrictedExpression)>, Error> {
+fn optional_long(key: &'static str, value: Option<u64>) -> Result<Option<(SmolStr, RestrictedExpr)>, Error> {
     value
         .map(|n| {
             i64::try_from(n)
-                .map(|n| (key.to_owned(), RestrictedExpression::new_long(n)))
+                .map(|n| (SmolStr::new_static(key), RestrictedExpr::val(n)))
                 .map_err(|_err| Error::Context(format!("unsupported number in Cedar context: {n}")))
         })
         .transpose()
 }
 
-fn jwt_claims_to_restricted_expr(claims: &JwtClaims) -> Result<RestrictedExpression, Error> {
-    let mut fields: SmallVec<[_; 16]> = SmallVec::with_capacity(7 + claims.extra.len());
+fn jwt_claims_to_restricted_expr(claims: &JwtClaims) -> Result<RestrictedExpr, Error> {
+    let mut fields: SmallVec<[(SmolStr, RestrictedExpr); 16]> = SmallVec::with_capacity(7 + claims.extra.len());
 
     if let Some(sub) = &claims.sub {
-        fields.push(("sub".to_owned(), RestrictedExpression::new_string(sub.to_string())));
+        // `From<SmolStr> for Literal` moves the inline/heap string once;
+        // the old code did `sub.to_string()` (String alloc) + `SmolStr::new` (second copy).
+        fields.push((SmolStr::new_static("sub"), RestrictedExpr::val(sub.clone())));
     }
     if let Some(iss) = &claims.iss {
-        fields.push(("iss".to_owned(), RestrictedExpression::new_string(iss.to_string())));
+        fields.push((SmolStr::new_static("iss"), RestrictedExpr::val(iss.clone())));
     }
     if let Some(aud) = &claims.aud {
         fields.push((
-            "aud".to_owned(),
-            RestrictedExpression::new_set(aud.iter().map(|a| RestrictedExpression::new_string(a.to_string()))),
+            SmolStr::new_static("aud"),
+            RestrictedExpr::set(aud.iter().map(|a| RestrictedExpr::val(a.clone()))),
         ));
     }
     if let Some(field) = optional_long("exp", claims.exp)? {
@@ -83,13 +90,13 @@ fn jwt_claims_to_restricted_expr(claims: &JwtClaims) -> Result<RestrictedExpress
         fields.push(field);
     }
     if let Some(jti) = &claims.jti {
-        fields.push(("jti".to_owned(), RestrictedExpression::new_string(jti.to_string())));
+        fields.push((SmolStr::new_static("jti"), RestrictedExpr::val(jti.clone())));
     }
     for (k, v) in &claims.extra {
-        fields.push((k.clone(), json_value_to_restricted_expr(v)?));
+        fields.push((SmolStr::new(k), json_value_to_restricted_expr(v)?));
     }
 
-    RestrictedExpression::new_record(fields).map_err(|e| Error::Context(e.to_string()))
+    RestrictedExpr::record(fields).map_err(|e| Error::Context(e.to_string()))
 }
 
 pub fn build_authz_context(
@@ -98,36 +105,48 @@ pub fn build_authz_context(
     http_path: Option<&str>,
     http_query: Option<&str>,
 ) -> Result<Context, Error> {
-    let expr_err = |e: &dyn std::fmt::Display| Error::Context(e.to_string());
-
     let http = {
-        let mut fields: SmallVec<[(String, RestrictedExpression); 3]> = smallvec::smallvec![];
+        let mut fields: SmallVec<[(SmolStr, RestrictedExpr); 3]> = SmallVec::new();
         if let Some(m) = http_method {
-            fields.push(("method".to_owned(), RestrictedExpression::new_string(m.to_owned())));
+            fields.push((SmolStr::new_static("method"), RestrictedExpr::val(m)));
         }
         if let Some(p) = http_path {
-            fields.push(("path".to_owned(), RestrictedExpression::new_string(p.to_owned())));
+            fields.push((SmolStr::new_static("path"), RestrictedExpr::val(p)));
         }
         if let Some(q) = http_query {
-            fields.push(("query".to_owned(), RestrictedExpression::new_string(q.to_owned())));
+            fields.push((SmolStr::new_static("query"), RestrictedExpr::val(q)));
         }
         if fields.is_empty() {
             None
         } else {
-            Some(RestrictedExpression::new_record(fields).map_err(|e| expr_err(&e))?)
+            Some(RestrictedExpr::record(fields).map_err(|e| Error::Context(e.to_string()))?)
         }
     };
 
-    match (jwt_claims, http) {
-        (Some(claims), Some(http_rec)) => Context::from_pairs([
-            ("jwt".to_owned(), jwt_claims_to_restricted_expr(claims)?),
-            ("http".to_owned(), http_rec),
-        ]),
-        (Some(claims), None) => Context::from_pairs([("jwt".to_owned(), jwt_claims_to_restricted_expr(claims)?)]),
-        (None, Some(http_rec)) => Context::from_pairs([("http".to_owned(), http_rec)]),
+    // `CoreContext::from_pairs` takes `SmolStr` keys directly; the
+    // `cedar-policy` wrapper took `String` and did `SmolStr::from` internally
+    // (one extra heap alloc per key). `Context::from` below is zero-cost
+    // (`repr(transparent)` wrapper over `cedar_policy_core::ast::Context`).
+    let core = match (jwt_claims, http) {
+        (Some(claims), Some(http_rec)) => CoreContext::from_pairs(
+            [
+                (SmolStr::new_static("jwt"), jwt_claims_to_restricted_expr(claims)?),
+                (SmolStr::new_static("http"), http_rec),
+            ],
+            Extensions::all_available(),
+        ),
+        (Some(claims), None) => CoreContext::from_pairs(
+            [(SmolStr::new_static("jwt"), jwt_claims_to_restricted_expr(claims)?)],
+            Extensions::all_available(),
+        ),
+        (None, Some(http_rec)) => {
+            CoreContext::from_pairs([(SmolStr::new_static("http"), http_rec)], Extensions::all_available())
+        },
         (None, None) => return Ok(Context::empty()),
     }
-    .map_err(|e| expr_err(&e))
+    .map_err(|e| Error::Context(e.to_string()))?;
+
+    Ok(Context::from(core))
 }
 
 #[cfg(test)]
@@ -135,7 +154,6 @@ mod tests {
     use super::*;
     use crate::cedar::store::{AuthzRequest, PolicyStore};
     use ahash::HashMap;
-    use smol_str::SmolStr;
 
     fn jwt_claims(sub: Option<&str>) -> JwtClaims {
         JwtClaims {

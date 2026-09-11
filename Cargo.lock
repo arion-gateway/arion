@@ -4283,6 +4283,7 @@ dependencies = [
  "bounded-integer",
  "bytes",
  "cedar-policy",
+ "cedar-policy-core",
  "chrono",
  "chrono-tz",
  "const-str",

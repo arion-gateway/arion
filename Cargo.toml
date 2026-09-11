@@ -72,6 +72,7 @@ bounded-integer          = "0.6.1"
 bytes                    = "1"
 caps                     = "0.5"
 cedar-policy             = "4.11"
+cedar-policy-core        = "4.11"
 chrono                   = { version = "0.4.42", features = ["serde"] }
 clap                     = { version = "4.5.51", features = ["derive"] }
 const-str                = "1.1.0"
