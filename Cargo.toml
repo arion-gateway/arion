@@ -187,16 +187,22 @@ wasmtime 	         = "40.0.4"
 x509-parser              = { version = "0.17", features = ["default"] }
 
 [profile.release]
-codegen-units    = 1
+codegen-units    = 16
 debug            = false
 debug-assertions = false
 incremental      = false
-lto              = true
 opt-level        = 3
 overflow-checks  = false
-panic            = 'unwind'
-rpath            = false
+lto              = "thin"
+panic            = "unwind"
 strip            = "debuginfo"
+
+[profile.release-max]
+inherits         = "release"
+codegen-units    = 1
+lto              = "fat"
+panic            = "abort"
+strip            = true
 
 [profile.release-debuginfo]
 inherits        = "release"
