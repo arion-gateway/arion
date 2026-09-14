@@ -4,35 +4,9 @@ git-fetch-with-cli = true
 replace-with = "mirror"
 [source.mirror]
 registry ="sparse+https://internal.invalid/cargo/"
-
+[build]
 rustflags = [
     # microarch (alternatively x86-64-v3)
     "-C", "target-cpu=native",
     "-C", "force-frame-pointers=no",
-
-    # Inlining rules
-    "-C", "llvm-args=-inline-threshold=500",
-
-    # Flow control and cold path
-    "-C", "llvm-args=-hot-cold-split=true",
-    "-C", "llvm-args=-enable-dfa-jump-thread=true",
-
-    # loop and memory
-    "-C", "llvm-args=-unroll-threshold=400",
-    "-C", "llvm-args=-enable-load-pre",
-
-    ## GNU ld linker flags
-    #"-C", "link-arg=-Wl,--no-rosegment",
-    #"-C", "link-arg=-Wl,-z,now",
-    #"-C", "link-arg=-Wl,--relax",
-    #"-C", "link-arg=-Wl,-O2",
-
-    # Instruct GCC driver to invoke LLD
-    "-C", "link-arg=-fuse-ld=lld",
-
-    # LLD specific optimizations
-    "-C", "link-arg=-Wl,--icf=all",
-    "-C", "link-arg=-Wl,--gc-sections",
-    "-C", "link-arg=-Wl,-O2",
-    "-C", "link-arg=-Wl,-z,now",
 ]
