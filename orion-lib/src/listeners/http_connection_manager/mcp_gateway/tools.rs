@@ -815,13 +815,13 @@ impl ToolsRegistry {
                 let upstream_request = transcoder
                     .encode(req_headers, &rpc.request)
                     .map_err(|e| CallToolError::TranscoderError { tool: name.into(), reason: e.to_string() })?;
-                let tool_result = upstream::invoke_rest_tool(&entry, upstream_request, upstream_limits, req_ctx)
+                let result = upstream::invoke_rest_tool(&entry, upstream_request, upstream_limits, req_ctx)
                     .await
-                    .into_call_tool_result();
+                    .into_result_value()?;
                 Ok(MessageResult::JsonRpcResponse(model::JsonRpcResponse {
                     jsonrpc: model::JsonRpcVersion2_0,
                     id: rpc.id.clone(),
-                    result: serde_json::to_value(tool_result)?,
+                    result,
                 }))
             },
             (UpstreamBackend::McpServer { url, .. }, TranscoderType::NoTranscoder) => {

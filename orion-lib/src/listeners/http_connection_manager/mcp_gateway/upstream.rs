@@ -288,6 +288,35 @@ impl ToolInvocationOutcome {
             Self::Failure(failure) => failure.into_call_tool_result(),
         }
     }
+
+    /// Consume the outcome into the final `tools/call` result [`Value`].
+    ///
+    /// Unlike `into_call_tool_result` + `serde_json::to_value` (which walks the
+    /// whole payload twice: once in `CallToolResult::structured` for the text
+    /// preview, once serializing `structuredContent`), the validated structured
+    /// payload is *moved* into `structuredContent` (O(1)) and only the small
+    /// `content` block goes through the serializer. Output is identical to
+    /// `serde_json::to_value(outcome.into_call_tool_result())`.
+    pub fn into_result_value(self) -> Result<Value, serde_json::Error> {
+        match self {
+            Self::Success(mut result) => {
+                let content = serde_json::to_value(std::mem::take(&mut result.content))?;
+                let mut map = serde_json::Map::with_capacity(4);
+                map.insert("content".to_owned(), content);
+                if let Some(structured) = result.structured_content.take() {
+                    map.insert("structuredContent".to_owned(), structured);
+                }
+                if let Some(is_error) = result.is_error.take() {
+                    map.insert("isError".to_owned(), Value::Bool(is_error));
+                }
+                if let Some(meta) = result.meta.take() {
+                    map.insert("_meta".to_owned(), serde_json::to_value(&meta)?);
+                }
+                Ok(Value::Object(map))
+            },
+            Self::Failure(failure) => serde_json::to_value(&failure.into_call_tool_result()),
+        }
+    }
 }
 
 pub(crate) fn call_tool_outcome_from_upstream(
@@ -471,6 +500,27 @@ mod tests {
     fn counting_writer_matches_compact_json() {
         let value = json!({"nested": ["escaped\ntext", "é", {"emoji": "🦀"}], "number": 42});
         assert_eq!(serialized_json_size(&value).unwrap(), serde_json::to_vec(&value).unwrap().len());
+    }
+
+    #[test]
+    fn into_result_value_matches_serialized_call_tool_result() {
+        let payload = json!({
+            "temperature": 22.5,
+            "tags": ["a", "b"],
+            "nested": {"x": [1, 2, 3], "emoji": "🦀"},
+        });
+        let outcome = ToolInvocationOutcome::Success(CallToolResult::structured(payload));
+        let moved = ToolInvocationOutcome::Success(CallToolResult::structured(
+            json!({
+                "temperature": 22.5,
+                "tags": ["a", "b"],
+                "nested": {"x": [1, 2, 3], "emoji": "🦀"},
+            }),
+        ))
+        .into_result_value()
+        .unwrap();
+        let serialized = serde_json::to_value(outcome.into_call_tool_result()).unwrap();
+        assert_eq!(moved, serialized);
     }
 
     #[tokio::test]
