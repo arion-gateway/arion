@@ -304,14 +304,14 @@ pub(crate) fn call_tool_outcome_from_upstream(
             } else {
                 ToolInvocationErrorCode::UpstreamError
             },
-            message: extract_body_string(&body, status),
+            message: extract_body_string(body, status),
             status: Some(status),
             retryable: status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS,
         });
     }
 
     if tool.output_schema_validator.is_none() {
-        let content = RawContent::Text(RawTextContent { text: extract_body_string(&body, status), meta: None });
+        let content = RawContent::Text(RawTextContent { text: extract_body_string(body, status), meta: None });
         return ToolInvocationOutcome::Success(CallToolResult::success(vec![Annotated::new(content, None)]));
     }
 
@@ -333,6 +333,7 @@ pub(crate) fn call_tool_outcome_from_upstream(
     ToolInvocationOutcome::Success(CallToolResult::structured(value))
 }
 
+#[inline]
 fn invalid_output(message: String, status: StatusCode) -> ToolInvocationOutcome {
     ToolInvocationOutcome::Failure(ToolInvocationFailure {
         code: ToolInvocationErrorCode::InvalidOutput,
@@ -342,16 +343,25 @@ fn invalid_output(message: String, status: StatusCode) -> ToolInvocationOutcome 
     })
 }
 
-fn extract_body_string(body: &Bytes, status: StatusCode) -> String {
-    Some(String::from_utf8_lossy(body)).filter(|body| !body.is_empty()).map(String::from).unwrap_or_else(|| {
-        if status == StatusCode::OK {
+#[inline]
+fn extract_body_string(body: Bytes, status: StatusCode) -> String {
+    if body.is_empty() {
+        return if status == StatusCode::OK {
             "OK".to_owned()
         } else {
             format!("Upstream Error: {}", status.canonical_reason().unwrap_or("Unknown"))
-        }
-    })
+        };
+    }
+    // `Bytes -> Vec<u8>` reuses the upstream buffer when uniquely owned
+    // (the common case: fresh `collect().to_bytes()`), so the success path
+    // builds the `String` with zero copies instead of `from_utf8_lossy` + `String::from`.
+    match String::from_utf8(body.into()) {
+        Ok(text) => text,
+        Err(error) => String::from_utf8_lossy(error.as_bytes()).into_owned(),
+    }
 }
 
+#[inline]
 pub(crate) fn outcome_failure_code(outcome: &ToolInvocationOutcome) -> Option<&'static str> {
     match outcome {
         ToolInvocationOutcome::Success(result) if result.is_error == Some(true) => {
