@@ -18,7 +18,6 @@ use crate::listeners::http_connection_manager::{
 };
 use crate::with_metric;
 use atomic_time::AtomicInstant;
-use dashmap::DashMap;
 use jsonschema::Validator;
 use opentelemetry::KeyValue;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
@@ -26,6 +25,7 @@ use orion_configuration::config::network_filters::http_connection_manager::http_
     UpstreamLimits,
 };
 use orion_interner::StringInterner;
+use papaya::HashMap as PapayaMap;
 use pingora_timeout::fast_timeout::fast_timeout;
 use rmcp::{
     model::{
@@ -68,8 +68,8 @@ static SEMANTIC_SEARCH_TOOL_INPUT_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
 
 #[derive(Debug)]
 pub struct ToolsRegistry {
-    tools: DashMap<SmolStr, StdArc<ToolEntry>, ahash::RandomState>,
-    dynamic_mcp_servers: DashMap<SmolStr, StdArc<DynamicMcpServerEntry>, ahash::RandomState>,
+    tools: PapayaMap<SmolStr, StdArc<ToolEntry>, ahash::RandomState>,
+    dynamic_mcp_servers: PapayaMap<SmolStr, StdArc<DynamicMcpServerEntry>, ahash::RandomState>,
     semantic_search: Option<McpSemanticSearch>,
     bootstrapped: OnceCell<()>,
     embeddings_client: Option<StdArc<embeddings::EmbeddingsClient>>,
@@ -222,8 +222,8 @@ impl ToolsRegistry {
         embeddings_client: Option<StdArc<embeddings::EmbeddingsClient>>,
     ) -> Result<Self, ToolBuilderError> {
         let registry = Self {
-            tools: DashMap::with_hasher(ahash::RandomState::new()),
-            dynamic_mcp_servers: DashMap::with_hasher(ahash::RandomState::new()),
+            tools: PapayaMap::with_hasher(ahash::RandomState::new()),
+            dynamic_mcp_servers: PapayaMap::with_hasher(ahash::RandomState::new()),
             semantic_search,
             bootstrapped: OnceCell::new(),
             embeddings_client,
@@ -234,7 +234,7 @@ impl ToolsRegistry {
 
             let entry = build_tool_entry(tool_conf, ToolSource::Provided)?;
             let name = entry.conf.name.clone();
-            if registry.tools.insert(name.clone(), StdArc::new(entry)).is_some() {
+            if registry.tools.pin().insert(name.clone(), StdArc::new(entry)).is_some() {
                 return Err(ToolBuilderError::DuplicateTool(name));
             }
         }
@@ -242,7 +242,7 @@ impl ToolsRegistry {
         for server in dynamic_mcp_servers {
             let name = server.name.clone();
             let entry = StdArc::new(DynamicMcpServerEntry::new(server));
-            if registry.dynamic_mcp_servers.insert(name.clone(), entry).is_some() {
+            if registry.dynamic_mcp_servers.pin().insert(name.clone(), entry).is_some() {
                 return Err(ToolBuilderError::DuplicateDynamicServer(name));
             }
         }
@@ -280,8 +280,13 @@ impl ToolsRegistry {
     pub async fn bootstrap(&self, req_ctx: &RequestCtx) -> Result<(), CallToolError> {
         self.bootstrapped
             .get_or_init(|| async {
-                for server in &self.dynamic_mcp_servers {
-                    self.fetch_and_materialise(server.value()).await;
+                // Snapshot the servers first so the papaya guard is not held across `.await`.
+                let servers: Vec<StdArc<DynamicMcpServerEntry>> = {
+                    let pinned = self.dynamic_mcp_servers.pin();
+                    pinned.iter().map(|(_, server)| StdArc::clone(server)).collect()
+                };
+                for server in &servers {
+                    self.fetch_and_materialise(server).await;
                 }
             })
             .await;
@@ -303,22 +308,24 @@ impl ToolsRegistry {
 
         let mut names: Vec<SmolStr> = Vec::new();
         let mut texts: Vec<String> = Vec::new();
-        for shard in &self.tools {
-            let entry = shard.value();
-            if let Some(allowed) = restrict_to {
-                if !allowed.contains(&entry.conf.name) {
+        {
+            let pinned = self.tools.pin();
+            for (_, entry) in pinned.iter() {
+                if let Some(allowed) = restrict_to {
+                    if !allowed.contains(&entry.conf.name) {
+                        continue;
+                    }
+                }
+                if entry.embedding.load_full().is_some() {
                     continue;
                 }
+                names.push(entry.conf.name.clone());
+                texts.push(embeddings::build_search_text(
+                    &entry.conf.name,
+                    &entry.conf.description,
+                    &entry.conf.input_schema,
+                ));
             }
-            if entry.embedding.load_full().is_some() {
-                continue;
-            }
-            names.push(entry.conf.name.clone());
-            texts.push(embeddings::build_search_text(
-                &entry.conf.name,
-                &entry.conf.description,
-                &entry.conf.input_schema,
-            ));
         }
 
         if texts.is_empty() {
@@ -328,8 +335,8 @@ impl ToolsRegistry {
         match client.embed_batch(&texts, req_ctx).await {
             Ok(vectors) => {
                 for (name, vec) in names.iter().zip(vectors) {
-                    if let Some(shard) = self.tools.get(name) {
-                        shard.value().embedding.store(Some(vec));
+                    if let Some(entry) = self.tools.pin().get(name).map(StdArc::clone) {
+                        entry.embedding.store(Some(vec));
                     }
                 }
                 debug!(target: "mcp_gateway", "Embedded {} tools via {}", names.len(), client.description());
@@ -361,30 +368,38 @@ impl ToolsRegistry {
     #[allow(clippy::unused_async)]
     pub async fn add_tool(&self, tool: McpTool) -> Result<(), ToolBuilderError> {
         let name = tool.name.clone();
-        if let Some(existing) = self.tools.get(&name) {
+        if let Some(existing) = self.tools.pin().get(&name).map(StdArc::clone) {
             if !matches!(existing.source, ToolSource::Provided) {
                 return Err(ToolBuilderError::DuplicateTool(name));
             }
         }
         self.validate_supplied_embedding(&tool)?;
         let entry = build_tool_entry(tool, ToolSource::Provided)?;
-        if let Some(existing) = self.tools.get(&name) {
+        if let Some(existing) = self.tools.pin().get(&name).map(StdArc::clone) {
             if !matches!(existing.source, ToolSource::Provided) {
                 return Err(ToolBuilderError::DuplicateTool(name));
             }
         }
-        self.tools.insert(name, StdArc::new(entry));
+        self.tools.pin().insert(name, StdArc::new(entry));
         Ok(())
     }
 
     pub fn remove_tool(&self, name: &str) -> bool {
-        self.tools.remove_if(name, |_, v| matches!(v.source, ToolSource::Provided)).is_some()
+        // papaya has no `remove_if` returning `Option`; emulate the old
+        // `remove_if(|_, v| matches!(...))` with a guarded check + remove.
+        let should_remove =
+            self.tools.pin().get(name).is_some_and(|entry| matches!(entry.source, ToolSource::Provided));
+        if should_remove {
+            self.tools.pin().remove(name).is_some()
+        } else {
+            false
+        }
     }
 
     pub async fn add_dynamic_server(&self, server: DynamicMcpServer) -> Result<(), ToolBuilderError> {
         let name = server.name.clone();
         let entry = StdArc::new(DynamicMcpServerEntry::new(server));
-        if self.dynamic_mcp_servers.insert(name.clone(), StdArc::clone(&entry)).is_some() {
+        if self.dynamic_mcp_servers.pin().insert(name.clone(), StdArc::clone(&entry)).is_some() {
             self.evict_dynamic_tools_for(&name);
         }
         self.fetch_and_materialise(&entry).await;
@@ -392,7 +407,7 @@ impl ToolsRegistry {
     }
 
     pub fn remove_dynamic_server(&self, name: &str) -> bool {
-        if self.dynamic_mcp_servers.remove(name).is_none() {
+        if self.dynamic_mcp_servers.pin().remove(name).is_none() {
             return false;
         }
         self.evict_dynamic_tools_for(name);
@@ -401,7 +416,7 @@ impl ToolsRegistry {
 
     #[inline]
     pub fn get_tool_by_name(&self, name: &str) -> Option<StdArc<ToolEntry>> {
-        self.tools.get(name).map(|r| StdArc::clone(r.value()))
+        self.tools.pin().get(name).map(StdArc::clone)
     }
 
     pub async fn build_list_tools(
@@ -448,14 +463,15 @@ impl ToolsRegistry {
     fn fill_list_tools(&self, req_ext: &http::Extensions, session: &StdArc<Session>, tools: &mut Vec<Tool>) {
         let session = session.as_ref();
 
-        let restrict_to_active = self.semantic_search.is_some() && !session.active_tools.is_empty();
+        let restrict_to_active = self.semantic_search.is_some() && !session.active_tools.pin().is_empty();
 
-        for entry in &self.tools {
-            let entry = entry.value();
+        let pinned = self.tools.pin();
+        let active = session.active_tools.pin();
+        for (_, entry) in pinned.iter() {
             if !entry.rbac.as_ref().is_none_or(|rbac| rbac.is_permitted(req_ext)) {
                 continue;
             }
-            if restrict_to_active && !session.active_tools.contains(&entry.conf.name) {
+            if restrict_to_active && !active.contains(&entry.conf.name) {
                 continue;
             }
             tools.push(tool_from_entry(entry));
@@ -464,12 +480,10 @@ impl ToolsRegistry {
 
     async fn refresh_expired_dynamic_servers(&self) {
         let now = Instant::now();
-        let expired: Vec<StdArc<DynamicMcpServerEntry>> = self
-            .dynamic_mcp_servers
-            .iter()
-            .filter(|e| e.value().is_expired(now))
-            .map(|e| StdArc::clone(e.value()))
-            .collect();
+        let expired: Vec<StdArc<DynamicMcpServerEntry>> = {
+            let pinned = self.dynamic_mcp_servers.pin();
+            pinned.iter().filter(|(_, entry)| entry.is_expired(now)).map(|(_, entry)| StdArc::clone(entry)).collect()
+        };
 
         for entry in expired {
             self.refresh_if_idle(entry).await;
@@ -497,8 +511,11 @@ impl ToolsRegistry {
         match Self::fetch_dynamic_server_tools(server).await {
             Ok(materialised) => {
                 self.evict_dynamic_tools_for(server_name);
-                for entry in materialised {
-                    self.tools.insert(entry.conf.name.clone(), StdArc::new(entry));
+                {
+                    let pinned = self.tools.pin();
+                    for entry in materialised {
+                        pinned.insert(entry.conf.name.clone(), StdArc::new(entry));
+                    }
                 }
                 server.bump_deadline();
                 debug!(target: "mcp_gateway", "Refreshed dynamic MCP server '{}'", server_name);
@@ -510,7 +527,7 @@ impl ToolsRegistry {
     }
 
     fn evict_dynamic_tools_for(&self, server_name: &str) {
-        self.tools.retain(|_, entry| match &entry.source {
+        self.tools.pin().retain(|_, entry| match &entry.source {
             ToolSource::Dynamic { server_name: owner, .. } => owner.as_str() != server_name,
             ToolSource::Provided => true,
         });
@@ -610,9 +627,12 @@ impl ToolsRegistry {
         self.ensure_tools_current(req_ctx).await?;
 
         let ranked = self.rank_tools_for_query(req_ext, req_ctx, prompt).await?;
-        session.active_tools.clear();
-        for entry in &ranked {
-            session.active_tools.insert(entry.conf.name.clone());
+        {
+            let active = session.active_tools.pin();
+            active.clear();
+            for entry in &ranked {
+                active.insert(entry.conf.name.clone());
+            }
         }
         {
             let mut session_prompt = session.prompt.lock();
@@ -670,14 +690,18 @@ impl ToolsRegistry {
         req_ctx: &RequestCtx,
         user_query: &str,
     ) -> Result<Vec<StdArc<ToolEntry>>, CallToolError> {
-        let mut candidates: Vec<StdArc<ToolEntry>> = Vec::with_capacity(self.tools.len());
-        for entry in &self.tools {
-            let entry = StdArc::clone(entry.value());
-            if !entry.rbac.as_ref().is_none_or(|r| r.is_permitted(req_ext)) {
-                continue;
+        let candidates: Vec<StdArc<ToolEntry>> = {
+            let pinned = self.tools.pin();
+            let mut candidates = Vec::with_capacity(pinned.len());
+            for (_, entry) in pinned.iter() {
+                let entry = StdArc::clone(entry);
+                if !entry.rbac.as_ref().is_none_or(|r| r.is_permitted(req_ext)) {
+                    continue;
+                }
+                candidates.push(entry);
             }
-            candidates.push(entry);
-        }
+            candidates
+        };
 
         let mut scored = match self.vector_scores(user_query, req_ctx, &candidates).await {
             Some(scored) => scored,
@@ -774,7 +798,7 @@ impl ToolsRegistry {
         let filter_by_active = self.semantic_search.as_ref().is_some_and(|ss| ss.enable_assisted_discovery);
         let entry = self
             .get_tool_by_name(name)
-            .filter(|_| !filter_by_active || session.active_tools.contains(name))
+            .filter(|_| !filter_by_active || session.active_tools.pin().contains(name))
             .ok_or_else(|| CallToolError::ToolNotFound(name.into()))?;
 
         if let Some(rbac) = &entry.rbac {
@@ -812,15 +836,12 @@ impl ToolsRegistry {
                 };
 
                 let invocation = async {
-                    let cached = session.mcp_upstreams.get(url).map(|client| StdArc::clone(&client));
+                    let cached = session.mcp_upstreams.pin().get(url).map(StdArc::clone);
                     let client = if let Some(client) = cached {
                         client
                     } else {
                         let new_client = StdArc::new(Self::get_mcp_client(url).await?);
-                        match session.mcp_upstreams.entry(url.to_owned()) {
-                            dashmap::Entry::Occupied(occupied) => StdArc::clone(occupied.get()),
-                            dashmap::Entry::Vacant(vacant) => StdArc::clone(vacant.insert(new_client).value()),
-                        }
+                        StdArc::clone(session.mcp_upstreams.pin().get_or_insert(url.to_owned(), new_client))
                     };
 
                     let call_params = match &rpc.request.params.get("arguments") {
@@ -835,7 +856,7 @@ impl ToolsRegistry {
                         Err(err) => {
                             if matches!(&err, ServiceError::TransportSend(_) | ServiceError::TransportClosed) {
                                 info!(target: "mcp_gateway", "removing MCP client for URL {url} due to transport error!");
-                                session.mcp_upstreams.remove(url);
+                                session.mcp_upstreams.pin().remove(url);
                             }
                             Err(CallToolError::ServiceError(err))
                         },
@@ -1349,7 +1370,7 @@ mod tests {
             ToolSource::Dynamic { server_name: "srv".into(), upstream_tool_name: "tool".into() },
         )
         .unwrap();
-        registry.tools.insert("srv__tool".into(), StdArc::new(entry));
+        registry.tools.pin().insert("srv__tool".into(), StdArc::new(entry));
 
         assert!(!registry.remove_tool("srv__tool"));
         assert!(registry.get_tool_by_name("srv__tool").is_some());
@@ -1377,7 +1398,7 @@ mod tests {
             rbac: None,
         };
         let server = StdArc::new(DynamicMcpServerEntry::new(server_conf));
-        registry.dynamic_mcp_servers.insert("srv".into(), StdArc::clone(&server));
+        registry.dynamic_mcp_servers.pin().insert("srv".into(), StdArc::clone(&server));
 
         for upstream in ["alpha", "beta"] {
             let conf = McpTool {
@@ -1397,7 +1418,7 @@ mod tests {
                 ToolSource::Dynamic { server_name: "srv".into(), upstream_tool_name: upstream.into() },
             )
             .unwrap();
-            registry.tools.insert(entry.conf.name.clone(), StdArc::new(entry));
+            registry.tools.pin().insert(entry.conf.name.clone(), StdArc::new(entry));
         }
 
         // And a provided tool that must be left alone

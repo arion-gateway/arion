@@ -67,9 +67,9 @@ use opentelemetry::KeyValue;
 use owning_ref::ArcRef;
 
 use crate::{with_histogram, with_metric};
-use dashmap::DashMap;
 #[cfg(feature = "metrics")]
 use orion_metrics::metrics::{http, listeners, tcp};
+use papaya::HashMap as PapayaMap;
 
 use rustls::ServerConfig;
 use scopeguard::defer;
@@ -220,7 +220,8 @@ pub struct ListenerContext {
     pub mcp: McpGatewayListenerContext,
 }
 
-static LISTENERS_CONTEXT: OnceLock<DashMap<&'static str, StdArc<ListenerContext>>> = OnceLock::new();
+static LISTENERS_CONTEXT: OnceLock<PapayaMap<&'static str, StdArc<ListenerContext>, ahash::RandomState>> =
+    OnceLock::new();
 
 pub trait FilterListenerContext {
     fn get_filter_context(listener_name: &'static str) -> ArcRef<ListenerContext, Self>;
@@ -236,8 +237,8 @@ impl FilterListenerContext for McpGatewayListenerContext {
 
 #[inline]
 fn get_listener_context(listener_name: &'static str) -> StdArc<ListenerContext> {
-    let dmap = LISTENERS_CONTEXT.get_or_init(DashMap::new);
-    StdArc::clone(dmap.entry(listener_name).or_insert_with(|| StdArc::new(ListenerContext::default())).value())
+    let dmap = LISTENERS_CONTEXT.get_or_init(|| PapayaMap::with_hasher(ahash::RandomState::new()));
+    StdArc::clone(dmap.pin().get_or_insert_with(listener_name, || StdArc::new(ListenerContext::default())))
 }
 
 #[derive(Debug)]

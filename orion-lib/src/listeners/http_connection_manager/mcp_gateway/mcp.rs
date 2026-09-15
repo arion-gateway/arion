@@ -1,10 +1,10 @@
 use atomic_time::AtomicInstant;
 use bytes::{Bytes, BytesMut};
-use dashmap::{DashMap, DashSet};
 use http::{HeaderName, Method, Response, StatusCode};
 use http_body_util::{BodyExt, Empty, Full};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpGateway as McpGatewayConfig;
 use orion_http_header::MCP_SESSION_ID;
+use papaya::{HashMap as PapayaMap, HashSet as PapayaSet};
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 use smallvec::{smallvec, SmallVec};
@@ -51,9 +51,10 @@ pub struct Session {
     pub listener_name: &'static str,
     pub session_id: SessionId,
     pub last_activity: AtomicInstant,
-    pub mcp_upstreams: DashMap<String, StdArc<RunningService<RoleClient, InitializeRequestParams>>, ahash::RandomState>,
+    pub mcp_upstreams:
+        PapayaMap<String, StdArc<RunningService<RoleClient, InitializeRequestParams>>, ahash::RandomState>,
     pub prompt: Mutex<Option<String>>,
-    pub active_tools: DashSet<SmolStr, ahash::RandomState>,
+    pub active_tools: PapayaSet<SmolStr, ahash::RandomState>,
 }
 
 impl std::fmt::Debug for Session {
@@ -75,24 +76,24 @@ impl Default for Session {
             listener_name: "",
             session_id: SessionId::default(),
             last_activity: AtomicInstant::now(),
-            mcp_upstreams: DashMap::with_hasher(ahash::RandomState::default()),
+            mcp_upstreams: PapayaMap::with_hasher(ahash::RandomState::default()),
             prompt: Mutex::new(None),
-            active_tools: DashSet::with_hasher(ahash::RandomState::default()),
+            active_tools: PapayaSet::with_hasher(ahash::RandomState::default()),
         }
     }
 }
 
 #[derive(Debug)]
 pub struct McpGatewayListenerContext {
-    session_map: StdArc<DashMap<SessionId, StdArc<Session>, ahash::RandomState>>,
+    session_map: StdArc<PapayaMap<SessionId, StdArc<Session>, ahash::RandomState>>,
     cleanup_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     cleanup_task_started: AtomicBool,
 }
 
 impl McpGatewayListenerContext {
-    fn cleanup(session_map: &DashMap<SessionId, StdArc<Session>, ahash::RandomState>) {
+    fn cleanup(session_map: &PapayaMap<SessionId, StdArc<Session>, ahash::RandomState>) {
         let now = std::time::Instant::now();
-        session_map.retain(|_, session| {
+        session_map.pin().retain(|_, session| {
             let last_activity = session.last_activity.load(std::sync::atomic::Ordering::Relaxed);
             let idle = now.saturating_duration_since(last_activity);
             let retain = idle < SESSION_IDLE_TIMEOUT;
@@ -124,7 +125,7 @@ impl McpGatewayListenerContext {
 impl Default for McpGatewayListenerContext {
     fn default() -> Self {
         Self {
-            session_map: StdArc::new(DashMap::default()),
+            session_map: StdArc::new(PapayaMap::with_hasher(ahash::RandomState::new())),
             cleanup_task: Mutex::new(None),
             cleanup_task_started: AtomicBool::new(false),
         }
@@ -154,17 +155,17 @@ impl McpGatewayListenerContext {
             listener_name,
             session_id: session_id.clone(),
             last_activity: AtomicInstant::now(),
-            mcp_upstreams: DashMap::with_hasher(ahash::RandomState::default()),
+            mcp_upstreams: PapayaMap::with_hasher(ahash::RandomState::default()),
             prompt: Mutex::new(None),
-            active_tools: DashSet::with_hasher(ahash::RandomState::default()),
+            active_tools: PapayaSet::with_hasher(ahash::RandomState::default()),
         });
-        self.session_map.insert(session_id, StdArc::clone(&session));
+        self.session_map.pin().insert(session_id, StdArc::clone(&session));
         Ok(session)
     }
 
     #[inline]
     pub fn delete_session(&self, session_id: &SessionId) -> bool {
-        self.session_map.remove(session_id).is_some()
+        self.session_map.pin().remove(session_id).is_some()
     }
 }
 
@@ -792,13 +793,12 @@ impl McpGateway {
         ctx: &McpGatewayListenerContext,
         session_id: &SessionId,
     ) -> Result<StdArc<Session>, SessionError> {
-        let Some(session) = ctx.session_map.get(session_id) else {
+        let Some(session) = ctx.session_map.pin().get(session_id).map(StdArc::clone) else {
             debug!(target: "mcp_gateway", "get_valid_session: valid session {} not found in session map", session_id);
             return Err(SessionError::NotFound);
         };
 
         session.last_activity.store(std::time::Instant::now(), std::sync::atomic::Ordering::Relaxed);
-        let session: StdArc<Session> = StdArc::clone(&session);
         debug!(target: "mcp_gateway", "get_valid_session: {session_id} -> {session:?}");
         Ok(session)
     }

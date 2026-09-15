@@ -2,11 +2,11 @@ use std::sync::{LazyLock, Once};
 use std::time::{Duration, Instant};
 use triomphe::Arc;
 
-use dashmap::DashMap;
 use orion_configuration::config::{
     network_filters::http_connection_manager::http_filters::user_rate_limit::UserRateLimiter as OrionUserRateLimiter,
     GenericError,
 };
+use papaya::HashMap as PapayaMap;
 use smol_str::SmolStr;
 use tracing::debug;
 
@@ -22,7 +22,8 @@ use {
     orion_metrics::metrics::filters,
 };
 
-static USER_RATE_LIMITERS: LazyLock<DashMap<SmolStr, TokenBucket>> = LazyLock::new(DashMap::new);
+static USER_RATE_LIMITERS: LazyLock<PapayaMap<SmolStr, TokenBucket, ahash::RandomState>> =
+    LazyLock::new(|| PapayaMap::with_hasher(ahash::RandomState::new()));
 static CLEANER_ONCE: Once = Once::new();
 static CLEANER_PERIOD: Duration = Duration::from_secs(10);
 static CLEANER_TOKEN_BUCKET_IDLE: Duration = Duration::from_secs(60);
@@ -56,13 +57,13 @@ impl UserRateLimiter {
                     debug!(target: "user_rate_limiter", "running cleaner: with period {CLEANER_PERIOD:?} and idle lifetime {CLEANER_TOKEN_BUCKET_IDLE:?}");
                     pingora_timeout::sleep(CLEANER_PERIOD).await;
                     let now = Instant::now();
-                    USER_RATE_LIMITERS.retain(|usr, tb| {
-                        let res =now - tb.last_consume() < CLEANER_TOKEN_BUCKET_IDLE;
+                    USER_RATE_LIMITERS.pin().retain(|usr, tb| {
+                        let res = now - tb.last_consume() < CLEANER_TOKEN_BUCKET_IDLE;
                         if !res {
                             debug!(target: "user_rate_limiter", "cleaning up token bucket for user: {usr}");
                         }
                         res
-                    })
+                    });
                 }
             });
         });
@@ -96,8 +97,10 @@ impl UserRateLimiter {
 
         // Happy-path: an entry for the user already exists in the global map...
         //
-        if let Some(tb) = USER_RATE_LIMITERS.get(static_user) {
-            if tb.consume(1) {
+        // `pin().get(...).map(...)` clones nothing: `consume` returns a plain
+        // `bool`, so the papaya guard is released before any early return.
+        if let Some(allowed) = USER_RATE_LIMITERS.pin().get(static_user).map(|tb| tb.consume(1)) {
+            if allowed {
                 debug!(target: "user_rate_limiter", "consumed token for user: {static_user}");
                 #[cfg(feature = "metrics")]
                 with_metric!(
@@ -130,64 +133,38 @@ impl UserRateLimiter {
             return FilterDecision::rate_limited("Rate limited", Some(self.inner.status), request.version());
         }
 
-        // If the entry for the user does not exist in the global map, let's try to insert a new one.
+        // If the entry for the user does not exist in the global map, resolve the
+        // configured limit first (without mutating the map), then insert the new
+        // bucket with `get_or_insert`. On a concurrent race the winner's bucket
+        // is reused, which matches the old `entry().or_try_insert_with()` semantics.
         //
-        #[allow(clippy::result_large_err)]
-        let token_bucket = USER_RATE_LIMITERS.entry(static_user.into()).or_try_insert_with(|| {
-            let limit = if let Some(limit) = self.inner.user_rate_limits.get(&Some(static_user.into())) {
-                limit
-            } else if let Some(limit) = self.inner.user_rate_limits.get(&None) {
-                limit
-            } else {
-                // Configuration not found for this user... return Continue
-                debug!(target: "user_rate_limiter", "no rate limit found for user: {static_user}");
-                #[cfg(feature = "metrics")]
-                with_metric!(
-                    filters::USER_RATE_LIMIT,
-                    add,
-                    1,
-                    get_shard_id!(),
-                    &[
-                        KeyValue::new("filter", self.inner.stat_prefix.0),
-                        KeyValue::new("user", static_user),
-                        KeyValue::new("result", filters::EVENT_NOT_APPLICABLE)
-                    ]
-                );
-                return Err(FilterDecision::Continue);
-            };
+        let limit = if let Some(limit) = self.inner.user_rate_limits.get(&Some(static_user.into())) {
+            limit
+        } else if let Some(limit) = self.inner.user_rate_limits.get(&None) {
+            limit
+        } else {
+            // Configuration not found for this user... return Continue
+            debug!(target: "user_rate_limiter", "no rate limit found for user: {static_user}");
+            #[cfg(feature = "metrics")]
+            with_metric!(
+                filters::USER_RATE_LIMIT,
+                add,
+                1,
+                get_shard_id!(),
+                &[
+                    KeyValue::new("filter", self.inner.stat_prefix.0),
+                    KeyValue::new("user", static_user),
+                    KeyValue::new("result", filters::EVENT_NOT_APPLICABLE)
+                ]
+            );
+            return FilterDecision::Continue;
+        };
 
-            match limit {
-                Limit::LocalRateLimit(l) => {
-                    let Some(tb) = &l.token_bucket else {
-                        // Token bucket is not configured for this user, return Continue.
-                        debug!(target: "user_rate_limiter", "no token bucket found for user: {static_user}");
-                        #[cfg(feature = "metrics")]
-                        with_metric!(
-                            filters::USER_RATE_LIMIT,
-                            add,
-                            1,
-                            get_shard_id!(),
-                            &[
-                                KeyValue::new("filter", self.inner.stat_prefix.0),
-                                KeyValue::new("user", static_user),
-                                KeyValue::new("result", filters::EVENT_NOT_APPLICABLE)
-                            ]
-                        );
-                        return Err(FilterDecision::Continue);
-                    };
-                    Ok(TokenBucket::new(tb.max_tokens, tb.tokens_per_fill, tb.fill_interval))
-                },
-                Limit::SimpleRateLimit(s) => {
-                    TokenBucket::with_rate_and_capacity(s.max_tokens, s.rate).map_err(|_e| FilterDecision::Continue)
-                },
-            }
-        });
-
-        match token_bucket {
-            Err(decision) => decision,
-            Ok(tb) => {
-                if tb.consume(1) {
-                    debug!(target: "user_rate_limiter", "consumed token for user: {static_user}");
+        let new_bucket = match limit {
+            Limit::LocalRateLimit(l) => {
+                let Some(tb) = &l.token_bucket else {
+                    // Token bucket is not configured for this user, return Continue.
+                    debug!(target: "user_rate_limiter", "no token bucket found for user: {static_user}");
                     #[cfg(feature = "metrics")]
                     with_metric!(
                         filters::USER_RATE_LIMIT,
@@ -197,27 +174,51 @@ impl UserRateLimiter {
                         &[
                             KeyValue::new("filter", self.inner.stat_prefix.0),
                             KeyValue::new("user", static_user),
-                            KeyValue::new("result", filters::EVENT_OK)
+                            KeyValue::new("result", filters::EVENT_NOT_APPLICABLE)
                         ]
                     );
-                    FilterDecision::Continue
-                } else {
-                    debug!(target: "user_rate_limiter", "rate limited for user: {static_user}");
-                    #[cfg(feature = "metrics")]
-                    with_metric!(
-                        filters::USER_RATE_LIMIT,
-                        add,
-                        1,
-                        get_shard_id!(),
-                        &[
-                            KeyValue::new("filter", self.inner.stat_prefix.0),
-                            KeyValue::new("user", static_user),
-                            KeyValue::new("result", filters::EVENT_RATE_LIMITED)
-                        ]
-                    );
-                    FilterDecision::rate_limited("Rate limited", Some(self.inner.status), request.version())
-                }
+                    return FilterDecision::Continue;
+                };
+                TokenBucket::new(tb.max_tokens, tb.tokens_per_fill, tb.fill_interval)
             },
+            Limit::SimpleRateLimit(s) => match TokenBucket::with_rate_and_capacity(s.max_tokens, s.rate) {
+                Ok(tb) => tb,
+                Err(_) => return FilterDecision::Continue,
+            },
+        };
+
+        let pinned = USER_RATE_LIMITERS.pin();
+        let tb = pinned.get_or_insert(static_user.into(), new_bucket);
+        if tb.consume(1) {
+            debug!(target: "user_rate_limiter", "consumed token for user: {static_user}");
+            #[cfg(feature = "metrics")]
+            with_metric!(
+                filters::USER_RATE_LIMIT,
+                add,
+                1,
+                get_shard_id!(),
+                &[
+                    KeyValue::new("filter", self.inner.stat_prefix.0),
+                    KeyValue::new("user", static_user),
+                    KeyValue::new("result", filters::EVENT_OK)
+                ]
+            );
+            FilterDecision::Continue
+        } else {
+            debug!(target: "user_rate_limiter", "rate limited for user: {static_user}");
+            #[cfg(feature = "metrics")]
+            with_metric!(
+                filters::USER_RATE_LIMIT,
+                add,
+                1,
+                get_shard_id!(),
+                &[
+                    KeyValue::new("filter", self.inner.stat_prefix.0),
+                    KeyValue::new("user", static_user),
+                    KeyValue::new("result", filters::EVENT_RATE_LIMITED)
+                ]
+            );
+            FilterDecision::rate_limited("Rate limited", Some(self.inner.status), request.version())
         }
     }
 }

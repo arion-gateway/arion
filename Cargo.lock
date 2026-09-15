@@ -4290,7 +4290,6 @@ dependencies = [
  "contatori",
  "crossbeam-queue",
  "ctor 0.6.3",
- "dashmap",
  "enum_dispatch",
  "exponential-backoff",
  "flume",

@@ -1,4 +1,4 @@
-use dashmap::{mapref::entry::Entry, DashMap};
+use papaya::HashSet as PapayaSet;
 use smol_str::SmolStr;
 use std::sync::OnceLock;
 
@@ -7,24 +7,22 @@ use std::sync::OnceLock;
 /// Prevents two MCP gateway filters on the same runtime from using the
 /// same logical server name — which would otherwise let accidental config
 /// collisions cross listener scopes when xDS updates fan out.
-static SERVER_NAMES: OnceLock<DashMap<(usize, SmolStr), (), ahash::RandomState>> = OnceLock::new();
+static SERVER_NAMES: OnceLock<PapayaSet<(usize, SmolStr), ahash::RandomState>> = OnceLock::new();
 
-fn map() -> &'static DashMap<(usize, SmolStr), (), ahash::RandomState> {
-    SERVER_NAMES.get_or_init(|| DashMap::with_hasher(ahash::RandomState::new()))
+fn map() -> &'static PapayaSet<(usize, SmolStr), ahash::RandomState> {
+    SERVER_NAMES.get_or_init(|| PapayaSet::with_hasher(ahash::RandomState::new()))
 }
 
 pub fn claim(runtime_id: usize, server_name: SmolStr) -> Result<(), SmolStr> {
-    match map().entry((runtime_id, server_name.clone())) {
-        Entry::Vacant(v) => {
-            v.insert(());
-            Ok(())
-        },
-        Entry::Occupied(_) => Err(server_name),
+    if map().pin().insert((runtime_id, server_name.clone())) {
+        Ok(())
+    } else {
+        Err(server_name)
     }
 }
 
 pub fn release(runtime_id: usize, server_name: &str) {
-    map().remove(&(runtime_id, SmolStr::from(server_name)));
+    map().pin().remove(&(runtime_id, SmolStr::from(server_name)));
 }
 
 #[cfg(test)]

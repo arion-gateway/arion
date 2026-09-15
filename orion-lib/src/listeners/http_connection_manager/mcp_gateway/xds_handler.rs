@@ -4,7 +4,6 @@ use std::{
     sync::{Arc as StdArc, Once, OnceLock, Weak},
 };
 
-use dashmap::DashMap;
 use orion_configuration::config::{
     common::GenericError,
     network_filters::http_connection_manager::http_filters::mcp_gateway::{DynamicMcpServer, McpTool},
@@ -17,6 +16,7 @@ use orion_xds::xds::{
     extension::{XdsExtensionError, XdsExtensionHandler},
     model::TypeUrl,
 };
+use papaya::HashMap as PapayaMap;
 use prost::Message;
 use smol_str::SmolStr;
 use tracing::{debug, warn};
@@ -29,7 +29,12 @@ pub const MCP_DYNAMIC_SERVER_TYPE_URL: &str =
 
 const SUPPORTED_TYPE_URLS: &[&str] = &[MCP_TOOL_TYPE_URL, MCP_DYNAMIC_SERVER_TYPE_URL];
 
-type SubscriptionsByScope = DashMap<SmolStr, Vec<Weak<ToolsRegistry>>, ahash::RandomState>;
+// papaya values are immutable `&V`: the per-scope subscriber list needs interior
+// mutability, hence the `Mutex<Vec<...>>`. The outer `StdArc` lets `drain` clone
+// the list holder before removing the key, so concurrent `register` calls racing
+// with a drain are not lost.
+type SubscriptionsByScope =
+    PapayaMap<SmolStr, StdArc<parking_lot::Mutex<Vec<Weak<ToolsRegistry>>>>, ahash::RandomState>;
 
 static MCP_XDS_HANDLER: OnceLock<StdArc<McpXdsHandler>> = OnceLock::new();
 static PENDING_MCP_XDS_SUBSCRIPTIONS: OnceLock<SubscriptionsByScope> = OnceLock::new();
@@ -64,30 +69,42 @@ pub fn unsubscribe_from_updates(scope: &str, registry: &StdArc<ToolsRegistry>) {
 }
 
 fn pending_subscriptions() -> &'static SubscriptionsByScope {
-    PENDING_MCP_XDS_SUBSCRIPTIONS.get_or_init(|| DashMap::with_hasher(ahash::RandomState::new()))
+    PENDING_MCP_XDS_SUBSCRIPTIONS.get_or_init(|| PapayaMap::with_hasher(ahash::RandomState::new()))
 }
 
 fn queue_subscription(subscriptions: &SubscriptionsByScope, scope: SmolStr, registry: &StdArc<ToolsRegistry>) {
-    subscriptions.entry(scope).or_default().push(StdArc::downgrade(registry));
+    let pinned = subscriptions.pin();
+    let subscribers = pinned.get_or_insert_with(scope, || StdArc::new(parking_lot::Mutex::new(Vec::new())));
+    subscribers.lock().push(StdArc::downgrade(registry));
 }
 
 fn remove_subscription(subscriptions: &SubscriptionsByScope, scope: &str, registry: &StdArc<ToolsRegistry>) {
-    let Some(mut entry) = subscriptions.get_mut(scope) else { return };
-    entry.retain(|weak| match weak.upgrade() {
-        Some(arc) => !StdArc::ptr_eq(&arc, registry),
-        None => false,
-    });
-    let empty = entry.is_empty();
-    drop(entry);
+    let empty = {
+        let pinned = subscriptions.pin();
+        let Some(subscribers) = pinned.get(scope) else { return };
+        let mut guard = subscribers.lock();
+        guard.retain(|weak| match weak.upgrade() {
+            Some(arc) => !StdArc::ptr_eq(&arc, registry),
+            None => false,
+        });
+        guard.is_empty()
+    };
     if empty {
-        subscriptions.remove(scope);
+        subscriptions.pin().remove(scope);
     }
 }
 
 fn drain_pending_subscriptions(subscriptions: &SubscriptionsByScope, handler: &McpXdsHandler) {
-    let scopes: Vec<SmolStr> = subscriptions.iter().map(|entry| entry.key().clone()).collect();
+    let scopes: Vec<SmolStr> = {
+        let pinned = subscriptions.pin();
+        pinned.iter().map(|(scope, _)| scope.clone()).collect()
+    };
     for scope in scopes {
-        let Some((scope, registries)) = subscriptions.remove(scope.as_str()) else { continue };
+        let subscribers: Option<StdArc<parking_lot::Mutex<Vec<Weak<ToolsRegistry>>>>> =
+            subscriptions.pin().get(scope.as_str()).map(StdArc::clone);
+        let Some(subscribers) = subscribers else { continue };
+        subscriptions.pin().remove(scope.as_str());
+        let registries = std::mem::take(&mut *subscribers.lock());
         for registry in registries.into_iter().filter_map(|weak| weak.upgrade()) {
             handler.register(scope.clone(), &registry);
         }
@@ -105,7 +122,7 @@ pub struct McpXdsHandler {
 impl McpXdsHandler {
     pub fn new(subscriber: StdArc<DeltaDiscoverySubscriptionManager>) -> Self {
         Self {
-            subscriptions_by_scope: DashMap::with_hasher(ahash::RandomState::new()),
+            subscriptions_by_scope: PapayaMap::with_hasher(ahash::RandomState::new()),
             subscriber,
             subscribe_once: Once::new(),
         }
@@ -113,7 +130,9 @@ impl McpXdsHandler {
 
     pub fn register(&self, scope: SmolStr, registry: &StdArc<ToolsRegistry>) {
         debug!(target: "mcp_gateway", "Registering TDS registry for scope: {scope}");
-        self.subscriptions_by_scope.entry(scope).or_default().push(StdArc::downgrade(registry));
+        let pinned = self.subscriptions_by_scope.pin();
+        let subscribers = pinned.get_or_insert_with(scope, || StdArc::new(parking_lot::Mutex::new(Vec::new())));
+        subscribers.lock().push(StdArc::downgrade(registry));
         self.try_subscribe();
     }
 
@@ -159,16 +178,17 @@ impl McpXdsHandler {
     }
 
     fn live_registries(&self, scope: &str) -> Vec<StdArc<ToolsRegistry>> {
+        let pinned = self.subscriptions_by_scope.pin();
+        let Some(subscribers) = pinned.get(scope) else { return Vec::new() };
+        let mut guard = subscribers.lock();
         let mut out = Vec::new();
-        if let Some(mut entry) = self.subscriptions_by_scope.get_mut(scope) {
-            entry.retain(|weak| match weak.upgrade() {
-                Some(arc) => {
-                    out.push(arc);
-                    true
-                },
-                None => false,
-            });
-        }
+        guard.retain(|weak| match weak.upgrade() {
+            Some(arc) => {
+                out.push(arc);
+                true
+            },
+            None => false,
+        });
         out
     }
 }
@@ -316,11 +336,11 @@ mod tests {
     }
 
     fn scope_len(handler: &McpXdsHandler, scope: &str) -> usize {
-        handler.subscriptions_by_scope.get(scope).map_or(0, |entry| entry.len())
+        handler.subscriptions_by_scope.pin().get(scope).map_or(0, |subscribers| subscribers.lock().len())
     }
 
     fn subscription_map() -> SubscriptionsByScope {
-        DashMap::with_hasher(ahash::RandomState::new())
+        PapayaMap::with_hasher(ahash::RandomState::new())
     }
 
     fn rest_tool_proto(name: &str) -> OrionTool {
@@ -376,7 +396,7 @@ mod tests {
         queue_subscription(&subscriptions, scope.clone(), &r2);
         remove_subscription(&subscriptions, &scope, &r1);
 
-        let queued = subscriptions.get(&scope).expect("scope should remain queued");
+        let queued = subscriptions.pin().get(&scope).map(|m| m.lock().clone()).expect("scope should remain queued");
         assert_eq!(queued.len(), 1);
         assert!(queued[0].upgrade().is_some_and(|arc| StdArc::ptr_eq(&arc, &r2)));
     }
@@ -395,7 +415,7 @@ mod tests {
 
         drain_pending_subscriptions(&subscriptions, &handler);
 
-        assert!(subscriptions.is_empty());
+        assert!(subscriptions.pin().is_empty());
         assert_eq!(scope_len(&handler, &scope), 1);
         assert!(handler.live_registries(&scope).iter().all(|arc| StdArc::ptr_eq(arc, &live)));
     }
@@ -415,7 +435,7 @@ mod tests {
         assert!(handler.live_registries(&scope).iter().all(|a| StdArc::ptr_eq(a, &r2)));
 
         handler.unregister(&scope, &r2);
-        assert!(!handler.subscriptions_by_scope.contains_key(scope.as_str()));
+        assert!(!handler.subscriptions_by_scope.pin().contains_key(scope.as_str()));
     }
 
     #[tokio::test]
@@ -440,7 +460,7 @@ mod tests {
         // No scope registered — handle_update must not error and must not touch storage.
         let res = handler.handle_update(MCP_TOOL_TYPE_URL, "srv/cfg/tool_x", &[]).await;
         assert!(res.is_ok());
-        assert!(handler.subscriptions_by_scope.is_empty());
+        assert!(handler.subscriptions_by_scope.pin().is_empty());
     }
 
     #[tokio::test]
