@@ -643,7 +643,7 @@ impl McpGateway {
             return Ok(MessageResult::JsonRpcResponseNewSession(response, new_session));
         }
 
-        // check integrety session...
+        // check integrity session...
 
         let Some(session) = session else {
             let err =

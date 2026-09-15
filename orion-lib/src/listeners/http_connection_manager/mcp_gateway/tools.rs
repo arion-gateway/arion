@@ -808,8 +808,11 @@ impl ToolsRegistry {
         }
 
         if entry.input_schema_validator.is_some() {
-            let arguments = rpc.request.params.get("arguments").cloned().unwrap_or(Value::Null);
-            entry.validate_against_input_schema(&arguments)?;
+            match rpc.request.params.get("arguments") {
+                Some(arguments) => entry.validate_against_input_schema(arguments)?,
+                // Temporary lives until end of the statement, so borrowing is safe here.
+                None => entry.validate_against_input_schema(&Value::Null)?,
+            }
         }
 
         match (&entry.conf.backend, &entry.transcoder) {
