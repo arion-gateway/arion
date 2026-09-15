@@ -8,10 +8,7 @@ use crate::listeners::http_connection_manager::{
             Action as RbacAction, JwtClaimField, JwtHeaderField, JwtHeaderMatcher, JwtPayloadMatcher,
             Permission as RbacPermission, ToolRbac,
         },
-        transcoder::{
-            rest::{BODY_TEMPLATE_NAME, DEFAULT_USER_AGENT, PATH_TEMPLATE_NAME},
-            FunctionGraphTranscoder, RestTranscoder, Transcoder, TranscoderType,
-        },
+        transcoder::{rest::DEFAULT_USER_AGENT, FunctionGraphTranscoder, RestTranscoder, Transcoder, TranscoderType},
         upstream::{self, ToolInvocationFailure, ToolInvocationOutcome},
     },
     RequestCtx,
@@ -50,7 +47,6 @@ use std::sync::{Arc as StdArc, LazyLock};
 use std::time::{Duration, Instant};
 use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
-use upon::Engine;
 
 const DYNAMIC_TOOL_SEPARATOR: &str = "__";
 const INDEFINITE_CACHE_LIFETIME: Duration = Duration::from_secs(100 * 365 * 24 * 3600);
@@ -806,7 +802,6 @@ impl ToolsRegistry {
                 return Err(CallToolError::RbacDenied(name.into()));
             }
         }
-
         if entry.input_schema_validator.is_some() {
             match rpc.request.params.get("arguments") {
                 Some(arguments) => entry.validate_against_input_schema(arguments)?,
@@ -945,19 +940,9 @@ fn build_tool_entry(tool_conf: McpTool, source: ToolSource) -> Result<ToolEntry,
         )
     };
     let transcoder = match &tool_conf.backend {
-        UpstreamBackend::Rest { method, path, query_params, body_template, .. } => {
-            let mut template_engine: Engine<'static> = upon::Engine::new();
-            template_engine.add_template(PATH_TEMPLATE_NAME, path.clone())?;
-            if let Some(body_template) = body_template {
-                template_engine.add_template(BODY_TEMPLATE_NAME, body_template.clone())?;
-            }
-            TranscoderType::Rest(RestTranscoder {
-                method: method.clone(),
-                query_params: query_params.clone(),
-                has_body_template: body_template.is_some(),
-                template_engine,
-            })
-        },
+        UpstreamBackend::Rest { method, path, query_params, body_template, .. } => TranscoderType::Rest(
+            RestTranscoder::new(method.clone(), query_params.clone(), path.clone(), body_template.clone())?,
+        ),
         UpstreamBackend::FunctionGraph => TranscoderType::FunctionGraph(FunctionGraphTranscoder {}),
         UpstreamBackend::McpServer { .. } => TranscoderType::NoTranscoder,
     };

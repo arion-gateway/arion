@@ -33,11 +33,22 @@ pub enum TranscoderType {
 }
 
 #[derive(Debug)]
+pub enum CompiledTemplate<T> {
+    /// Use verbatim, skip the engine entirely (has priority when present).
+    Static(T),
+    /// Contains `{{...}}`: render via `template_engine`.
+    Dynamic,
+}
+
+#[derive(Debug)]
 pub struct RestTranscoder {
     pub method: http::Method,
     pub query_params: Vec<McpRestQueryParams>,
-    pub has_body_template: bool,
-    pub template_engine: Engine<'static>,
+    /// Always present: `Static` (pre-normalized with leading '/') or `Dynamic`.
+    pub path: CompiledTemplate<String>,
+    /// `None` = no body. Replaces the old `has_body_template` boolean.
+    pub body: Option<CompiledTemplate<Bytes>>,
+    template_engine: Engine<'static>,
 }
 
 #[derive(Debug)]

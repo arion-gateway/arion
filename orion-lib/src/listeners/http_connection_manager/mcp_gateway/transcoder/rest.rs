@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use super::{RestTranscoder, Transcoder, TranscoderError};
+use super::{CompiledTemplate, RestTranscoder, Transcoder, TranscoderError};
 use crate::{
     body::{
         instrumented_body::InstrumentedBody, poly_body::PolyBody, response_flags::BodyKind, timeout_body::TimeoutBody,
@@ -24,7 +24,36 @@ static EMPTY_MAP: std::sync::LazyLock<serde_json::Map<String, Value>> = std::syn
 const QUERY_SET: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(b'.').remove(b'~');
 
 impl RestTranscoder {
-    /// Renders a template by substituting variables with values from the arguments map.
+    /// Compile path/body templates once. Templates without `{{...}}` become
+    /// `Static` (reused verbatim, engine never touched); the rest become
+    /// `Dynamic` and are registered in the engine.
+    pub fn new(
+        method: http::Method,
+        query_params: Vec<super::McpRestQueryParams>,
+        path: String,
+        body_template: Option<String>,
+    ) -> Result<Self, upon::Error> {
+        let mut template_engine: upon::Engine<'static> = upon::Engine::new();
+        let path = if path.contains("{{") {
+            template_engine.add_template(PATH_TEMPLATE_NAME, path)?;
+            CompiledTemplate::Dynamic
+        } else if path.starts_with('/') {
+            CompiledTemplate::Static(path)
+        } else {
+            CompiledTemplate::Static(format!("/{path}"))
+        };
+        let body = match body_template {
+            None => None,
+            Some(template) if template.contains("{{") => {
+                template_engine.add_template(BODY_TEMPLATE_NAME, template)?;
+                Some(CompiledTemplate::Dynamic)
+            },
+            Some(template) => Some(CompiledTemplate::Static(Bytes::from(template))),
+        };
+        Ok(Self { method, query_params, path, body, template_engine })
+    }
+
+    /// Renders a dynamic template by substituting variables with values from the arguments map.
     /// Variables are in the format {{`variable_name`}}.
     ///
     /// Note: Missing variables in templates should be caught by input schema validation.
@@ -48,14 +77,25 @@ impl Transcoder for RestTranscoder {
         // upstream cluster based on configuration. Including authority without scheme
         // causes "invalid format" error in http::Uri parser.
         let arguments = mcp_request.params.get("arguments").and_then(|v| v.as_object()).unwrap_or_else(|| &EMPTY_MAP);
-        let rendered_path = self.render_template(PATH_TEMPLATE_NAME, arguments)?;
 
-        let capacity = rendered_path.len() + self.query_params.len() * 32 + 2;
-        let mut uri = String::with_capacity(capacity);
-        if !rendered_path.starts_with('/') {
-            uri.push('/');
+        // Path: static version has priority (no engine), dynamic renders via upon.
+        let mut uri = String::with_capacity(
+            match &self.path {
+                CompiledTemplate::Static(p) => p.len(),
+                CompiledTemplate::Dynamic => 64,
+            } + self.query_params.len() * 32
+                + 2,
+        );
+        match &self.path {
+            CompiledTemplate::Static(static_path) => uri.push_str(static_path),
+            CompiledTemplate::Dynamic => {
+                let rendered_path = self.render_template(PATH_TEMPLATE_NAME, arguments)?;
+                if !rendered_path.starts_with('/') {
+                    uri.push('/');
+                }
+                uri.push_str(&rendered_path);
+            },
         }
-        uri.push_str(&rendered_path);
 
         if !self.query_params.is_empty() {
             append_query_string(&mut uri, &self.query_params, arguments);
@@ -70,17 +110,23 @@ impl Transcoder for RestTranscoder {
         let mut builder =
             http::Request::builder().method(&self.method).uri(uri).header(http::header::USER_AGENT, user_agent);
 
-        // Build the body based on body template or empty body
-        let body = if self.has_body_template {
-            let rendered = self.render_template(BODY_TEMPLATE_NAME, arguments)?;
-
-            builder = builder.header(http::header::CONTENT_TYPE, "application/json");
-
-            let poly_body = PolyBody::from(Full::new(Bytes::from(rendered)));
-            let timeout_body = TimeoutBody::new(None, poly_body);
-            InstrumentedBody::new(BodyKind::Request, timeout_body, None, |_, _, _, _| {})
-        } else {
-            InstrumentedBody::default()
+        // Build the body based on body template or empty body.
+        // Static version has priority (cheap refcount clone), dynamic renders via upon.
+        let body = match &self.body {
+            None => InstrumentedBody::default(),
+            Some(CompiledTemplate::Static(static_body)) => {
+                builder = builder.header(http::header::CONTENT_TYPE, "application/json");
+                let poly_body = PolyBody::from(Full::new(static_body.clone()));
+                let timeout_body = TimeoutBody::new(None, poly_body);
+                InstrumentedBody::new(BodyKind::Request, timeout_body, None, |_, _, _, _| {})
+            },
+            Some(CompiledTemplate::Dynamic) => {
+                let rendered = self.render_template(BODY_TEMPLATE_NAME, arguments)?;
+                builder = builder.header(http::header::CONTENT_TYPE, "application/json");
+                let poly_body = PolyBody::from(Full::new(Bytes::from(rendered)));
+                let timeout_body = TimeoutBody::new(None, poly_body);
+                InstrumentedBody::new(BodyKind::Request, timeout_body, None, |_, _, _, _| {})
+            },
         };
 
         Ok(builder.body(body)?)
@@ -185,15 +231,10 @@ mod tests {
         method: http::Method,
         path: String,
         query_params: Vec<super::super::McpRestQueryParams>,
-        has_body_template: bool,
+        _has_body_template: bool,
         body_template: Option<String>,
     ) -> RestTranscoder {
-        let mut template_engine: Engine<'static> = upon::Engine::new();
-        template_engine.add_template(PATH_TEMPLATE_NAME, path).unwrap();
-        if let Some(body_template) = body_template {
-            template_engine.add_template(BODY_TEMPLATE_NAME, body_template).unwrap();
-        }
-        RestTranscoder { method, query_params, has_body_template, template_engine }
+        RestTranscoder::new(method, query_params, path, body_template).unwrap()
     }
 
     #[test]
