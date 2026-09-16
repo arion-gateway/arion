@@ -9,7 +9,7 @@ use orion_configuration::config::{
 };
 use orion_http_header::X_REQUEST_ID;
 use orion_interner::StringInterner;
-use rmcp::model::{Annotated, CallToolResult, RawContent, RawTextContent};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tracing::warn;
@@ -340,8 +340,8 @@ pub(crate) fn call_tool_outcome_from_upstream(
     }
 
     if tool.output_schema_validator.is_none() {
-        let content = RawContent::Text(RawTextContent { text: extract_body_string(body, status), meta: None });
-        return ToolInvocationOutcome::Success(CallToolResult::success(vec![Annotated::new(content, None)]));
+        let content = ContentBlock::text(extract_body_string(body, status));
+        return ToolInvocationOutcome::Success(CallToolResult::success(vec![content]));
     }
 
     let value = match &tool.transcoder {
@@ -510,13 +510,11 @@ mod tests {
             "nested": {"x": [1, 2, 3], "emoji": "🦀"},
         });
         let outcome = ToolInvocationOutcome::Success(CallToolResult::structured(payload));
-        let moved = ToolInvocationOutcome::Success(CallToolResult::structured(
-            json!({
-                "temperature": 22.5,
-                "tags": ["a", "b"],
-                "nested": {"x": [1, 2, 3], "emoji": "🦀"},
-            }),
-        ))
+        let moved = ToolInvocationOutcome::Success(CallToolResult::structured(json!({
+            "temperature": 22.5,
+            "tags": ["a", "b"],
+            "nested": {"x": [1, 2, 3], "emoji": "🦀"},
+        })))
         .into_result_value()
         .unwrap();
         let serialized = serde_json::to_value(outcome.into_call_tool_result()).unwrap();

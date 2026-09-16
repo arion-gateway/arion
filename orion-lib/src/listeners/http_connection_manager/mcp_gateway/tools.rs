@@ -26,9 +26,8 @@ use papaya::HashMap as PapayaMap;
 use pingora_timeout::fast_timeout::fast_timeout;
 use rmcp::{
     model::{
-        CallToolRequestParams, CallToolResult, ClientCapabilities, ClientInfo, Content, Implementation,
-        InitializeRequestParams, JsonRpcNotification, RawContent, RawTextContent, ServerNotification,
-        ToolListChangedNotification,
+        CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, ContentBlock, Implementation,
+        InitializeRequestParams, JsonRpcNotification, ServerNotification, ToolListChangedNotification,
     },
     service::ClientInitializeError,
     transport::StreamableHttpClientTransport,
@@ -453,7 +452,7 @@ impl ToolsRegistry {
             self.fill_list_tools(req_ext, session, &mut tools);
         }
 
-        Ok(ListToolsResult { tools, next_cursor: None, meta: None })
+        Ok(ListToolsResult { tools, next_cursor: None, meta: None, ttl_ms: None, result_type: None, cache_scope: None })
     }
 
     fn fill_list_tools(&self, req_ext: &http::Extensions, session: &StdArc<Session>, tools: &mut Vec<Tool>) {
@@ -590,7 +589,7 @@ impl ToolsRegistry {
         debug!(target: "mcp_gateway", "Creating MCP client for URL: {url}...");
         let transport = StreamableHttpClientTransport::from_uri(url);
         let client_info =
-            ClientInfo::new(ClientCapabilities::default(), Implementation::new(DEFAULT_USER_AGENT, "0.1.0"));
+            ClientConfig::new(ClientCapabilities::default(), Implementation::new(DEFAULT_USER_AGENT, "0.1.0"));
         client_info.serve(transport).await.inspect_err(|e| {
             info!(target: "mcp_gateway", "get_mcp_client error: {}!", e);
         })
@@ -643,12 +642,9 @@ impl ToolsRegistry {
                 notification: ServerNotification::ToolListChangedNotification(ToolListChangedNotification::default()),
             };
 
-            let text_content = RawTextContent {
-                text: "Context acquired. Relevant APIs loaded. The tool list has been updated, please proceed with the new tools.".to_owned(),
-                meta: None
-            };
-
-            let success_message = Content { raw: RawContent::Text(text_content), annotations: None };
+            let success_message = ContentBlock::text(
+                "Context acquired. Relevant APIs loaded. The tool list has been updated, please proceed with the new tools.",
+            );
             let json_result = serde_json::to_value(CallToolResult::success(vec![success_message]))?;
 
             let json_rpc_response =
@@ -661,12 +657,8 @@ impl ToolsRegistry {
             let tools: Vec<Tool> = ranked.iter().map(|e| tool_from_entry(e)).collect();
             let tools_json = serde_json::to_value(&tools).unwrap_or_else(|_| serde_json::Value::Array(vec![]));
 
-            let text_content = RawTextContent {
-                text: serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_owned()),
-                meta: None,
-            };
-
-            let success_message = Content { raw: RawContent::Text(text_content), annotations: None };
+            let success_message =
+                ContentBlock::text(serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_owned()));
             let json_result = serde_json::to_value(CallToolResult::success(vec![success_message]))?;
 
             let json_rpc_response =

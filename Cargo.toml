@@ -137,7 +137,7 @@ rand_0_9                 = { package = "rand", version = "0.9.2" }
 triomphe                 = { version = "0.1.16", features = ["serde"] }
 ref-cast                 = "1.0.25"
 regex                    = "1.12.2"
-rmcp                     = { version = "1.2.0", features = ["client", "transport-streamable-http-client-reqwest"] }
+rmcp                     = { version = "3.4.0", features = ["client", "transport-streamable-http-client-reqwest"] }
 rustc-hash               = "1.1.0"
 rustls                   = { version = "0.23", features = ["aws-lc-rs"] }
 rustls-pemfile           = "2.2"
