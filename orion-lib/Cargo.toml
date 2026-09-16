@@ -98,6 +98,7 @@ jsonwebtoken = { workspace = true, features = ["aws_lc_rs"] }
 chrono = { workspace = true, features = ["serde"] }
 schemars = { workspace = true, features = ["std", "derive", "chrono04"] }
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
+reqwest.workspace = true
 moka = { workspace = true, features = ["sync"] }
 rustls-platform-verifier = { workspace = true }
 contatori = { workspace = true, optional = true }

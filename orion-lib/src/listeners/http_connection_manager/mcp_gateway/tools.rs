@@ -24,6 +24,7 @@ use orion_configuration::config::network_filters::http_connection_manager::http_
 use orion_interner::StringInterner;
 use papaya::HashMap as PapayaMap;
 use pingora_timeout::fast_timeout::fast_timeout;
+use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::{
     model::{
         CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, ContentBlock, Implementation,
@@ -51,6 +52,32 @@ const DYNAMIC_TOOL_SEPARATOR: &str = "__";
 const INDEFINITE_CACHE_LIFETIME: Duration = Duration::from_secs(100 * 365 * 24 * 3600);
 
 const SEMANTIC_SEARCH_TOOL_NAME: &str = "semantic_search";
+thread_local! {
+    /// One HTTP client per OS thread for upstream MCP transports.
+    ///
+    /// `rmcp`'s `StreamableHttpClientTransport::from_uri`/`from_config` build a private
+    /// `reqwest::Client` with `pool_max_idle_per_host(0)`, so each POST opens a fresh
+    /// TCP (+TLS) connection even when the `RunningService` is reused. Each thread-local
+    /// client keeps its own keep-alive pool, while each transport keeps its own MCP
+    /// session state (session id, protocol version) in its worker.
+    static UPSTREAM_REQWEST_CLIENT: reqwest::Client = reqwest::Client::builder()
+        // Keep-alive pool enabled (rmcp's default disables it with
+        // `pool_max_idle_per_host(0)`; omitting that call restores reuse).
+        // Values below mirror reqwest defaults; written out so the intent
+        // is visible instead of relying on the bypassed rmcp default.
+        .pool_max_idle_per_host(usize::MAX)
+        .pool_idle_timeout(Duration::from_secs(90))
+        // Same as rmcp's default: never replay caller headers to a redirect target.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("failed to build upstream reqwest client");
+}
+
+/// Clone the calling thread's HTTP client. Clones share that thread's keep-alive
+/// pool; pools are never shared across OS threads.
+fn upstream_http_client() -> reqwest::Client {
+    UPSTREAM_REQWEST_CLIENT.with(|client| client.clone())
+}
 static SEMANTIC_SEARCH_TOOL_INPUT_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
     json!({
         "type": "object",
@@ -587,7 +614,10 @@ impl ToolsRegistry {
         url: &str,
     ) -> Result<RunningService<RoleClient, InitializeRequestParams>, ClientInitializeError> {
         debug!(target: "mcp_gateway", "Creating MCP client for URL: {url}...");
-        let transport = StreamableHttpClientTransport::from_uri(url);
+        let transport = StreamableHttpClientTransport::with_client(
+            upstream_http_client(),
+            StreamableHttpClientTransportConfig::with_uri(url),
+        );
         let client_info =
             ClientConfig::new(ClientCapabilities::default(), Implementation::new(DEFAULT_USER_AGENT, "0.1.0"));
         client_info.serve(transport).await.inspect_err(|e| {
