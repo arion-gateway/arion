@@ -1,3 +1,5 @@
+
+
 use std::{io, sync::Arc as StdArc, time::Instant};
 
 use bytes::Bytes;
@@ -301,7 +303,10 @@ impl ToolInvocationOutcome {
         match self {
             Self::Success(mut result) => {
                 let content = serde_json::to_value(std::mem::take(&mut result.content))?;
-                let mut map = serde_json::Map::with_capacity(4);
+                let mut map = serde_json::Map::with_capacity(5);
+                if let Some(result_type) = result.result_type.take() {
+                    map.insert("resultType".to_owned(), serde_json::to_value(result_type)?);
+                }
                 map.insert("content".to_owned(), content);
                 if let Some(structured) = result.structured_content.take() {
                     map.insert("structuredContent".to_owned(), structured);
