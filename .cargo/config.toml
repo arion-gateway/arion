@@ -1,9 +1,5 @@
 [net]
 git-fetch-with-cli = true
-[source.crates-io]
-replace-with = "mirror"
-[source.mirror]
-registry ="sparse+https://internal.invalid/cargo/"
 [build]
 rustflags = [
     # microarch (alternatively x86-64-v3)
