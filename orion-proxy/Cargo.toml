@@ -20,7 +20,6 @@ orion-configuration.workspace  = true
 orion-error.workspace          = true
 orion-format.workspace         = true
 orion-lib.workspace            = true
-orion-log.workspace            = true
 orion-stats.workspace          = true
 orion-metrics = { workspace = true, optional = true }
 orion-tracing.workspace        = true

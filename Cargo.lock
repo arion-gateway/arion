@@ -4420,16 +4420,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "orion-log"
-version = "0.1.0"
-dependencies = [
- "aho-corasick",
- "regex",
- "smol_str",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "orion-metrics"
 version = "0.1.0"
 dependencies = [
@@ -4478,7 +4468,6 @@ dependencies = [
  "orion-error",
  "orion-format",
  "orion-lib",
- "orion-log",
  "orion-metrics",
  "orion-stats",
  "orion-tracing",

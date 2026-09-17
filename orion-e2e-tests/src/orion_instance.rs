@@ -392,9 +392,6 @@ impl OrionInstance {
             cmd.arg("--num-cpus").arg(cpus.to_string());
         }
 
-        let log_level = options.log_level.as_deref().unwrap_or("info");
-        cmd.env("RUST_LOG", log_level);
-
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
@@ -662,12 +659,6 @@ impl SpawnOptions {
     #[must_use]
     pub fn with_verbose(mut self) -> Self {
         self.verbose_output = true;
-        self
-    }
-
-    #[must_use]
-    pub fn with_log_level(mut self, level: impl Into<String>) -> Self {
-        self.log_level = Some(level.into());
         self
     }
 

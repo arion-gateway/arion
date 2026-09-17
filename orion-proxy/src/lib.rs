@@ -27,9 +27,7 @@ mod runtime;
 mod xds_configurator;
 
 pub fn run() -> bool {
-    let Ok(mut tracing_manager) = proxy_tracing::TracingManager::new() else {
-        return false;
-    };
+    let mut tracing_manager = proxy_tracing::TracingManager::new();
 
     let result = (|| -> Result<()> {
         let options = Options::parse_options();
@@ -94,9 +92,8 @@ mod proxy_tracing {
         fmt, fmt::format::DefaultFields, layer::Layered, reload, reload::Handle, EnvFilter, Registry,
     };
 
-    use orion_configuration::config::{DesensitizationConfig, LogConfig as LogConf};
+    use orion_configuration::config::LogConfig as LogConf;
     use orion_lib::Result;
-    use orion_log::{Desensitizer, MakeWriterType, RedactingMakeWriter};
 
     #[derive(Clone, Default)]
     struct CustomTime;
@@ -115,7 +112,7 @@ mod proxy_tracing {
         Layered<reload::Layer<EnvFilter, Registry>, Registry>,
         DefaultFields,
         fmt::format::Format<fmt::format::Full, CustomTime>,
-        MakeWriterType<NonBlocking>,
+        NonBlocking,
     >;
     type FilterReloadHandle = Handle<EnvFilter, Registry>;
     type LayerReloadHandle = Handle<
@@ -123,7 +120,7 @@ mod proxy_tracing {
             Layered<reload::Layer<EnvFilter, Registry>, Registry>,
             DefaultFields,
             fmt::format::Format<fmt::format::Full, CustomTime>,
-            MakeWriterType<NonBlocking>,
+            NonBlocking,
         >,
         Layered<reload::Layer<EnvFilter, Registry>, Registry>,
     >;
@@ -135,38 +132,32 @@ mod proxy_tracing {
     }
 
     impl TracingManager {
-        pub fn new() -> Result<Self> {
+        pub fn new() -> Self {
             let level = EnvFilter::builder()
                 .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
                 .parse_lossy("");
-            let (guard, layer_reload_handle, filter_reload_handle) =
-                Self::init_tracing(Registry::default(), level, &DesensitizationConfig::default())?;
-            Ok(TracingManager { guard, filter_reload_handle, layer_reload_handle })
+            let (guard, layer_reload_handle, filter_reload_handle) = Self::init_tracing(Registry::default(), level);
+            TracingManager { guard, filter_reload_handle, layer_reload_handle }
         }
 
         pub fn update(&mut self, log_conf: LogConf) -> Result<()> {
-            let LogConf { log_level, log_directory, log_file, desensitization } = log_conf;
-
+            // Update log level
             self.filter_reload_handle.modify(|filter| {
-                *filter = EnvFilter::try_from_default_env().ok().or(log_level).unwrap_or_else(|| {
+                *filter = EnvFilter::try_from_default_env().ok().or(log_conf.log_level).unwrap_or_else(|| {
                     EnvFilter::builder()
                         .with_default_directive(tracing_subscriber::filter::LevelFilter::ERROR.into())
                         .parse_lossy("")
                 });
             })?;
 
-            // Build the new layer before entering the modify closure so that
-            // errors from Desensitizer::build() can be propagated with `?`.
-            let (new_guard, new_layer) = if let Some(ref file) = log_file {
-                Self::file_layer(file, log_directory.as_ref(), &desensitization)?
-            } else {
-                Self::stdout_layer(&desensitization)?
-            };
-
-            self.layer_reload_handle.modify(|layer| {
-                *layer = new_layer;
-            })?;
-            self.guard = new_guard;
+            // Update tracing layer if necessary (stdout -> file)
+            if let Some(log_file) = log_conf.log_file {
+                self.layer_reload_handle.modify(|layer| {
+                    let (new_guard, new_layer) = Self::file_layer(&log_file, log_conf.log_directory.as_ref());
+                    *layer = new_layer;
+                    self.guard = new_guard;
+                })?;
+            }
 
             Ok(())
         }
@@ -174,8 +165,7 @@ mod proxy_tracing {
         fn init_tracing(
             registry: Registry,
             log_level: EnvFilter,
-            desensitization: &DesensitizationConfig,
-        ) -> Result<(WorkerGuard, LayerReloadHandle, FilterReloadHandle)> {
+        ) -> (WorkerGuard, LayerReloadHandle, FilterReloadHandle) {
             use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
             let env_filter = EnvFilter::try_from_default_env().ok().or(Some(log_level)).unwrap_or_else(|| {
@@ -184,57 +174,36 @@ mod proxy_tracing {
                     .parse_lossy("")
             });
 
-            let (guard, layer) = Self::stdout_layer(desensitization)?;
+            // Start as an stdout layer by default, after reading the configuration this can be upgraded to a file layer
+            let (guard, layer) = Self::stdout_layer();
             let (layer, layer_reload_handle) = reload::Layer::new(layer);
+
             let (env_filter, filter_reload_handle) = reload::Layer::new(env_filter);
 
             registry.with(env_filter).with(layer).init();
-            Ok((guard, layer_reload_handle, filter_reload_handle))
+            (guard, layer_reload_handle, filter_reload_handle)
         }
 
-        fn make_writer(
-            desensitization: &DesensitizationConfig,
-            inner: NonBlocking,
-        ) -> Result<MakeWriterType<NonBlocking>> {
-            if std::env::var_os("ORION_DEBUG").is_some() {
-                return Ok(MakeWriterType::passthrough(inner));
-            }
-            let desensitizer = Desensitizer::builder(
-                desensitization.log_max_length,
-                desensitization.replace_length,
-                desensitization.ignore_tag.clone(),
-            )
-            .allow_list(desensitization.allow_list.clone())
-            .build()?;
-            Ok(MakeWriterType::Redacting(RedactingMakeWriter::with_desensitizer(inner, desensitizer)))
-        }
-
-        fn stdout_layer(desensitization: &DesensitizationConfig) -> Result<(WorkerGuard, RegistryLayer)> {
+        fn stdout_layer() -> (WorkerGuard, RegistryLayer) {
             let out = std::io::stdout();
             let is_terminal = std::io::IsTerminal::is_terminal(&out);
             let (non_blocking, guard) = tracing_appender::non_blocking(out);
-            let writer = Self::make_writer(desensitization, non_blocking)?;
-            let mut std_layer = fmt::layer().with_timer(CustomTime).with_writer(writer).with_thread_names(true);
+            let mut std_layer = fmt::layer().with_timer(CustomTime).with_writer(non_blocking).with_thread_names(true);
 
             if !is_terminal {
                 std_layer = std_layer.with_ansi(false);
             }
 
-            Ok((guard, std_layer))
+            (guard, std_layer)
         }
 
-        fn file_layer(
-            filename: &str,
-            log_directory: Option<&String>,
-            desensitization: &DesensitizationConfig,
-        ) -> Result<(WorkerGuard, RegistryLayer)> {
+        fn file_layer(filename: &str, log_directory: Option<&String>) -> (WorkerGuard, RegistryLayer) {
             let file_appender = tracing_appender::rolling::hourly(log_directory.unwrap_or(&".".into()), filename);
             let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-            let writer = Self::make_writer(desensitization, non_blocking)?;
             let file_layer =
-                fmt::layer().with_timer(CustomTime).with_ansi(false).with_writer(writer).with_thread_names(true);
+                fmt::layer().with_timer(CustomTime).with_ansi(false).with_writer(non_blocking).with_thread_names(true);
 
-            Ok((guard, file_layer))
+            (guard, file_layer)
         }
     }
 }
