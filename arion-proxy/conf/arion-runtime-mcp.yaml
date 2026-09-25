@@ -145,6 +145,30 @@ envoy_bootstrap:
                               cluster: user_profile_api_cluster
                               method: DELETE
                               path: "/v1/admin/user"
+                          # --- tools served by an upstream MCP server ---
+                          # Pinned by name rather than discovered: the gateway
+                          # dials `url` directly with its own MCP client (no
+                          # cluster involved) and sends `name` upstream verbatim
+                          # in tools/call, so it must match the upstream tool
+                          # name exactly. Set `transport` explicitly, the proto
+                          # default is Sse and only StreamableHttp is
+                          # implemented. Schemas are optional here: omitted,
+                          # tools/list advertises an empty input schema;
+                          # supplied, they are advertised and the input schema
+                          # is enforced, just as for rest_backend tools. Pinning
+                          # also allows per-tool rbac, whereas the rbac block of
+                          # a dynamic_mcp_servers entry covers every tool of
+                          # that server.
+                          - name: "echo"
+                            description: "Echo back the supplied message"
+                            mcp_server_backend:
+                              transport: StreamableHttp
+                              url: http://127.0.0.1:3001/mcp
+                          - name: "add"
+                            description: "Add two numbers"
+                            mcp_server_backend:
+                              transport: StreamableHttp
+                              url: http://127.0.0.1:3001/mcp
                         # Upstream MCP servers whose tools are discovered at
                         # runtime. Each server materialises one registry entry
                         # per tool it exposes, namespaced as `{name}__{tool}`.
