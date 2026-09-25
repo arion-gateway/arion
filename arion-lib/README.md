@@ -46,10 +46,8 @@ curl -kvi https://127.0.0.1:8000/
 curl -vki http://127.0.0.1:8001/
 
 curl -vik --resolve example.com:8443:127.0.0.1 https://example.com:8443/proxy
-curl -vik --resolve dublin_1.irc.huawei.com:8443:127.0.0.1 https://dublin_1.irc.huawei.com:8443
 curl -vik --resolve dublin_1.beefcake.com:8443:127.0.0.1 https://dublin_1.beefcake.com:8443
 
-curl -vik --resolve dublin_1.irc.huawei.com:9443:127.0.0.1 https://dublin_1.irc.huawei.com:9443
 curl -vik --resolve dublin_1.beefcake.com:9443:127.0.0.1 https://dublin_1.beefcake.com:9443
 
 
