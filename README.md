@@ -1,90 +1,56 @@
 # Arion Proxy
 
-<!--
-[![LICENSE](https://img.shields.io/github/license/arion-gateway/arion)](/LICENSE) [![codecov](https://codecov.io/gh/kmesh-net/kmesh/graph/badge.svg?token=0EGQ84FGDU)](https://img.shields.io/github/license/arion-gateway/arion) 
--->
+**The fastest programmable gateway for services, models and tools.**
 
-## Introduction
+Arion Proxy is a high-performance, memory-safe proxy written in Rust. It
+natively supports the [Envoy](https://www.envoyproxy.io/) configuration
+model and the commonly used Envoy features, and extends them with
+Arion-native capabilities for AI workloads.
 
-Arion Proxy is a high performance and memory safe implementation of popular [Envoy Proxy](https://www.envoyproxy.io/). Arion Proxy is implemented in Rust using high-quality open source components. 
+## Why Arion
 
-### Key features
+- **Memory safe.** Implemented in Rust, avoiding entire classes of
+  memory-management and data-race bugs and making Arion a robust and secure
+  foundation for your traffic.
+- **Envoy-native configuration.** Arion's configuration is generated from
+  Envoy's xDS protobuf definitions and is consumed the same way Envoy
+  consumes it — as static bootstrap config or dynamically from an existing
+  xDS control plane. The commonly used Envoy features are supported:
+  routing, load balancing, TLS, JWT authentication, global rate limiting,
+  circuit breaking, connection limits, external processing, health checks,
+  and more — see the example configurations in
+  [arion-proxy/conf/](arion-proxy/conf/).
+- **Native AI extensions.** Alongside Envoy feature parity, Arion adds its
+  own extensions for AI traffic, such as an
+  [MCP gateway](docs/mcp/mcp-gateway.md) with [RBAC](docs/mcp/RBAC.md) for
+  routing model and tool traffic.
+- **Programmable.** HTTP filters can be written in WebAssembly and loaded at
+  runtime. The Wasm SDK lives in this repo
+  ([arion-wasm-sdk](arion-wasm-sdk/)).
+- **Observable.** Prometheus metrics, distributed tracing, and access logging.
 
-**Memory Safety**
+## Quick start
 
-Rust programming language allows to avoid a whole lot of bugs related to memory management and data races making Arion Proxy a very robust and secure application.  
+### Build from source
 
-
-**Compatibility**
-
-Arion Proxy configuration is generated from Envoy's xDS protobuf definitions. Arion Proxy aims to be a drop in replacement for Envoy.
-
-
-
-## Quick Start
-
-**Note:** To control how many CPU cores/threads Arion uses (especially in containers), set the `ARION_CPU_LIMIT` environment variable. In Kubernetes, use the Downward API:
-
-```yaml
-env:
-    - name: ARION_CPU_LIMIT
-        valueFrom:
-            resourceFieldRef:
-                resource: limits.cpu
-                divisor: "1"
-```
-
-## CPU/Thread Limit Configuration
-
-Arion can be configured to use a specific number of CPU cores/threads by setting the `ARION_CPU_LIMIT` environment variable. This is especially useful in containerized environments where access to `/sys/fs` may be restricted.
-
-### Kubernetes Example (Downward API)
-
-Add the following to your container spec to set `ARION_CPU_LIMIT` to the container's CPU limit:
-
-```yaml
-env:
-    - name: ARION_CPU_LIMIT
-        valueFrom:
-            resourceFieldRef:
-                resource: limits.cpu
-                divisor: "1"
-```
-
-Arion will automatically use this value to determine the number of threads/cores.
-
-
-### Building
 ```console
 git clone https://github.com/arion-gateway/arion
 cd arion
-git submodule init
-git submodule update --force
+git submodule update --init --force
 cargo build
 ```
 
-Optional Cargo features (enable with `--features <name>` on `arion-proxy`):
+### Run
 
-| Feature | Description |
-|---------|-------------|
-| `wasm` | HTTP Wasm filter host (Wasmtime). Required to load Wasm HTTP filters at runtime. |
-| `metrics` / `prometheus` | Metrics export |
-| `access-log` | Access logging |
-| `tracing` | Distributed tracing |
-
-Example with Wasm support:
-```console
-cargo build -p arion-proxy --features wasm
-```
-
-### Running
 ```console
 cargo run --bin arion -- --config arion-proxy/conf/arion-runtime.yaml
 ```
 
-### Docker
+[arion-proxy/conf/](arion-proxy/conf/) contains further example
+configurations (JWT, rate limiting, circuit breaking, health checks, and
+more).
 
-Build and run with Docker:
+### Docker
 
 ```bash
 # Build
@@ -93,34 +59,49 @@ docker build -t arion-proxy -f docker/Dockerfile .
 # Run
 docker run -p 8000:8000 --name arion-proxy arion-proxy
 
-# Verify service
-curl -v http://localhost:8000/direct-response # Should return HTTP 200 with "meow! 🐱"
+# Verify
+curl -v http://localhost:8000/direct-response   # HTTP 200 with "meow! 🐱"
 ```
 
-### Testing with Backend Servers
+See [docker/README.md](docker/README.md) for detailed Docker options,
+including testing load balancing against real backends.
 
-For testing load balancing with real backend servers:
+## Cargo features
 
-```bash
-# Start two nginx containers
-docker run -d -p 4001:80 --name backend1 nginx:alpine
-docker run -d -p 4002:80 --name backend2 nginx:alpine
+Optional features of the `arion-proxy` crate (enable with
+`--features <name>`):
 
-# Start Arion Proxy (uses host networking to access localhost:4001/4002)
-docker run -d --network host --name arion-proxy arion-proxy
+| Feature | Description |
+|---------|-------------|
+| `wasm` | HTTP Wasm filter host (Wasmtime). Required to load Wasm HTTP filters at runtime. |
+| `metrics` | Metrics collection |
+| `prometheus` | Prometheus metrics export (implies `metrics`) |
+| `access-log` | Access logging |
+| `tracing` | Distributed tracing |
+| `config-dump` | Admin config dump support |
+| `jemalloc` | Use jemalloc as the allocator |
+| `instrumentation` | Internal instrumentation |
+| `dhat-heap` | Heap profiling with dhat |
 
-# Test load balancing
-curl http://localhost:8000/  # Proxies to nginx backends!
+Example:
 
-# Cleanup
-docker rm -f backend1 backend2 arion-proxy
+```console
+cargo build -p arion-proxy --features wasm
 ```
 
-For detailed Docker configuration options, see [docker/README.md](docker/README.md).
+## Runtime configuration
 
+To control how many CPU cores/threads Arion uses, set the `ARION_CPU_LIMIT`
+environment variable. This is especially useful in containerized
+environments where access to `/sys/fs` is restricted; Arion uses the value
+to size its worker thread pool.
 
-<!-- ## Contributing -->
-<!-- If you're interested in being a contributor and want to get involved in developing Arion Proxy, please see [CONTRIBUTING](CONTRIBUTING.md) for more details on submitting patches and the contribution workflow. -->
+## Documentation
+
+See [docs/](docs/) for guides, including [metrics](docs/metrics.md),
+[tracing](docs/tracing.md), [access logging](docs/access-log.md),
+[global rate limiting](docs/global-rate-limiter.md),
+[the MCP gateway](docs/mcp/mcp-gateway.md), and [demos](docs/demos.md).
 
 ## License
 
