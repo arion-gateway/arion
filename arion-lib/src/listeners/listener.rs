@@ -383,8 +383,11 @@ impl Listener {
                                         #[cfg(feature = "access-log")]
                                         let start_time = std::time::SystemTime::now();
 
-                                        _ = stream.set_nodelay(true);
-                                        _ = stream.set_quickack(true);
+                                        #[cfg(target_os = "linux")]
+                                        {
+                                            _ = stream.set_nodelay(true);
+                                            _ = stream.set_quickack(true);
+                                        }
 
                                         #[cfg(feature = "metrics")]
                                         let shard_id = get_shard_id!();
