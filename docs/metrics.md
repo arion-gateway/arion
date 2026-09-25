@@ -1,12 +1,12 @@
 ### Description
 
-This document describes the statistics available in Orion proxy. The metrics are grouped by their functionality, such as listener stats, TLS statistics, HTTP connection stats, TCP proxy stats, cluster stats, health check statistics, and server statistics.
+This document describes the statistics available in Arion proxy. The metrics are grouped by their functionality, such as listener stats, TLS statistics, HTTP connection stats, TCP proxy stats, cluster stats, health check statistics, and server statistics.
 
-To enable metrics, you have to build Orion with the feature `metrics` enabled. By default, Orion does support OpenTelemetry for metrics, which allows you to export metrics to various backends like Prometheus, StatsD, or any OpenTelemetry collector.
+To enable metrics, you have to build Arion with the feature `metrics` enabled. By default, Arion does support OpenTelemetry for metrics, which allows you to export metrics to various backends like Prometheus, StatsD, or any OpenTelemetry collector.
 
 ### Basic Configuration
 
-To enable metrics, add the following configuration to your `orion.yaml` file:
+To enable metrics, add the following configuration to your `arion.yaml` file:
 
 ```yaml
 envoy_bootstrap:
@@ -23,10 +23,10 @@ envoy_bootstrap:
 
 ### Prometheus scrape configuration
 
-In addition to OpenTelemetry, Orion supports Prometheus scraping out of the box. To enable it, you must build Orion with the `prometheus` feature.
+In addition to OpenTelemetry, Arion supports Prometheus scraping out of the box. To enable it, you must build Arion with the `prometheus` feature.
 This means compiling it with `--features metrics,prometheus`.
 
-Next, enable the admin interface in your `orion.yaml` file as follows:
+Next, enable the admin interface in your `arion.yaml` file as follows:
 
 ```yaml
 envoy_bootstrap:
@@ -45,7 +45,7 @@ You can combine both configurations to export metrics to OpenTelemetry and scrap
 | Status | Description |
 | :---   | :--- |
 | ✅     | Available |
-| ❌      | Not applicable for Orion |
+| ❌      | Not applicable for Arion |
 | 🚧     | Work in progress |
 
 
@@ -371,7 +371,7 @@ metrics:
 
 ### Custom Metrics
 
-Orion allows you to define custom metrics dynamically via the configuration file. This feature is useful when you want to extract specific information from HTTP request headers and expose them as OpenTelemetry metrics.
+Arion allows you to define custom metrics dynamically via the configuration file. This feature is useful when you want to extract specific information from HTTP request headers and expose them as OpenTelemetry metrics.
 
 #### Configuration Parameters
 
@@ -393,7 +393,7 @@ Each metric requires specifying its type (`!Counter`, `!Histogram`, or `!Gauge`)
 
 You can also define one or more custom partition keys under the `metrics` configuration (using the `custom_keys` field, or its alias `custom_key`) to partition all custom metrics by specific request/response headers, independently from the `user_key`.
 
-Orion supports specifying a list of **custom partition keys**. When multiple keys are configured, Orion will extract the values from all specified headers and attach them as separate, independent labels (attributes) to every custom metric. This allows for multi-dimensional partitioning of your custom metrics (for example, partitioning a custom request counter by both `tenant` and `env` simultaneously).
+Arion supports specifying a list of **custom partition keys**. When multiple keys are configured, Arion will extract the values from all specified headers and attach them as separate, independent labels (attributes) to every custom metric. This allows for multi-dimensional partitioning of your custom metrics (for example, partitioning a custom request counter by both `tenant` and `env` simultaneously).
 
 > **Design note — `user_key` vs `custom_keys` extraction strategy**
 >

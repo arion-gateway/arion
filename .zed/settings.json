@@ -4,7 +4,7 @@
          "initialization_options": {
            "linkedProjects": [
              "Cargo.toml",
-             "orion-wasm-sdk/Cargo.toml"
+             "arion-wasm-sdk/Cargo.toml"
            ]
          }
        }

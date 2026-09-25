@@ -1,0 +1,291 @@
+#                                       /proxy/    ---> (cluster1) 192.168.2.10:80
+#                                      |
+#  http request ---> 192.168.1.1:8080 -|
+#                                      |
+#                                       (default)  ---> (cluster2) 127.0.0.1:80
+#
+#                                       /proxy/    ---> (cluster3) 192.168.2.10:81 (h2)
+#                                      |
+#  http request ---> 192.168.1.1:8081 -|
+#                                      |
+#                                      / 404
+#
+
+logging:
+  log_level: "info,arion_proxy=debug,arion_xds=debug,arion_lib=debug"
+  log_directory: "."
+  log_file: "arion.log"
+
+runtime:
+  num_cpus: 1
+  num_runtimes: 1
+  event_interval: 31          # estimated optimal value
+  global_queue_interval: null   # default
+  max_io_events_per_tick: null  # default
+
+
+envoy_bootstrap:
+  static_resources:
+    listeners:
+      - name: listener_http
+        address:
+          socket_address: { address: 127.0.0.1, port_value: 8000 }
+        filterChains:
+          - name: filter_chain_http
+            filter_chain_match:
+              destination_port: 8000
+            filters:
+              - name: http_gateway
+                typedConfig:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                  httpFilters:
+                    - name: envoy.filters.http.router
+                      typedConfig:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                        start_child_span: false
+                  statPrefix: ingress_http
+                  codecType: HTTP1
+                  routeConfig:
+                    name: basic_http_route
+                    virtual_hosts:
+                      - name: backend
+                        domains: ["*"]
+                        routes:
+                          - match:
+                              prefix: "/rr"
+                            route:
+                              cluster: cluster_rr
+                          - match:
+                              prefix: "/wrr"
+                            route:
+                              cluster: cluster_wrr
+                          - match:
+                              prefix: "/rand"
+                            route:
+                              cluster: cluster_rand
+                          - match:
+                              prefix: "/wrand"
+                            route:
+                              cluster: cluster_wrand
+                          - match:
+                              prefix: "/least"
+                            route:
+                              cluster: cluster_least
+                          - match:
+                              prefix: "/ring"
+                            route:
+                              cluster: cluster_ring
+                              # This list of hash policies is applied sequentially, combining the hashes as they are computed.
+                              # If one policy doesn't match, it will be skipped.
+                              # If one policy matches and is `terminal`, the iteration ends and next policies are ignored.
+                              # If no policy matches, a random number is used as hash.
+                              # Beware that if `hash_policy` is defined, hashes are always computed, even if no consistent load balancer is defined.
+                              #
+                              # The following example will be applied as follows:
+                              #
+                              #   GET / HTTP/1.1
+                              #
+                              #   Hash = hash(IP)
+                              #
+                              #   GET /?balancing_key=foo HTTP/1.1
+                              #
+                              #   Hash = hash(foo) + hash(IP)
+                              #
+                              #   GET / HTTP/1.1
+                              #   Balancing-Key: bar
+                              #
+                              #   Hash = hash(bar)
+                              #
+                              #   GET /?balancing_key=foo HTTP/1.1
+                              #   Balancing-Key: bar
+                              #
+                              #   Hash = hash(foo) + hash(bar)
+                              hash_policy:
+                                - query_parameter: {name: "balancing-key"}
+                                - header: {header_name: "Balancing-Key"}
+                                  terminal: true
+                                - connection_properties: {source_ip: true}
+                          - match:
+                              prefix: ""
+                            route:
+                              cluster: cluster_wrr
+
+    clusters:
+      - name: cluster_rr
+        connect_timeout: 0.25s
+        type: STATIC
+        lb_policy: ROUND_ROBIN # should distribute traffic in order
+
+        load_assignment:
+          endpoints:
+            - lb_endpoints:
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4001
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4002
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4003
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4004
+
+      - name: cluster_wrr
+        connect_timeout: 0.25s
+        type: STATIC
+        lb_policy: ROUND_ROBIN # should distribute traffic in order
+
+        load_assignment:
+          endpoints:
+            - lb_endpoints:
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4001
+                  load_balancing_weight: 4 # Should receive 40% of traffic
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4002
+                  load_balancing_weight: 3 # Should receive 30% of traffic
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4003
+                  load_balancing_weight: 2 # Should receive 20% of traffic
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4004
+                  load_balancing_weight: 1 # Should receive 10% of traffic
+
+      - name: cluster_rand
+        connect_timeout: 0.25s
+        type: STATIC
+        lb_policy: RANDOM # should distribute traffic randomly
+        load_assignment:
+          endpoints:
+            - lb_endpoints:
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4001
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4002
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4003
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4004
+
+      - name: cluster_wrand
+        connect_timeout: 0.25s
+        type: STATIC
+        lb_policy: RANDOM # should distribute traffic randomly
+
+        load_assignment:
+          endpoints:
+            - lb_endpoints:
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4001
+                  load_balancing_weight: 4 # Should receive 40% of traffic
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4002
+                  load_balancing_weight: 3 # Should receive 30% of traffic
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4003
+                  load_balancing_weight: 2 # Should receive 20% of traffic
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4004
+                  load_balancing_weight: 1 # Should receive 10% of traffic
+
+      - name: cluster_least
+        connect_timeout: 0.25s
+        type: STATIC
+        lb_policy: LEAST_REQUEST # should distribute traffic to endpoints with least requests
+        load_assignment:
+          endpoints:
+            - lb_endpoints:
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4001
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4002
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4003
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4004
+
+      - name: cluster_ring
+        connect_timeout: 0.25s
+        type: STATIC
+        lb_policy: RING_HASH # should distribute traffic consistenly
+        load_assignment:
+          endpoints:
+            - lb_endpoints:
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4001
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4002
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4003
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4004

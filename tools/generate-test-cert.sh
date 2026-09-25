@@ -1,7 +1,7 @@
 #!/bin/bash
 # generate-test-cert.sh
 # Helper script to generate test TLS certificates with proper Subject Alternative Name (SAN)
-# for use with Orion proxy
+# for use with Arion proxy
 
 set -e
 
@@ -28,7 +28,7 @@ x509_extensions = v3_req
 
 [dn]
 CN = ${DOMAIN}
-O = Orion Test Certificate
+O = Arion Test Certificate
 OU = Testing
 C = US
 
@@ -72,7 +72,7 @@ openssl x509 -in "${CERT_FILE}" -noout -dates
 
 echo ""
 echo "=== Usage Instructions ==="
-echo "To use this certificate in your Orion configuration:"
+echo "To use this certificate in your Arion configuration:"
 echo ""
 echo "1. Copy the certificate content:"
 echo "   cat ${CERT_FILE}"
@@ -80,7 +80,7 @@ echo ""
 echo "2. Copy the private key content:"
 echo "   cat ${KEY_FILE}"
 echo ""
-echo "3. Paste them into your orion-runtime-secrets-*.yaml file:"
+echo "3. Paste them into your arion-runtime-secrets-*.yaml file:"
 echo ""
 cat <<'YAML'
 envoy_bootstrap:
@@ -101,7 +101,7 @@ echo "4. Make sure your listener's server_names matches the certificate domain:"
 echo "   server_names: [${DOMAIN}]"
 echo ""
 echo "=== Test the certificate ==="
-echo "Start orion with your config, then test with:"
+echo "Start arion with your config, then test with:"
 echo "  curl -v --resolve ${DOMAIN}:8443:127.0.0.1 --cacert ${CERT_FILE} https://${DOMAIN}:8443/"
 echo ""
 

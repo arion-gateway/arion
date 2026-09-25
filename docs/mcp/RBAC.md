@@ -341,9 +341,9 @@ http_filters:
             provider_name: "auth_provider"
   
   # 2. MCP Gateway Filter with per-tool RBAC
-  - name: orion.filters.http.mcp
+  - name: arion.filters.http.mcp
     typed_config:
-      "@type": type.googleapis.com/orion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
+      "@type": type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
       server_info:
         name: "mcp-gateway"
         version: "1.0.0"
@@ -528,4 +528,4 @@ message JwtClaimMatcher {
 ## See Also
 
 - [JWT Authentication Filter Documentation](https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/http/jwt_authn/v3/config.proto)
-- [Example Configuration](../../orion-proxy/conf/orion-runtime-mcp.yaml)
+- [Example Configuration](../../arion-proxy/conf/arion-runtime-mcp.yaml)

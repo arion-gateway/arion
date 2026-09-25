@@ -1,0 +1,15 @@
+[package]
+name = "callout_body_filter"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+
+[dependencies]
+arion_wasm_sdk = { path = "../../" }
+tracing = "0.1"
+http = "1.0"
+smol_str = "0.3"
+bytes = "1.12.1"

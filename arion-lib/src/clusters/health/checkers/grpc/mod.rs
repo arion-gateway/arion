@@ -1,0 +1,155 @@
+// Copyright 2025 The kmesh Authors
+// Copyright 2026 The arion-gateway Authors
+//
+// Modified by arion-gateway Authors.
+//
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+//
+
+#[cfg(test)]
+mod tests;
+
+use triomphe::Arc;
+
+use arion_configuration::config::cluster::health_check::{ClusterHealthCheck, GrpcHealthCheck};
+use arion_xds::grpc_deps::{
+    tonic_health::pb::{
+        health_check_response::ServingStatus, health_client::HealthClient, HealthCheckRequest, HealthCheckResponse,
+    },
+    Response as TonicResponse, Status as TonicStatus,
+};
+use futures::{future::BoxFuture, FutureExt};
+use std::future::Future;
+use tokio::{
+    sync::{mpsc, Notify},
+    task::JoinHandle,
+};
+
+use super::checker::{IntervalWaiter, ProtocolChecker, WaitInterval};
+use crate::{
+    clusters::health::{
+        checkers::checker::HealthCheckerLoop, counter::HealthStatusCounter, EndpointHealthUpdate, EndpointId,
+    },
+    transport::GrpcService,
+    Error,
+};
+
+/// Spawns an HTTP health checker and returns its handle. Must be called from a Tokio runtime context.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_grpc_health_checker(
+    endpoint: EndpointId,
+    cluster_config: ClusterHealthCheck,
+    protocol_config: GrpcHealthCheck,
+    channel: GrpcService,
+    sender: mpsc::Sender<EndpointHealthUpdate>,
+    stop_signal: Arc<Notify>,
+) -> JoinHandle<Result<(), Error>> {
+    let interval_waiter = IntervalWaiter;
+    spawn_grpc_health_checker_impl(
+        endpoint,
+        cluster_config,
+        protocol_config,
+        sender,
+        stop_signal,
+        (HealthClient::new(channel), interval_waiter),
+    )
+}
+
+trait GrpcHealthChannel {
+    fn check(
+        &'_ mut self,
+        request: HealthCheckRequest,
+    ) -> BoxFuture<'_, Result<TonicResponse<HealthCheckResponse>, TonicStatus>>;
+}
+
+impl GrpcHealthChannel for HealthClient<GrpcService> {
+    fn check(
+        &'_ mut self,
+        request: HealthCheckRequest,
+    ) -> BoxFuture<'_, Result<TonicResponse<HealthCheckResponse>, TonicStatus>> {
+        HealthClient::check(self, request).boxed()
+    }
+}
+
+/// Actual implementation of `spawn_grpc_health_checker()`, with `dependencies` containing the
+/// injected gRPC stack builder and interval waiter.
+#[allow(clippy::too_many_arguments)]
+fn spawn_grpc_health_checker_impl<G, W>(
+    endpoint: EndpointId,
+    cluster_config: ClusterHealthCheck,
+    protocol_config: GrpcHealthCheck,
+    sender: mpsc::Sender<EndpointHealthUpdate>,
+    stop_signal: Arc<Notify>,
+    dependencies: (G, W),
+) -> JoinHandle<Result<(), Error>>
+where
+    G: GrpcHealthChannel + Send + 'static,
+    W: WaitInterval + Send + 'static,
+{
+    tracing::debug!(
+        "Starting gRPC health checks of endpoint {:?} in cluster {:?}",
+        endpoint.endpoint,
+        endpoint.cluster
+    );
+
+    let (grpc_client, interval_waiter) = dependencies;
+
+    let grpc_checker = GrpcChecker { channel: grpc_client, config: protocol_config };
+
+    let check_loop =
+        HealthCheckerLoop::new(endpoint, cluster_config, sender, stop_signal, interval_waiter, grpc_checker);
+
+    check_loop.spawn()
+}
+
+struct GrpcChecker<G> {
+    channel: G,
+    config: GrpcHealthCheck,
+}
+
+impl<G> ProtocolChecker for GrpcChecker<G>
+where
+    G: GrpcHealthChannel + Send,
+{
+    type Response = HealthCheckResponse;
+
+    fn check(&mut self) -> impl Future<Output = Result<Self::Response, Error>> + Send {
+        async move {
+            let request = HealthCheckRequest { service: String::from(self.config.service_name.as_str()) };
+            Ok(self.channel.check(request).await.map(TonicResponse::into_inner)?)
+        }
+        .boxed()
+    }
+
+    fn process_response(
+        &self,
+        endpoint: &EndpointId,
+        counter: &mut HealthStatusCounter,
+        response: &Self::Response,
+    ) -> Option<arion_configuration::config::cluster::HealthStatus> {
+        match response.status() {
+            status @ (ServingStatus::Unknown | ServingStatus::NotServing | ServingStatus::ServiceUnknown) => {
+                tracing::debug!(
+                    "Failed health check of {:?} in cluster {}: {}",
+                    endpoint.endpoint,
+                    endpoint.cluster,
+                    status.as_str_name(),
+                );
+                counter.add_failure()
+            },
+            ServingStatus::Serving => counter.add_success(),
+        }
+    }
+}

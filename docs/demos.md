@@ -2,12 +2,12 @@
 
 0. Install Rust, Docker, Curl etc.
 
-1. Start Orion  
+1. Start Arion  
 
-    Start Orion on port 8000 with different routes configured and two different clusters.
+    Start Arion on port 8000 with different routes configured and two different clusters.
 
 ```shell
-cargo run --bin orion -- --config orion-proxy/conf/orion-runtime-http.yaml
+cargo run --bin arion -- --config arion-proxy/conf/arion-runtime-http.yaml
 ```
 2. Start Echo servers as endpoints
 ```shell

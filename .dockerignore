@@ -1,4 +1,4 @@
-# .dockerignore for Orion (Rust project)
+# .dockerignore for Arion (Rust project)
 # Purpose: reduce Docker build context, avoid copying local dev artifacts,
 # and keep images smaller/faster to build.
 
@@ -107,7 +107,7 @@ benches/
 # Exclude tests but keep some bootstrap files used in CI/runtime
 tests/
 **/tests/
-!orion-data-plane-api/tests/bootstrap*.yml
+!arion-data-plane-api/tests/bootstrap*.yml
 
 # Docs and performance artifacts
 docs/_build/
@@ -128,8 +128,8 @@ coverage/
 *.plantuml
 
 # Config examples to exclude
-orion-configuration/examples/
-orion-xds/examples/
+arion-configuration/examples/
+arion-xds/examples/
 
 # Keep essential repo/build files (whitelist)
 !README.md

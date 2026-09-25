@@ -1,0 +1,563 @@
+// Copyright 2025 The kmesh Authors
+// Copyright 2026 The arion-gateway Authors
+//
+// Modified by arion-gateway Authors.
+//
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+//
+
+use bytes::Bytes;
+use http::{HeaderValue, Response, StatusCode, Version as HttpVersion};
+use http_body_util::Full;
+
+use crate::{
+    body::{response_flags::ResponseFlags, timeout_body::TimeoutBody},
+    event_error::{EventErrorContext, EventKind},
+    ArionResponseBody,
+};
+
+#[derive(Clone, Debug)]
+pub struct SyntheticHttpResponse {
+    http_status: StatusCode,
+    event_kind: EventKind,
+    response_flags: ResponseFlags,
+    body: Bytes,
+    close_connection: bool,
+}
+
+// === impl SyntheticHttpResponse ===
+
+impl SyntheticHttpResponse {
+    pub fn internal_server_error(event_kind: EventKind, response_flags: ResponseFlags) -> Self {
+        Self {
+            http_status: StatusCode::INTERNAL_SERVER_ERROR,
+            event_kind,
+            response_flags,
+            body: Bytes::default(),
+            close_connection: false,
+        }
+    }
+
+    pub fn bad_gateway(event_kind: EventKind, response_flags: ResponseFlags) -> Self {
+        Self {
+            http_status: StatusCode::BAD_GATEWAY,
+            event_kind,
+            response_flags,
+            body: Bytes::default(),
+            close_connection: false,
+        }
+    }
+
+    pub fn unauthorized(event_kind: EventKind) -> Self {
+        Self {
+            http_status: StatusCode::UNAUTHORIZED,
+            event_kind,
+            response_flags: ResponseFlags::default(),
+            body: Bytes::default(),
+            close_connection: false,
+        }
+    }
+
+    pub fn forbidden(event_kind: EventKind) -> Self {
+        Self {
+            http_status: StatusCode::FORBIDDEN,
+            event_kind,
+            response_flags: ResponseFlags::default(),
+            body: Bytes::default(),
+            close_connection: false,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn service_unavailable(event_kind: EventKind, response_flags: ResponseFlags) -> Self {
+        Self {
+            http_status: StatusCode::SERVICE_UNAVAILABLE,
+            event_kind,
+            response_flags,
+            body: Bytes::default(),
+            close_connection: false,
+        }
+    }
+
+    pub fn circuit_breaker_overflow(event_kind: EventKind, response_flags: ResponseFlags) -> Self {
+        Self {
+            http_status: StatusCode::SERVICE_UNAVAILABLE,
+            event_kind,
+            response_flags,
+            body: Bytes::default(),
+            close_connection: false,
+        }
+    }
+
+    pub fn gateway_timeout(event_kind: EventKind, response_flags: ResponseFlags) -> Self {
+        Self {
+            http_status: StatusCode::GATEWAY_TIMEOUT,
+            event_kind,
+            response_flags,
+            body: Bytes::default(),
+            close_connection: false,
+        }
+    }
+
+    pub fn not_found(event_kind: EventKind, response_flags: ResponseFlags) -> Self {
+        Self {
+            http_status: StatusCode::NOT_FOUND,
+            event_kind,
+            response_flags,
+            body: Bytes::default(),
+            close_connection: false,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn upgrade_required(event_kind: EventKind) -> Self {
+        Self {
+            http_status: StatusCode::UPGRADE_REQUIRED,
+            event_kind,
+            response_flags: ResponseFlags::default(),
+            body: Bytes::default(),
+            close_connection: false,
+        }
+    }
+
+    pub fn bad_request(event_kind: EventKind) -> Self {
+        Self {
+            http_status: StatusCode::BAD_REQUEST,
+            event_kind,
+            response_flags: ResponseFlags::default(),
+            body: Bytes::default(),
+            close_connection: false,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn not_allowed(event_kind: EventKind, response_flags: ResponseFlags) -> Self {
+        Self {
+            http_status: StatusCode::METHOD_NOT_ALLOWED,
+            event_kind,
+            response_flags,
+            body: Bytes::default(),
+            close_connection: false,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_body<T: Into<Bytes>>(self, body: T) -> Self {
+        Self { body: body.into(), ..self }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_close_connection(self, close_connection: bool) -> Self {
+        Self { close_connection, ..self }
+    }
+
+    #[allow(dead_code)]
+    pub fn custom_error(
+        http_status: StatusCode,
+        body: Option<Bytes>,
+        event_kind: EventKind,
+        response_flags: ResponseFlags,
+    ) -> Self {
+        Self { http_status, event_kind, response_flags, body: body.unwrap_or_default(), close_connection: false }
+    }
+
+    #[inline]
+    pub fn into_response(self, version: http::Version) -> Response<ArionResponseBody> {
+        let mut rsp = Response::new(TimeoutBody::new(None, Full::from(self.body).into()).into());
+        *rsp.status_mut() = self.http_status;
+        *rsp.version_mut() = version;
+        rsp.extensions_mut()
+            .insert(EventErrorContext { response_flags: self.response_flags, event_kind: Some(self.event_kind) });
+        if self.close_connection && (version == HttpVersion::HTTP_10 || version == HttpVersion::HTTP_11) {
+            // Notify the (proxy or non-proxy) client that the connection will be closed.
+            rsp.headers_mut().insert(http::header::CONNECTION, HeaderValue::from_static("close"));
+        }
+        rsp
+    }
+
+    #[inline]
+    pub fn into_circuit_breaker_response(self, version: http::Version) -> Response<ArionResponseBody> {
+        let mut rsp = self.into_response(version);
+        rsp.headers_mut().insert("x-envoy-overloaded", HeaderValue::from_static("true"));
+        rsp
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // use http::{uri::Scheme, Uri};
+    // use arion_configuration::config::network_filters::http_connection_manager::route::RedirectResponseCode;
+
+    // use super::*;
+
+    // #[test]
+    // fn test_basic_redirect() -> Result<(), InvalidSyntheticResponse> {
+    //     let uri = "http://www.test.com/foo/bar?baz".parse::<Uri>().unwrap();
+
+    //     let ra = RedirectAction {
+    //         response_code: RedirectResponseCode::TemporaryRedirect,
+    //         authority_redirect: Some(AuthorityRedirect::AuthorityRedirect(Authority::from_static(
+    //             "www.redirected.com:81",
+    //         ))),
+    //         strip_query: false,
+    //         scheme_rewrite_specifier: None,
+    //         path_rewrite_specifier: None,
+    //     };
+
+    //     let res = SyntheticHttpResponse::redirect(StatusCode::TEMPORARY_REDIRECT, ra).into_response(
+    //         http::Version::HTTP_11,
+    //         Some(uri),
+    //         None,
+    //     )?;
+
+    //     let expected = &HeaderValue::from_str("http://www.redirected.com:81/foo/bar?baz")?;
+
+    //     assert_eq!(res.headers().get(http::header::LOCATION), Some(expected));
+
+    //     Ok(())
+    // }
+
+    // #[test]
+    // fn test_redirect_strip_query() -> Result<(), InvalidSyntheticResponse> {
+    //     let uri = "http://www.test.com/foo/bar?baz".parse::<Uri>().unwrap();
+
+    //     let ra = RedirectAction {
+    //         response_code: RedirectResponseCode::TemporaryRedirect,
+    //         authority_redirect: Some(AuthorityRedirect::AuthorityRedirect(Authority::from_static(
+    //             "www.redirected.com:81",
+    //         ))),
+    //         strip_query: true,
+    //         scheme_rewrite_specifier: None,
+    //         path_rewrite_specifier: None,
+    //     };
+
+    //     let res = SyntheticHttpResponse::redirect(StatusCode::TEMPORARY_REDIRECT, ra).into_response(
+    //         http::Version::HTTP_11,
+    //         Some(uri),
+    //         None,
+    //     )?;
+
+    //     let expected = &HeaderValue::from_str("http://www.redirected.com:81/foo/bar")?;
+
+    //     assert_eq!(res.headers().get(http::header::LOCATION), Some(expected));
+
+    //     Ok(())
+    // }
+
+    // #[test]
+    // fn test_http2_redirect_1() -> Result<(), InvalidSyntheticResponse> {
+    //     let uri = "http://www.test.com:80/foo/bar?baz".parse::<Uri>().unwrap();
+
+    //     let ra = RedirectAction {
+    //         response_code: RedirectResponseCode::TemporaryRedirect,
+    //         authority_redirect: Some(AuthorityRedirect::HostRedirect(Authority::from_static("www.redirected.com"))),
+    //         strip_query: true,
+    //         scheme_rewrite_specifier: Some(Scheme::HTTPS),
+    //         path_rewrite_specifier: None,
+    //     };
+
+    //     let res = SyntheticHttpResponse::redirect(StatusCode::TEMPORARY_REDIRECT, ra).into_response(
+    //         http::Version::HTTP_11,
+    //         Some(uri),
+    //         None,
+    //     )?;
+
+    //     let expected = &HeaderValue::from_str("https://www.redirected.com/foo/bar")?;
+
+    //     assert_eq!(res.headers().get(http::header::LOCATION), Some(expected));
+
+    //     Ok(())
+    // }
+
+    // #[test]
+    // fn test_https_redirect_2() -> Result<(), InvalidSyntheticResponse> {
+    //     let uri = "http://www.test.com:80/foo/bar?baz".parse::<Uri>().unwrap();
+
+    //     let ra = RedirectAction {
+    //         response_code: RedirectResponseCode::TemporaryRedirect,
+    //         authority_redirect: Some(AuthorityRedirect::HostRedirect(Authority::from_static("www.redirected.com"))),
+    //         strip_query: true,
+    //         scheme_rewrite_specifier: Some(Scheme::HTTPS),
+    //         path_rewrite_specifier: None,
+    //     };
+
+    //     let res = SyntheticHttpResponse::redirect(StatusCode::TEMPORARY_REDIRECT, ra).into_response(
+    //         http::Version::HTTP_11,
+    //         Some(uri),
+    //         None,
+    //     )?;
+
+    //     let expected = &HeaderValue::from_str("https://www.redirected.com/foo/bar")?;
+
+    //     assert_eq!(res.headers().get(http::header::LOCATION), Some(expected));
+
+    //     Ok(())
+    // }
+
+    // #[test]
+    // fn test_https_redirect_3() -> Result<(), InvalidSyntheticResponse> {
+    //     let uri = "http://www.test.com/foo/bar?baz".parse::<Uri>().unwrap();
+
+    //     let ra = RedirectAction {
+    //         response_code: RedirectResponseCode::TemporaryRedirect,
+    //         authority_redirect: Some(AuthorityRedirect::AuthorityRedirect(Authority::from_static(
+    //             "www.redirected.com:8080",
+    //         ))),
+    //         strip_query: true,
+    //         scheme_rewrite_specifier: Some(Scheme::HTTPS),
+    //         path_rewrite_specifier: None,
+    //     };
+
+    //     let res = SyntheticHttpResponse::redirect(StatusCode::TEMPORARY_REDIRECT, ra).into_response(
+    //         http::Version::HTTP_11,
+    //         Some(uri),
+    //         None,
+    //     )?;
+
+    //     let expected = &HeaderValue::from_str("https://www.redirected.com:8080/foo/bar")?;
+
+    //     assert_eq!(res.headers().get(http::header::LOCATION), Some(expected));
+
+    //     Ok(())
+    // }
+
+    // #[test]
+    // fn test_scheme_redirect_1() -> Result<(), InvalidSyntheticResponse> {
+    //     let uri = "http://www.test.com/foo/bar?baz".parse::<Uri>().unwrap();
+
+    //     let ra = RedirectAction {
+    //         response_code: RedirectResponseCode::TemporaryRedirect,
+    //         authority_redirect: Some(AuthorityRedirect::AuthorityRedirect(Authority::from_static(
+    //             "www.redirected.com:80",
+    //         ))),
+    //         strip_query: true,
+    //         scheme_rewrite_specifier: Some(Scheme::HTTPS),
+    //         path_rewrite_specifier: None,
+    //     };
+
+    //     let res = SyntheticHttpResponse::redirect(StatusCode::TEMPORARY_REDIRECT, ra).into_response(
+    //         http::Version::HTTP_11,
+    //         Some(uri),
+    //         None,
+    //     )?;
+
+    //     let expected = &HeaderValue::from_str("https://www.redirected.com:80/foo/bar")?;
+
+    //     assert_eq!(res.headers().get(http::header::LOCATION), Some(expected));
+
+    //     Ok(())
+    // }
+
+    // #[test]
+    // fn test_scheme_redirect_2() -> Result<(), InvalidSyntheticResponse> {
+    //     let uri = "https://www.test.com:443/foo/bar?baz".parse::<Uri>().unwrap();
+
+    //     let ra = RedirectAction {
+    //         response_code: RedirectResponseCode::TemporaryRedirect,
+    //         authority_redirect: Some(AuthorityRedirect::AuthorityRedirect(Authority::from_static(
+    //             "www.redirected.com",
+    //         ))),
+    //         strip_query: true,
+    //         scheme_rewrite_specifier: Some(Scheme::HTTP),
+    //         path_rewrite_specifier: None,
+    //     };
+
+    //     let res = SyntheticHttpResponse::redirect(StatusCode::TEMPORARY_REDIRECT, ra).into_response(
+    //         http::Version::HTTP_11,
+    //         Some(uri),
+    //         None,
+    //     )?;
+
+    //     let expected = &HeaderValue::from_str("http://www.redirected.com/foo/bar")?;
+
+    //     assert_eq!(res.headers().get(http::header::LOCATION), Some(expected));
+
+    //     Ok(())
+    // }
+
+    // #[test]
+    // fn test_scheme_redirect_3() -> Result<(), InvalidSyntheticResponse> {
+    //     let uri = "https://www.test.com:443/foo/bar?baz".parse::<Uri>().unwrap();
+
+    //     let ra = RedirectAction {
+    //         response_code: RedirectResponseCode::TemporaryRedirect,
+    //         authority_redirect: None,
+    //         strip_query: true,
+    //         scheme_rewrite_specifier: Some(Scheme::HTTP),
+    //         path_rewrite_specifier: None,
+    //     };
+
+    //     let res = SyntheticHttpResponse::redirect(StatusCode::TEMPORARY_REDIRECT, ra).into_response(
+    //         http::Version::HTTP_11,
+    //         Some(uri),
+    //         None,
+    //     )?;
+
+    //     let expected = &HeaderValue::from_str("http://www.test.com/foo/bar")?;
+
+    //     assert_eq!(res.headers().get(http::header::LOCATION), Some(expected));
+
+    //     Ok(())
+    // }
+
+    // #[test]
+    // fn test_scheme_redirect_4() -> Result<(), InvalidSyntheticResponse> {
+    //     let uri = "https://www.test.com/foo/bar?baz".parse::<Uri>().unwrap();
+
+    //     let ra = RedirectAction {
+    //         response_code: RedirectResponseCode::TemporaryRedirect,
+    //         authority_redirect: Some(AuthorityRedirect::AuthorityRedirect(Authority::from_static(
+    //             "www.redirected.com:443",
+    //         ))),
+    //         strip_query: true,
+    //         scheme_rewrite_specifier: Some(Scheme::HTTP),
+    //         path_rewrite_specifier: None,
+    //     };
+
+    //     let res = SyntheticHttpResponse::redirect(StatusCode::TEMPORARY_REDIRECT, ra).into_response(
+    //         http::Version::HTTP_11,
+    //         Some(uri),
+    //         None,
+    //     )?;
+
+    //     let expected = &HeaderValue::from_str("http://www.redirected.com:443/foo/bar")?;
+
+    //     assert_eq!(res.headers().get(http::header::LOCATION), Some(expected));
+
+    //     Ok(())
+    // }
+
+    // #[test]
+    // fn test_path_rewrite_1() -> Result<(), InvalidSyntheticResponse> {
+    //     let uri = "http://www.test.com/foo/bar?baz".parse::<Uri>().unwrap();
+
+    //     let ra = RedirectAction {
+    //         response_code: RedirectResponseCode::TemporaryRedirect,
+    //         authority_redirect: Some(AuthorityRedirect::AuthorityRedirect(Authority::from_static(
+    //             "www.redirected.com:80",
+    //         ))),
+    //         strip_query: true,
+    //         scheme_rewrite_specifier: None,
+    //         path_rewrite_specifier: Some(PathRewriteSpecifier::Path(PathAndQuery::from_str("/hello/world")?)),
+    //     };
+
+    //     let res = SyntheticHttpResponse::redirect(StatusCode::TEMPORARY_REDIRECT, ra).into_response(
+    //         http::Version::HTTP_11,
+    //         Some(uri),
+    //         None,
+    //     )?;
+
+    //     let expected = &HeaderValue::from_str("http://www.redirected.com:80/hello/world")?;
+
+    //     assert_eq!(res.headers().get(http::header::LOCATION), Some(expected));
+
+    //     Ok(())
+    // }
+
+    // #[test]
+    // fn test_path_rewrite_2() -> Result<(), InvalidSyntheticResponse> {
+    //     let uri = "http://www.test.com/foo/bar?baz".parse::<Uri>().unwrap();
+
+    //     let ra = RedirectAction {
+    //         response_code: RedirectResponseCode::TemporaryRedirect,
+    //         authority_redirect: Some(AuthorityRedirect::AuthorityRedirect(Authority::from_static(
+    //             "www.redirected.com:80",
+    //         ))),
+    //         strip_query: false,
+    //         scheme_rewrite_specifier: None,
+    //         path_rewrite_specifier: Some(PathRewriteSpecifier::Path(PathAndQuery::from_str("/hello/world")?)),
+    //     };
+
+    //     let res = SyntheticHttpResponse::redirect(StatusCode::TEMPORARY_REDIRECT, ra).into_response(
+    //         http::Version::HTTP_11,
+    //         Some(uri),
+    //         None,
+    //     )?;
+
+    //     let expected = &HeaderValue::from_str("http://www.redirected.com:80/hello/world?baz")?;
+
+    //     assert_eq!(res.headers().get(http::header::LOCATION), Some(expected));
+
+    //     Ok(())
+    // }
+
+    // #[test]
+    // fn test_path_rewrite_3() -> Result<(), InvalidSyntheticResponse> {
+    //     let uri = "http://www.test.com/foo/bar?baz".parse::<Uri>().unwrap();
+
+    //     let ra = RedirectAction {
+    //         response_code: RedirectResponseCode::TemporaryRedirect,
+    //         authority_redirect: Some(AuthorityRedirect::AuthorityRedirect(Authority::from_static(
+    //             "www.redirected.com:80",
+    //         ))),
+    //         strip_query: false,
+    //         scheme_rewrite_specifier: None,
+    //         path_rewrite_specifier: Some(PathRewriteSpecifier::Path(PathAndQuery::from_str("/hello/world?foobar")?)),
+    //     };
+
+    //     let res = SyntheticHttpResponse::redirect(StatusCode::TEMPORARY_REDIRECT, ra).into_response(
+    //         http::Version::HTTP_11,
+    //         Some(uri),
+    //         None,
+    //     )?;
+
+    //     let expected = &HeaderValue::from_str("http://www.redirected.com:80/hello/world?foobar")?;
+
+    //     assert_eq!(res.headers().get(http::header::LOCATION), Some(expected));
+
+    //     Ok(())
+    // }
+
+    // #[test]
+    // fn redirect_unexpected_status_code() {
+    //     let uri = "http://www.test.com/foo/bar?baz".parse::<Uri>().unwrap();
+
+    //     let ra = RedirectAction {
+    //         response_code: RedirectResponseCode::TemporaryRedirect,
+    //         authority_redirect: Some(AuthorityRedirect::AuthorityRedirect(Authority::from_static(
+    //             "www.redirected.com:81",
+    //         ))),
+    //         strip_query: true,
+    //         scheme_rewrite_specifier: None,
+    //         path_rewrite_specifier: None,
+    //     };
+
+    //     let result =
+    //         SyntheticHttpResponse::redirect(StatusCode::OK, ra).into_response(http::Version::HTTP_11, Some(uri), None);
+
+    //     assert!(matches!(result, Err(InvalidSyntheticResponse::RedirectUnexpectedStatusCode)));
+    // }
+
+    // #[test]
+    // fn redirect_missing_uri() {
+    //     let ra = RedirectAction {
+    //         response_code: RedirectResponseCode::TemporaryRedirect,
+    //         authority_redirect: Some(AuthorityRedirect::AuthorityRedirect(Authority::from_static(
+    //             "www.redirected.com:81",
+    //         ))),
+    //         strip_query: false,
+    //         scheme_rewrite_specifier: None,
+    //         path_rewrite_specifier: None,
+    //     };
+
+    //     let result = SyntheticHttpResponse::redirect(StatusCode::TEMPORARY_REDIRECT, ra).into_response(
+    //         http::Version::HTTP_11,
+    //         None,
+    //         None,
+    //     );
+
+    //     assert!(matches!(result, Err(InvalidSyntheticResponse::RedirectMissingUri)));
+    // }
+}

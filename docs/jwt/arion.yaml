@@ -1,0 +1,134 @@
+runtime:
+    num_cpus: 1
+    num_runtimes: 1
+    event_interval: 31 # estimated optimal value
+    global_queue_interval: null # default
+    max_io_events_per_tick: null # default
+
+logging:
+    log_level: "debug"
+
+envoy_bootstrap:
+    static_resources:
+        listeners:
+            - name: listener_http
+              address:
+                  socket_address: { address: 0.0.0.0, port_value: 8000 }
+              filterChains:
+                  - name: filter_chain_http
+                    filter_chain_match:
+                        destination_port: 8000
+                    filters:
+                        - name: http_gateway
+                          typedConfig:
+                              "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                              statPrefix: ingress_http
+                              codecType: HTTP1
+                              http_filters:
+                                  - name: envoy.filters.http.jwt_authn
+                                    typed_config:
+                                        "@type": "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication"
+                                        providers:
+                                            oauth_provider:
+                                              from_headers:
+                                                - name: Authorization
+                                                  value_prefix: "Bearer "
+                                              issuer: "https://auth.example.com"
+                                              audiences: ["mcp-gateway"]
+                                              claim_to_headers:
+                                                - header_name: "x-user-id"    # Nome dell'header che riceverà il backend
+                                                  claim_name: "name"
+                                              local_jwks:
+                                                  inline_string: >-
+                                                      {"keys": [
+                                                          {
+                                                              "kty": "RSA",
+                                                              "e": "AQAB",
+                                                              "use": "sig",
+                                                              "kid": "sig-2025-12-12T15:52:22Z",
+                                                              "alg": "RS256",
+                                                              "n": "hi3pcXuRrhy2gHjkHCq6JBcxpeC5udojlLukmsyAZ7x1vHwHTx_9c6s73XhfJoRBnd3V3SL1JAUuBiVJ68Pnrtuztp5j8Cdw33S5jKf-8PranMucG_4wWejWm1gbKomZBm79Baf_fJkDOwumsTXvO9dgX7c2dHtA0oO15eVdzSDf7azgLU7OvVukiE71tqoQwnPgK47xDvjw83ZN8eWZzDPGpA9DVoEjhwOeasDgUdVv1L-b2uOqCMYcLixYJ58O48cQSEOreIi1FbIJGoT19VKtJ528JrTkKihZb-BmFIvyIu36lGRpeJ1pbarIMx-sC_-UfKEawHmYQp7MwB1dnQ"
+                                                          }
+                                                      ]}
+                                        rules:
+                                            - match:
+                                                  prefix: "/"
+                                              requires:
+                                                  provider_name: oauth_provider
+                                  #- name: envoy.filters.http.ext_proc
+                                  #  typed_config:
+                                  #    "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+                                  #    # Configuration for the external processing gRPC service
+                                  #    grpc_service:
+                                  #      envoy_grpc:
+                                  #        cluster_name: ext_proc_cluster
+                                  #      timeout: 0.5s # Timeout for the gRPC call
+                                  #    # Defines what processing phases to engage
+                                  #    observability_mode: false
+                                  #    processing_mode:
+                                  #      request_header_mode: SEND
+                                  #      request_body_mode: BUFFERED
+                                  #      request_trailer_mode: SKIP
+                                  #      response_header_mode: SKIP
+                                  #      response_body_mode: NONE
+                                  #      response_trailer_mode: SKIP
+                                  #- name: arion.filters.http.mcp
+                                  #  typed_config:
+                                  #    "@type": type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
+                                  #    cluster_header: "x-mcp-target-cluster"
+                                  - name: envoy.filters.http.router
+                                    typedConfig:
+                                        "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                                        start_child_span: false
+
+                              route_config:
+                                  name: basic_http_route
+                                  virtual_hosts:
+                                      - name: backend
+                                        domains: ["*"]
+                                        routes:
+                                            - match:
+                                                  prefix: "/direct"
+                                              direct_response:
+                                                  status: 200
+                                                  body:
+                                                      inline_string: "meow! 🐱"
+                                            - match:
+                                                  prefix: "/"
+                                              route:
+                                                  cluster: cluster_http
+                                                  #cluster_header: "x-mcp-target-cluster"
+
+        clusters:
+            - name: cluster_http
+              connect_timeout: 0.25s
+              type: STATIC
+              lb_policy: ROUND_ROBIN
+              load_assignment:
+                  endpoints:
+                      - lb_endpoints:
+                            - endpoint:
+                                  address:
+                                      socket_address:
+                                          address: 127.0.0.1
+                                          port_value: 7878
+
+            - name: ext_proc_cluster
+              type: STATIC
+              connect_timeout: 1.25s
+              lb_policy: ROUND_ROBIN
+              typed_extension_protocol_options:
+                  envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+                      "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+                      explicit_http_config:
+                          http2_protocol_options: {}
+              # This cluster points to your ext_proc gRPC server
+              load_assignment:
+                  cluster_name: ext_proc_cluster
+                  endpoints:
+                      - lb_endpoints:
+                            - endpoint:
+                                  address:
+                                      socket_address:
+                                          address: 0.0.0.0
+                                          port_value: 18080 # Porta del servizio ext_proc

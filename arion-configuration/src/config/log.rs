@@ -1,0 +1,191 @@
+// Copyright 2025 The kmesh Authors
+// Copyright 2026 The arion-gateway Authors
+//
+// Modified by arion-gateway Authors.
+//
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+//
+
+use arion_error::{Context, Error};
+use http::HeaderName;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::num::NonZeroUsize;
+use tracing_rolling_file::RollingFrequency;
+use tracing_subscriber::EnvFilter;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RollingFrequencyConfig(pub RollingFrequency);
+
+impl Serialize for RollingFrequencyConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let s = match self.0 {
+            RollingFrequency::EveryDay => "daily",
+            RollingFrequency::EveryHour => "hourly",
+            RollingFrequency::EveryMinute => "minutely",
+        };
+        serializer.serialize_str(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for RollingFrequencyConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s: String = Deserialize::deserialize(deserializer)?;
+        let rot = match s.as_str() {
+            "minutely" | "MINUTELY" => RollingFrequency::EveryMinute,
+            "hourly" | "HOURLY" => RollingFrequency::EveryHour,
+            "daily" | "DAILY" => RollingFrequency::EveryDay,
+            _ => return Err(serde::de::Error::custom(format!("invalid frequency rotation: {s}"))),
+        };
+        Ok(RollingFrequencyConfig(rot))
+    }
+}
+
+impl Default for RollingFrequencyConfig {
+    fn default() -> Self {
+        RollingFrequencyConfig(RollingFrequency::EveryDay)
+    }
+}
+#[derive(Debug, Deserialize, Serialize, Default)]
+pub struct LogConfig {
+    #[serde(deserialize_with = "deserialize_log_level", serialize_with = "serialize_log_level")]
+    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
+    pub log_level: Option<EnvFilter>,
+    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
+    pub log_directory: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
+    pub log_file: Option<String>,
+}
+
+pub fn nonzero_usize<const N: usize>() -> NonZeroUsize {
+    const {
+        // Evaluates at compile time, causing a build failure if N is 0.
+        // Note: Option::expect is const starting from Rust 1.83.
+        NonZeroUsize::new(N).expect("N must be strictly greater than 0")
+    }
+}
+
+impl PartialEq for LogConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.log_file == other.log_file
+            && self.log_directory == other.log_directory
+            && self.log_level.as_ref().map(EnvFilter::to_string) == other.log_level.as_ref().map(EnvFilter::to_string)
+    }
+}
+impl Eq for LogConfig {}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AccessLogConfig {
+    #[serde(default = "nonzero_usize::<1>")]
+    pub num_instances: NonZeroUsize,
+    #[serde(default = "nonzero_usize::<1024>")]
+    pub queue_length: NonZeroUsize,
+    pub log_rotation: Option<RollingFrequencyConfig>,
+    pub log_max_size: Option<u64>,
+    #[serde(default = "nonzero_usize::<10>")]
+    pub max_log_files: NonZeroUsize,
+    pub blocking: bool,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default = "Default::default",
+        with = "http_serde_ext::header_name::option"
+    )]
+    pub incoming_request_header: Option<HeaderName>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default = "Default::default",
+        with = "http_serde_ext::header_name::option"
+    )]
+    pub ext_proc_request_header: Option<HeaderName>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default = "Default::default",
+        with = "http_serde_ext::header_name::option"
+    )]
+    pub upstream_request_header: Option<HeaderName>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default = "Default::default",
+        with = "http_serde_ext::header_name::option"
+    )]
+    pub incoming_response_header: Option<HeaderName>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default = "Default::default",
+        with = "http_serde_ext::header_name::option"
+    )]
+    pub ext_proc_response_header: Option<HeaderName>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default = "Default::default",
+        with = "http_serde_ext::header_name::option"
+    )]
+    pub downstream_response_header: Option<HeaderName>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default = "Default::default",
+        with = "http_serde_ext::header_name::option"
+    )]
+    pub wasm_header: Option<HeaderName>,
+    #[serde(default = "Default::default", skip_serializing_if = "Vec::is_empty")]
+    pub custom_operators: Vec<smol_str::SmolStr>,
+}
+
+impl Default for AccessLogConfig {
+    fn default() -> Self {
+        Self {
+            num_instances: nonzero_usize::<1>(),
+            queue_length: nonzero_usize::<1024>(),
+            log_rotation: None,
+            log_max_size: None,
+            max_log_files: nonzero_usize::<10>(),
+            blocking: false,
+            incoming_request_header: None,
+            ext_proc_request_header: None,
+            upstream_request_header: None,
+            incoming_response_header: None,
+            ext_proc_response_header: None,
+            downstream_response_header: None,
+            wasm_header: None,
+            custom_operators: Vec::new(),
+        }
+    }
+}
+
+fn deserialize_log_level<'de, D>(deserializer: D) -> std::result::Result<Option<EnvFilter>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).and_then(|maybe_string| {
+        maybe_string.map(|s| EnvFilter::builder().parse(s)).transpose().map_err(
+            |e: tracing_subscriber::filter::ParseError| {
+                serde::de::Error::custom(Error::from(e).with_context_msg("failed to parse log level config"))
+            },
+        )
+    })
+}
+
+#[allow(clippy::ref_option)]
+fn serialize_log_level<S: Serializer>(
+    value: &Option<EnvFilter>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    value.as_ref().map(EnvFilter::to_string).serialize(serializer)
+}

@@ -1,0 +1,457 @@
+static_resources:
+  secrets:
+    - name: demo_ca_validation
+      validation_context:
+        trusted_ca:
+          #filename: ./test_certs/demo/backend.cert.pem
+          inline_string: |
+            -----BEGIN CERTIFICATE-----
+            MIIBxzCCAXmgAwIBAgIUKnio9q6H+IJijQf1gnEL01XQ+lMwBQYDK2VwMEsxCzAJ
+            BgNVBAYTAklFMREwDwYDVQQIDAhMZWluc3RlcjENMAsGA1UECwwEQ0RFVDEaMBgG
+            A1UEAwwRQ0RFVCBUZXN0IEJhY2tlbmQwHhcNMjQwNzAzMTMzNDQyWhcNMjcwMzMw
+            MTMzNDQyWjBLMQswCQYDVQQGEwJJRTERMA8GA1UECAwITGVpbnN0ZXIxDTALBgNV
+            BAsMBENERVQxGjAYBgNVBAMMEUNERVQgVGVzdCBCYWNrZW5kMCowBQYDK2VwAyEA
+            P+79mMTuxSPtABHMnovmrY/AVbYIUGOpo47N/GUa2a2jbzBtMB0GA1UdDgQWBBQV
+            N3P97CCbKBRwUXhGrUkoDC1TrDAfBgNVHSMEGDAWgBQVN3P97CCbKBRwUXhGrUko
+            DC1TrDAgBgNVHREEGTAXgg9iYWNrZW5kLmV4YW1wbGWHBH8AAAEwCQYDVR0TBAIw
+            ADAFBgMrZXADQQCOw2Wt5G2s2zMSAZGANcG8//MuRgLy1jBxxM51jsn0dXTZqkOb
+            K3pmzOjCj2reNhm9mXfYHQCj36jeOAelmWcH
+            -----END CERTIFICATE-----
+    - name: cnpp1_tls_server
+      tls_certificate:
+        certificate_chain:
+          #filename: ./test_certs/demo/cnpp1.cert.pem
+          inline_string: |
+            -----BEGIN CERTIFICATE-----
+            MIIBxzCCAXmgAwIBAgIUeBx9bqEurioHO4fJD5z8nMIAOZwwBQYDK2VwMEwxCzAJ
+            BgNVBAYTAklFMREwDwYDVQQIDAhMZWluc3RlcjENMAsGA1UECwwEQ0RFVDEbMBkG
+            A1UEAwwSQ0RFVCBUZXN0IExpc3RlbmVyMB4XDTI0MDYyODEzMTAwOVoXDTI3MDMy
+            NTEzMTAwOVowTDELMAkGA1UEBhMCSUUxETAPBgNVBAgMCExlaW5zdGVyMQ0wCwYD
+            VQQLDARDREVUMRswGQYDVQQDDBJDREVUIFRlc3QgTGlzdGVuZXIwKjAFBgMrZXAD
+            IQAY7TzlgF0tBNzc5eCWdmKEfwGwIbFMmWMCmwYpLUweSaNtMGswHQYDVR0OBBYE
+            FNAmLiDRcs964PIgpp0i/gFXq8OrMB8GA1UdIwQYMBaAFNAmLiDRcs964PIgpp0i
+            /gFXq8OrMA8GA1UdEwEB/wQFMAMBAf8wGAYDVR0RBBEwD4INY25wcDEuZXhhbXBs
+            ZTAFBgMrZXADQQCzYs3yqjDLSM/I7C6jy2jyeBtbMWqsFHWDe7MWJdlW8QSBwfhp
+            vehKrvWcb9brXnYa2A5m0ejbT4TVoWGlylMO
+            -----END CERTIFICATE-----
+        private_key:
+          #filename: ./test_certs/demo/listener.key.pem
+          inline_string: |
+            -----BEGIN PRIVATE KEY-----
+            MC4CAQAwBQYDK2VwBCIEIH9AJcray3rNikzp7oOobt9JsDSHNQyxcT/gHP0kvnAS
+            -----END PRIVATE KEY-----
+
+    - name: cnpp2_tls_server
+      tls_certificate:
+        certificate_chain:
+          #filename: ./test_certs/demo/cnpp2.cert.pem
+          inline_string: |
+            -----BEGIN CERTIFICATE-----
+            MIIBxzCCAXmgAwIBAgIUK1fwYdxUatMwHY28/HicU0OdbSwwBQYDK2VwMEwxCzAJ
+            BgNVBAYTAklFMREwDwYDVQQIDAhMZWluc3RlcjENMAsGA1UECwwEQ0RFVDEbMBkG
+            A1UEAwwSQ0RFVCBUZXN0IExpc3RlbmVyMB4XDTI0MDcwMTEyMTQ0MFoXDTI3MDMy
+            ODEyMTQ0MFowTDELMAkGA1UEBhMCSUUxETAPBgNVBAgMCExlaW5zdGVyMQ0wCwYD
+            VQQLDARDREVUMRswGQYDVQQDDBJDREVUIFRlc3QgTGlzdGVuZXIwKjAFBgMrZXAD
+            IQAY7TzlgF0tBNzc5eCWdmKEfwGwIbFMmWMCmwYpLUweSaNtMGswHQYDVR0OBBYE
+            FNAmLiDRcs964PIgpp0i/gFXq8OrMB8GA1UdIwQYMBaAFNAmLiDRcs964PIgpp0i
+            /gFXq8OrMA8GA1UdEwEB/wQFMAMBAf8wGAYDVR0RBBEwD4INY25wcDIuZXhhbXBs
+            ZTAFBgMrZXADQQB3lqqrqHme+KHmhOe3QMLcPQGnaffxQQ+lrbn13cGaFnKYVBO9
+            s3iidmpvZwaAOMeibNd4Ew1zEQtlwOAvdLkH
+            -----END CERTIFICATE-----
+        private_key:
+          #filename: ./test_certs/demo/listener.key.pem
+          inline_string: |
+            -----BEGIN PRIVATE KEY-----
+            MC4CAQAwBQYDK2VwBCIEIH9AJcray3rNikzp7oOobt9JsDSHNQyxcT/gHP0kvnAS
+            -----END PRIVATE KEY-----
+
+  listeners:
+    - name: listener_http
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 8080 }
+      socket_options:
+        - description: "bind to interface client2-proxy"
+          level: 1
+          name: 25
+          buf_value: Y2xpZW50Mi1wcm94eQ==
+      filter_chains:
+        - name: filter_chain_http
+          filters:
+            - name: http_gateway
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                httpFilters:
+                - name: envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                  disabled: true
+                  typedConfig:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                    stat_prefix: http_local_rate_limiter
+                    token_bucket:
+                      max_tokens: "1"
+                      tokens_per_fill: "1"
+                      fill_interval: 5s
+                - name: envoy.filters.http.router
+                  typedConfig:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                    start_child_span: false
+                codec_type: HTTP1
+                route_config:
+                  name: basic_http_route
+                  virtual_hosts:
+                    - name: backend_http
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: "/cluster1/"
+                          route:
+                            cluster: cluster1
+                        - match:
+                            prefix: "/cluster2/"
+                          route:
+                            cluster: cluster2
+                        - match:
+                            prefix: "/by-ua/"
+                            headers:
+                              - name: "user-agent"
+                                string_match:
+                                  safe_regex:
+                                    regex: ".*curl/.*"
+                          route:
+                            cluster: cluster1
+                        - match:
+                            prefix: "/by-ua/"
+                          route:
+                            cluster: cluster2
+                        - match:
+                            prefix: "/direct-response/"
+                          direct_response:
+                            status: "403"
+                            body:
+                              inline_string: "Access denied\n"
+                        - match:
+                            prefix: "/route-timeout-and-retry/"
+                          route: # retry only works if server returns 404
+                            timeout: 5s
+                            cluster: "cluster1"
+                            retry_policy:
+                              retry_on: "5xx"
+                              #retry_on: "retriable-status-codes"
+                              #retriable_status_codes: [ "404" ]
+                              num_retries: "3"
+                              retry_back_off:
+                                base_interval: 1s
+                                max_interval: 10s
+                        - match: # this only triggers w/ a slow server
+                            prefix: "/upstream-req-timeout/"
+                          route:
+                            cluster: "cluster1"
+                            retry_policy:
+                              retry_on: "connect-failure,reset"
+                              num_retries: "3"
+                              per_try_timeout: 1s
+                        - match:
+                            prefix: "/rewrite/"
+                          route:
+                            cluster: "cluster1"
+                            prefix_rewrite: "/rewrite-path/"
+                        - match:
+                            prefix: "/random-cluster/"
+                          route:
+                            prefix_rewrite: "/"
+                            weighted_clusters:
+                              clusters:
+                              - name: cluster1
+                                weight: "1"
+                              - name: cluster2
+                                weight: "2"
+                        - match:
+                            prefix: "/redirect/"
+                          redirect:
+                            https_redirect: true
+                            host_redirect: "www.google.com"
+                            port_redirect: "443"
+                            response_code: "TEMPORARY_REDIRECT"
+                            path_redirect: "/search"
+                        - match:
+                            prefix: "/rate-limit/"
+                          route:
+                            cluster: "cluster1"
+                            prefix_rewrite: "/"
+                          typed_per_filter_config:
+                            envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit:
+                              "@type": type.googleapis.com/envoy.config.route.v3.FilterConfig
+                              disabled: false
+                        - match:
+                            prefix: "/rate-limit-override/"
+                          route:
+                            cluster: "cluster1"
+                            prefix_rewrite: "/"
+                          typed_per_filter_config:
+                            envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: http_local_rate_limiter
+                              token_bucket:
+                                max_tokens: "5"
+                                tokens_per_fill: "5"
+                                fill_interval: 60s
+
+    - name: listener_https
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 8443 }
+      socket_options:
+        - description: "bind to interface client1-proxy"
+          level: 1
+          name: 25
+          # utf8 interface name - bytes encoded as base64
+          buf_value: Y2xpZW50MS1wcm94eQ==
+      listener_filters: # Required for SNI routing
+        - name: listener_https_1_tls_inspector
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector
+            enable_ja3_fingerprinting: false
+      filter_chains:
+        - name: filter_chain_https1
+          filter_chain_match:
+            server_names: [cnpp1.example]
+          filters:
+            - name: https_gateway
+              typedConfig:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                httpFilters:
+                - name: envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                  disabled: true
+                  typedConfig:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                    stat_prefix: http_local_rate_limiter
+                    token_bucket:
+                      max_tokens: "1"
+                      tokens_per_fill: "1"
+                      fill_interval: 5s
+                - name: envoy.filters.http.router
+                  typedConfig:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                    start_child_span: false
+                codec_type: HTTP1
+                route_config:
+                  name: basic_https_route
+                  virtual_hosts:
+                    - name: backend_https
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: "/cluster1/"
+                          route:
+                            cluster: cluster1
+                        - match:
+                            prefix: "/cluster2/"
+                          route:
+                            cluster: cluster2
+                        - match:
+                            prefix: "/by-ua/"
+                            headers:
+                              - name: "user-agent"
+                                string_match:
+                                  safe_regex:
+                                    regex: ".*curl/.*"
+                          route:
+                            cluster: cluster1
+                        - match:
+                            prefix: "/by-ua/"
+                          route:
+                            cluster: cluster2
+                        - match:
+                            prefix: "/direct-response/"
+                          direct_response:
+                            status: "403"
+                            body:
+                              inline_string: "Access denied\n"
+                        - match:
+                            prefix: "/route-timeout-and-retry/"
+                          route: # retry only works if server returns 404
+                            timeout: 5s
+                            cluster: "cluster1"
+                            retry_policy:
+                              retry_on: "5xx"
+                              #retry_on: "retriable-status-codes"
+                              #retriable_status_codes: [ "404" ]
+                              num_retries: "3"
+                              retry_back_off:
+                                base_interval: 1s
+                                max_interval: 10s
+                        - match: # this only triggers w/ a slow server
+                            prefix: "/upstream-req-timeout/"
+                          route:
+                            cluster: "cluster1"
+                            retry_policy:
+                              retry_on: "connect-failure,reset"
+                              num_retries: "3"
+                              per_try_timeout: 1s
+                        - match:
+                            prefix: "/rewrite/"
+                          route:
+                            cluster: "cluster1"
+                            prefix_rewrite: "/rewrite-path/"
+                        - match:
+                            prefix: "/random-cluster/"
+                          route:
+                            prefix_rewrite: "/"
+                            weighted_clusters:
+                              clusters:
+                              - name: cluster1
+                                weight: "1"
+                              - name: cluster2
+                                weight: "2"
+                        - match:
+                            prefix: "/redirect/"
+                          redirect:
+                            https_redirect: true
+                            host_redirect: "www.google.com"
+                            port_redirect: "443"
+                            response_code: "TEMPORARY_REDIRECT"
+                            path_redirect: "/search"
+                        - match:
+                            prefix: "/rate-limit/"
+                          route:
+                            cluster: "cluster1"
+                            prefix_rewrite: "/"
+                          typed_per_filter_config:
+                            envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit:
+                              "@type": type.googleapis.com/envoy.config.route.v3.FilterConfig
+                              disabled: false
+                        - match:
+                            prefix: "/rate-limit-override/"
+                          route:
+                            cluster: "cluster1"
+                            prefix_rewrite: "/"
+                          typed_per_filter_config:
+                            envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: http_local_rate_limiter
+                              token_bucket:
+                                max_tokens: "5"
+                                tokens_per_fill: "5"
+                                fill_interval: 60s
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typedConfig:
+              '@type': type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              common_tls_context:
+                tls_certificate_sds_secret_configs:
+                  - name: cnpp1_tls_server
+
+        - name: filter_chain_https2
+          filter_chain_match: # matches all hosts/sni
+            server_names: []
+          filters:
+            - name: https_gateway
+              typedConfig:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                httpFilters:
+                  - name: envoy.filters.http.router
+                    typedConfig:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                      start_child_span: false
+                codec_type: HTTP1
+                route_config:
+                  name: basic_https_route
+                  virtual_hosts:
+                    - name: backend_https
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: "/"
+                          direct_response:
+                            status: "200"
+                            body:
+                              inline_string: "This is the fallback SNI hostname route\n"
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typedConfig:
+              '@type': type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              common_tls_context:
+                tls_certificate_sds_secret_configs:
+                  - name: cnpp2_tls_server
+
+  clusters:
+    - name: cluster1
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+
+      #health_checks:
+      #- timeout: 0.1s
+      #  interval: 10s
+      #  healthy_threshold: "2"
+      #  unhealthy_threshold: "2"
+      #  http_health_check: {}
+
+      upstream_bind_config:
+        socket_options:
+        - description: "bind to interface cluster1-proxy"
+          level: 1
+          name: 25
+          buf_value: Y2x1c3RlcjEtcHJveHk=
+
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            # force HTTP1 for the cluster
+            http_protocol_options: {}
+      load_assignment:
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: 192.0.0.1
+                      port_value: 6080
+                load_balancing_weight: 1
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: 192.0.0.1
+                      port_value: 6081
+                load_balancing_weight: 1
+
+    - name: cluster2
+      type: STATIC
+      connect_timeout: 2s
+      lb_policy: ROUND_ROBIN
+
+      upstream_bind_config:
+        # sudo setcap cap_net_raw=ep arion
+        socket_options:
+        - description: "bind to interface cluster2-proxy"
+          level: 1
+          name: 25
+          buf_value: Y2x1c3RlcjItcHJveHk=
+
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          '@type': type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          sni: "backend.example"
+          common_tls_context:
+            validation_context_sds_secret_config:
+              name: demo_ca_validation
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            # force http2
+            http2_protocol_options: {}
+      load_assignment:
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: 192.0.0.1
+                      port_value: 6443
+                load_balancing_weight: 1
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: 192.0.0.1
+                      port_value: 6444
+                load_balancing_weight: 1

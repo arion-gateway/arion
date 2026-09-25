@@ -1,0 +1,45 @@
+[package]
+edition.workspace      = true
+license-file.workspace = true
+name                   = "arion-format"
+rust-version.workspace = true
+version.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+http.workspace              = true
+arion-http-header.workspace = true
+arion-interner.workspace = true
+thiserror.workspace = true
+smol_str.workspace = true
+ahash.workspace = true
+
+bitflags = { workspace = true, features = ["serde"] }
+chrono.workspace = true
+criterion.workspace = true
+dhat.workspace = true
+http-serde-ext.workspace = true
+hyper = { workspace = true }
+itoa.workspace = true
+ptrie.workspace = true
+serde = { workspace = true, features = ["rc"] }
+serde_json = { workspace = true }
+smallvec = { workspace = true }
+thread_local.workspace = true
+traceparent.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+blake3.workspace = true
+arrayvec = { workspace = true, features = ["serde"] }
+
+[features]
+dhat-heap = []
+
+[[bench]]
+harness = false
+name    = "benchmark"
+
+[[bin]]
+name = "format-test"
+path = "src/bin/format-test.rs"

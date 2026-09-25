@@ -1,0 +1,44 @@
+[package]
+name = "arion-tracing"
+version.workspace      = true
+edition.workspace      = true
+
+license-file.workspace = true
+rust-version.workspace = true
+[features]
+tracing = []
+
+[dependencies]
+arion-http-header.workspace = true
+arion-interner.workspace = true
+arion-configuration.workspace = true
+arion-error.workspace = true
+
+bounded-integer.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+http.workspace = true
+
+opentelemetry.workspace = true
+opentelemetry-otlp = { workspace = true, features = [
+    "tonic",
+    "tokio",
+    "grpc-tonic",
+    "hyper-client",
+    "serde",
+    "serde_json",
+    "serialize",
+    "http-json",
+] }
+
+opentelemetry_sdk.workspace = true
+parking_lot.workspace = true
+thread-id.workspace = true
+arc-swap.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+rand_0_9.workspace = true
+arrayvec.workspace = true
+traceparent.workspace = true

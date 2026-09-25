@@ -1,0 +1,23 @@
+[package]
+name = "arion-data-plane-api"
+
+edition.workspace      = true
+license-file.workspace = true
+rust-version.workspace = true
+version.workspace      = true
+
+[dependencies]
+anyhow.workspace = true
+async-stream.workspace = true
+envoy-data-plane-api.workspace = true
+futures.workspace              = true
+serde.workspace                = true
+serde_yaml.workspace           = true
+thiserror.workspace            = true
+tokio.workspace                = true
+tokio-stream.workspace         = true
+tower.workspace                = true
+tracing.workspace              = true
+
+[dev-dependencies]
+hyper-util.workspace     = true

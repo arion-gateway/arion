@@ -4,9 +4,9 @@
 
 ### Root Cause
 
-This error occurs when the TLS certificate configured in your `orion-runtime-secrets-*.yaml` file does not contain a valid DNS name in its Subject Alternative Name (SAN) extension that can be parsed as a server name.
+This error occurs when the TLS certificate configured in your `arion-runtime-secrets-*.yaml` file does not contain a valid DNS name in its Subject Alternative Name (SAN) extension that can be parsed as a server name.
 
-The Orion proxy extracts the server name from the certificate's SAN extension to match against SNI (Server Name Indication) requests. If no valid DNS name is found in the SAN, the certificate cannot be used.
+The Arion proxy extracts the server name from the certificate's SAN extension to match against SNI (Server Name Indication) requests. If no valid DNS name is found in the SAN, the certificate cannot be used.
 
 ### What the Code Does
 
@@ -62,7 +62,7 @@ If you have an existing certificate without SAN, you'll need to regenerate it. C
 
 ### Verify Your Certificate
 
-Before using a certificate in Orion, verify it has the required SAN:
+Before using a certificate in Arion, verify it has the required SAN:
 
 ```bash
 # Check for Subject Alternative Name
@@ -75,7 +75,7 @@ openssl x509 -in your-cert.pem -text -noout | grep -A 2 "Subject Alternative Nam
 
 ### Configuration Format
 
-Your `orion-runtime-secrets-*.yaml` should look like:
+Your `arion-runtime-secrets-*.yaml` should look like:
 
 ```yaml
 envoy_bootstrap:
@@ -101,7 +101,7 @@ envoy_bootstrap:
 2. **Private key has PUBLIC KEY instead of PRIVATE KEY**: Use `-----BEGIN PRIVATE KEY-----` or `-----BEGIN RSA PRIVATE KEY-----`
 3. **Swapped certificate and key**: Make sure the certificate is in `certificate_chain` and the key is in `private_key`
 4. **Certificate without SAN**: Older certificates might only have CN (Common Name) without SAN
-5. **PKCS1 vs PKCS8 key format**: Orion expects PKCS8 format (`-----BEGIN PRIVATE KEY-----`). Convert PKCS1 if needed:
+5. **PKCS1 vs PKCS8 key format**: Arion expects PKCS8 format (`-----BEGIN PRIVATE KEY-----`). Convert PKCS1 if needed:
 
 ```bash
 # Convert PKCS1 to PKCS8
@@ -112,7 +112,7 @@ openssl pkcs8 -topk8 -nocrypt -in pkcs1-key.pem -out pkcs8-key.pem
 
 1. **Enable debug logging**:
    ```bash
-   RUST_LOG=debug ./target/debug/orion --config conf/your-config.yaml 2>&1 | tee debug.log
+   RUST_LOG=debug ./target/debug/arion --config conf/your-config.yaml 2>&1 | tee debug.log
    ```
 
 2. **Look for these debug messages**:
@@ -145,7 +145,7 @@ filter_chains:
 
 ```bash
 # Start the proxy
-RUST_LOG=debug ./orion --config conf/orion-runtime-secrets-pkcs1.yaml
+RUST_LOG=debug ./arion --config conf/arion-runtime-secrets-pkcs1.yaml
 
 # Test with curl (in another terminal)
 curl -v --resolve cnpp1.example:8443:127.0.0.1 \

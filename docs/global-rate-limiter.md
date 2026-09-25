@@ -2,19 +2,19 @@
 
 The network global rate limit filter enforces connection-level rate limiting before the HTTP stack is started. It fires on every new TCP connection, alongside RBAC and connection limit filters, making it the earliest point at which a connection can be rejected based on external policy.
 
-The filter calls a [Rate Limit Service (RLS)](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/other_features/global_rate_limiting) over gRPC on each new connection. If the RLS returns an `OVER_LIMIT` response, the TCP connection is dropped immediately. When the RLS response includes a quota, Orion caches it process-wide for the duration of the quota window, so subsequent connections consume from the local bucket without an RLS round-trip. Once the quota is exhausted or expired, one connection refreshes it while others wait.
+The filter calls a [Rate Limit Service (RLS)](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/other_features/global_rate_limiting) over gRPC on each new connection. If the RLS returns an `OVER_LIMIT` response, the TCP connection is dropped immediately. When the RLS response includes a quota, Arion caches it process-wide for the duration of the quota window, so subsequent connections consume from the local bucket without an RLS round-trip. Once the quota is exhausted or expired, one connection refreshes it while others wait.
 
-The filter is configured per filter chain. Because Orion selects a filter chain based on TLS SNI before invoking any filter, the rate limiter is already scoped to the correct tenant or domain by the time it runs.
+The filter is configured per filter chain. Because Arion selects a filter chain based on TLS SNI before invoking any filter, the rate limiter is already scoped to the correct tenant or domain by the time it runs.
 
 ### Differences from Envoy
 
 **`domain` is optional on TLS listeners.**
-In Envoy the `domain` field is always required. In Orion it may be omitted on listeners that have a TLS inspector configured. When omitted, the TLS SNI read from the connection is used as the RLS domain, enabling per-SNI rate limiting without static configuration. On non-TLS listeners `domain` remains mandatory — there is no SNI to fall back on, and Orion will reject the configuration at startup with a clear error.
+In Envoy the `domain` field is always required. In Arion it may be omitted on listeners that have a TLS inspector configured. When omitted, the TLS SNI read from the connection is used as the RLS domain, enabling per-SNI rate limiting without static configuration. On non-TLS listeners `domain` remains mandatory — there is no SNI to fall back on, and Arion will reject the configuration at startup with a clear error.
 
 When a static `domain` is configured it always takes priority over the SNI, regardless of what the client presents.
 
 **Only static descriptors are supported.**
-Envoy's HTTP-level rate limit filter supports dynamic descriptor entries populated from request attributes (headers, remote address, destination cluster, etc.) using access log format strings. The network-level filter — both in Envoy and in Orion — only supports static key/value descriptor entries declared in the configuration. Dynamic descriptor population from connection or request metadata is not yet supported.
+Envoy's HTTP-level rate limit filter supports dynamic descriptor entries populated from request attributes (headers, remote address, destination cluster, etc.) using access log format strings. The network-level filter — both in Envoy and in Arion — only supports static key/value descriptor entries declared in the configuration. Dynamic descriptor population from connection or request metadata is not yet supported.
 
 ### Configuration
 
@@ -84,7 +84,7 @@ The filter is declared as `envoy.filters.network.ratelimit` in a filter chain, b
 
 ### Testing with the Envoy ratelimit reference implementation
 
-The [envoy/ratelimit](https://github.com/envoyproxy/ratelimit) project is a Go gRPC service compatible with Orion's network global rate limit filter. Refer to its README for installation options; the quickest path for local testing is Docker.
+The [envoy/ratelimit](https://github.com/envoyproxy/ratelimit) project is a Go gRPC service compatible with Arion's network global rate limit filter. Refer to its README for installation options; the quickest path for local testing is Docker.
 
 **RLS configuration**
 
@@ -129,12 +129,12 @@ docker run --rm \
   envoyproxy/ratelimit:master /bin/ratelimit
 ```
 
-**Running Orion**
+**Running Arion**
 
-Use the `orion-runtime-global-rate-limit.yaml` example from `orion-proxy/conf/` as a base. It already includes the `rls_cluster` pointing to `127.0.0.1:8081`.
+Use the `arion-runtime-global-rate-limit.yaml` example from `arion-proxy/conf/` as a base. It already includes the `rls_cluster` pointing to `127.0.0.1:8081`.
 
 ```bash
-cargo run -p orion-proxy -- orion-proxy/conf/orion-runtime-global-rate-limit.yaml
+cargo run -p arion-proxy -- arion-proxy/conf/arion-runtime-global-rate-limit.yaml
 ```
 
 **curl examples**

@@ -207,6 +207,420 @@ dependencies = [
 ]
 
 [[package]]
+name = "arion-configuration"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "arion-data-plane-api",
+ "arion-error",
+ "arion-format",
+ "arion-interner",
+ "base64 0.22.1",
+ "base64-serde",
+ "bounded-integer",
+ "bytes",
+ "clap",
+ "exponential-backoff",
+ "http",
+ "http-serde-ext",
+ "humantime-serde",
+ "ipnet",
+ "itertools 0.14.0",
+ "jsonschema",
+ "num_cpus",
+ "opentelemetry-otlp",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_regex",
+ "serde_yaml",
+ "smallvec",
+ "smol_str",
+ "tempfile",
+ "thiserror 2.0.20",
+ "time",
+ "tracing",
+ "tracing-appender",
+ "tracing-rolling-file",
+ "tracing-subscriber",
+ "tracing-test",
+ "triomphe",
+ "url",
+]
+
+[[package]]
+name = "arion-data-plane-api"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "envoy-data-plane-api",
+ "futures",
+ "hyper-util",
+ "serde",
+ "serde_yaml",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-stream",
+ "tower 0.5.3",
+ "tracing",
+]
+
+[[package]]
+name = "arion-e2e-tests"
+version = "0.1.0"
+dependencies = [
+ "arion-configuration",
+ "arion-data-plane-api",
+ "arion-xds",
+ "atomic-take",
+ "base64 0.22.1",
+ "bytes",
+ "clap",
+ "ctor 0.2.9",
+ "dashmap",
+ "fastembed",
+ "futures",
+ "futures-util",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "jsonwebtoken",
+ "pingora",
+ "pingora-timeout 0.3.0",
+ "ppp",
+ "prost 0.14.4",
+ "rustls",
+ "rustls-pemfile",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "smallvec",
+ "smol_str",
+ "test-log",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-rustls",
+ "tokio-stream",
+ "tonic 0.14.6",
+ "tonic-health",
+ "tonic-prost",
+ "tonic-prost-build",
+ "tracing",
+ "tracing-test",
+ "uuid",
+]
+
+[[package]]
+name = "arion-error"
+version = "0.1.0"
+
+[[package]]
+name = "arion-format"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "arion-http-header",
+ "arion-interner",
+ "arrayvec 0.7.8",
+ "bitflags 2.13.1",
+ "blake3",
+ "chrono",
+ "criterion",
+ "dhat",
+ "http",
+ "http-serde-ext",
+ "hyper",
+ "itoa",
+ "ptrie",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "smol_str",
+ "thiserror 2.0.20",
+ "thread_local",
+ "traceparent",
+ "uuid",
+]
+
+[[package]]
+name = "arion-http-header"
+version = "0.1.0"
+dependencies = [
+ "http",
+]
+
+[[package]]
+name = "arion-interner"
+version = "0.1.0"
+dependencies = [
+ "http",
+ "lasso",
+ "serde",
+ "smol_str",
+]
+
+[[package]]
+name = "arion-lib"
+version = "0.1.0"
+dependencies = [
+ "abort-on-drop",
+ "ahash",
+ "arc-swap",
+ "arion-configuration",
+ "arion-data-plane-api",
+ "arion-error",
+ "arion-format",
+ "arion-http-header",
+ "arion-interner",
+ "arion-metrics",
+ "arion-tracing",
+ "arion-wasm-types",
+ "arion-xds",
+ "arrayvec 0.7.8",
+ "assert_matches",
+ "async-stream",
+ "atomic-time",
+ "atomic_enum",
+ "atomicoption",
+ "base64 0.22.1",
+ "bincode-next",
+ "bitflags 2.13.1",
+ "bounded-integer",
+ "bytes",
+ "cedar-policy",
+ "cedar-policy-core",
+ "chrono",
+ "chrono-tz",
+ "const-str",
+ "contatori",
+ "crossbeam-queue",
+ "ctor 0.6.3",
+ "enum_dispatch",
+ "exponential-backoff",
+ "flume",
+ "futures",
+ "futures-util",
+ "h2",
+ "hickory-resolver",
+ "http",
+ "http-body",
+ "http-body-util",
+ "http-serde-ext",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "hyperlocal",
+ "ipnet",
+ "itoa",
+ "jsonschema",
+ "jsonwebtoken",
+ "lru_time_cache",
+ "moka",
+ "opentelemetry",
+ "owning_ref",
+ "papaya",
+ "parking_lot",
+ "pastey 0.2.3",
+ "percent-encoding",
+ "pin-project",
+ "pingora",
+ "pingora-timeout 0.3.0",
+ "ppp",
+ "pretty-duration",
+ "prost 0.14.4",
+ "quanta",
+ "rand 0.8.7",
+ "ref-cast",
+ "regex",
+ "reqwest 0.13.4",
+ "rmcp",
+ "rustc-hash 1.1.0",
+ "rustls",
+ "rustls-pemfile",
+ "rustls-platform-verifier 0.3.4",
+ "rustls-webpki 0.102.8",
+ "schemars 1.2.2",
+ "scopeguard",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "smallvec",
+ "smol_str",
+ "str-utils",
+ "test-log",
+ "thiserror 2.0.20",
+ "thread-id",
+ "thread_local",
+ "time",
+ "tokio",
+ "tokio-rustls",
+ "tokio-stream",
+ "tokio-util",
+ "tonic 0.14.6",
+ "tower 0.5.3",
+ "tower-service",
+ "traceparent",
+ "tracing",
+ "tracing-appender",
+ "tracing-rolling-file",
+ "tracing-test",
+ "triomphe",
+ "twox-hash",
+ "typed-builder",
+ "upon",
+ "url",
+ "uuid",
+ "wasmtime",
+ "x509-parser",
+]
+
+[[package]]
+name = "arion-metrics"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "arion-configuration",
+ "arion-interner",
+ "arion-stats",
+ "const_format",
+ "http",
+ "http-serde-ext",
+ "memory-stats",
+ "nohash",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "papaya",
+ "parking_lot",
+ "serde",
+ "smallvec",
+ "thread-id",
+ "tikv-jemalloc-ctl",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "arion-proxy"
+version = "0.1.0"
+dependencies = [
+ "abort-on-drop",
+ "affinity",
+ "ahash",
+ "arion-configuration",
+ "arion-data-plane-api",
+ "arion-error",
+ "arion-format",
+ "arion-lib",
+ "arion-metrics",
+ "arion-stats",
+ "arion-tracing",
+ "arion-xds",
+ "axum",
+ "axum-test",
+ "caps",
+ "chrono",
+ "const_format",
+ "dhat",
+ "futures",
+ "http",
+ "maud",
+ "num_cpus",
+ "opentelemetry",
+ "parking_lot",
+ "pingora-timeout 0.3.0",
+ "regex",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "smol_str",
+ "thiserror 2.0.20",
+ "tikv-jemallocator",
+ "tokio",
+ "tower 0.5.3",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "triomphe",
+]
+
+[[package]]
+name = "arion-stats"
+version = "0.1.0"
+dependencies = [
+ "atomicoption",
+ "memory-stats",
+ "serde",
+ "tikv-jemalloc-ctl",
+]
+
+[[package]]
+name = "arion-tracing"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "arion-configuration",
+ "arion-error",
+ "arion-http-header",
+ "arion-interner",
+ "arrayvec 0.7.8",
+ "bounded-integer",
+ "http",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "parking_lot",
+ "rand 0.9.5",
+ "serde",
+ "smol_str",
+ "thiserror 2.0.20",
+ "thread-id",
+ "traceparent",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "arion-wasm-types"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "http",
+ "http-serde-ext",
+ "serde",
+ "smol_str",
+]
+
+[[package]]
+name = "arion-xds"
+version = "0.1.0"
+dependencies = [
+ "arion-configuration",
+ "arion-data-plane-api",
+ "arion-error",
+ "async-stream",
+ "atomic-take",
+ "bytes",
+ "futures",
+ "http",
+ "serde",
+ "serde_yaml",
+ "smol_str",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-stream",
+ "tower 0.5.3",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "arrayref"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4145,420 +4559,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68f19d67e5a2795c94e73e0bb1cc1a7edeb2e28efd39e2e1c9b7a40c1108b11c"
 dependencies = [
  "num-traits",
-]
-
-[[package]]
-name = "orion-configuration"
-version = "0.1.0"
-dependencies = [
- "ahash",
- "base64 0.22.1",
- "base64-serde",
- "bounded-integer",
- "bytes",
- "clap",
- "exponential-backoff",
- "http",
- "http-serde-ext",
- "humantime-serde",
- "ipnet",
- "itertools 0.14.0",
- "jsonschema",
- "num_cpus",
- "opentelemetry-otlp",
- "orion-data-plane-api",
- "orion-error",
- "orion-format",
- "orion-interner",
- "regex",
- "serde",
- "serde_json",
- "serde_path_to_error",
- "serde_regex",
- "serde_yaml",
- "smallvec",
- "smol_str",
- "tempfile",
- "thiserror 2.0.20",
- "time",
- "tracing",
- "tracing-appender",
- "tracing-rolling-file",
- "tracing-subscriber",
- "tracing-test",
- "triomphe",
- "url",
-]
-
-[[package]]
-name = "orion-data-plane-api"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-stream",
- "envoy-data-plane-api",
- "futures",
- "hyper-util",
- "serde",
- "serde_yaml",
- "thiserror 2.0.20",
- "tokio",
- "tokio-stream",
- "tower 0.5.3",
- "tracing",
-]
-
-[[package]]
-name = "orion-e2e-tests"
-version = "0.1.0"
-dependencies = [
- "atomic-take",
- "base64 0.22.1",
- "bytes",
- "clap",
- "ctor 0.2.9",
- "dashmap",
- "fastembed",
- "futures",
- "futures-util",
- "http",
- "http-body",
- "http-body-util",
- "hyper",
- "hyper-util",
- "jsonwebtoken",
- "orion-configuration",
- "orion-data-plane-api",
- "orion-xds",
- "pingora",
- "pingora-timeout 0.3.0",
- "ppp",
- "prost 0.14.4",
- "rustls",
- "rustls-pemfile",
- "serde",
- "serde_json",
- "serde_yaml",
- "smallvec",
- "smol_str",
- "test-log",
- "thiserror 2.0.20",
- "tokio",
- "tokio-rustls",
- "tokio-stream",
- "tonic 0.14.6",
- "tonic-health",
- "tonic-prost",
- "tonic-prost-build",
- "tracing",
- "tracing-test",
- "uuid",
-]
-
-[[package]]
-name = "orion-error"
-version = "0.1.0"
-
-[[package]]
-name = "orion-format"
-version = "0.1.0"
-dependencies = [
- "ahash",
- "arrayvec 0.7.8",
- "bitflags 2.13.1",
- "blake3",
- "chrono",
- "criterion",
- "dhat",
- "http",
- "http-serde-ext",
- "hyper",
- "itoa",
- "orion-http-header",
- "orion-interner",
- "ptrie",
- "serde",
- "serde_json",
- "smallvec",
- "smol_str",
- "thiserror 2.0.20",
- "thread_local",
- "traceparent",
- "uuid",
-]
-
-[[package]]
-name = "orion-http-header"
-version = "0.1.0"
-dependencies = [
- "http",
-]
-
-[[package]]
-name = "orion-interner"
-version = "0.1.0"
-dependencies = [
- "http",
- "lasso",
- "serde",
- "smol_str",
-]
-
-[[package]]
-name = "orion-lib"
-version = "0.1.0"
-dependencies = [
- "abort-on-drop",
- "ahash",
- "arc-swap",
- "arrayvec 0.7.8",
- "assert_matches",
- "async-stream",
- "atomic-time",
- "atomic_enum",
- "atomicoption",
- "base64 0.22.1",
- "bincode-next",
- "bitflags 2.13.1",
- "bounded-integer",
- "bytes",
- "cedar-policy",
- "cedar-policy-core",
- "chrono",
- "chrono-tz",
- "const-str",
- "contatori",
- "crossbeam-queue",
- "ctor 0.6.3",
- "enum_dispatch",
- "exponential-backoff",
- "flume",
- "futures",
- "futures-util",
- "h2",
- "hickory-resolver",
- "http",
- "http-body",
- "http-body-util",
- "http-serde-ext",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "hyperlocal",
- "ipnet",
- "itoa",
- "jsonschema",
- "jsonwebtoken",
- "lru_time_cache",
- "moka",
- "opentelemetry",
- "orion-configuration",
- "orion-data-plane-api",
- "orion-error",
- "orion-format",
- "orion-http-header",
- "orion-interner",
- "orion-metrics",
- "orion-tracing",
- "orion-wasm-types",
- "orion-xds",
- "owning_ref",
- "papaya",
- "parking_lot",
- "pastey 0.2.3",
- "percent-encoding",
- "pin-project",
- "pingora",
- "pingora-timeout 0.3.0",
- "ppp",
- "pretty-duration",
- "prost 0.14.4",
- "quanta",
- "rand 0.8.7",
- "ref-cast",
- "regex",
- "reqwest 0.13.4",
- "rmcp",
- "rustc-hash 1.1.0",
- "rustls",
- "rustls-pemfile",
- "rustls-platform-verifier 0.3.4",
- "rustls-webpki 0.102.8",
- "schemars 1.2.2",
- "scopeguard",
- "serde",
- "serde_json",
- "serde_yaml",
- "smallvec",
- "smol_str",
- "str-utils",
- "test-log",
- "thiserror 2.0.20",
- "thread-id",
- "thread_local",
- "time",
- "tokio",
- "tokio-rustls",
- "tokio-stream",
- "tokio-util",
- "tonic 0.14.6",
- "tower 0.5.3",
- "tower-service",
- "traceparent",
- "tracing",
- "tracing-appender",
- "tracing-rolling-file",
- "tracing-test",
- "triomphe",
- "twox-hash",
- "typed-builder",
- "upon",
- "url",
- "uuid",
- "wasmtime",
- "x509-parser",
-]
-
-[[package]]
-name = "orion-metrics"
-version = "0.1.0"
-dependencies = [
- "ahash",
- "const_format",
- "http",
- "http-serde-ext",
- "memory-stats",
- "nohash",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "orion-configuration",
- "orion-interner",
- "orion-stats",
- "papaya",
- "parking_lot",
- "serde",
- "smallvec",
- "thread-id",
- "tikv-jemalloc-ctl",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "orion-proxy"
-version = "0.1.0"
-dependencies = [
- "abort-on-drop",
- "affinity",
- "ahash",
- "axum",
- "axum-test",
- "caps",
- "chrono",
- "const_format",
- "dhat",
- "futures",
- "http",
- "maud",
- "num_cpus",
- "opentelemetry",
- "orion-configuration",
- "orion-data-plane-api",
- "orion-error",
- "orion-format",
- "orion-lib",
- "orion-metrics",
- "orion-stats",
- "orion-tracing",
- "orion-xds",
- "parking_lot",
- "pingora-timeout 0.3.0",
- "regex",
- "serde",
- "serde_json",
- "smallvec",
- "smol_str",
- "thiserror 2.0.20",
- "tikv-jemallocator",
- "tokio",
- "tower 0.5.3",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "triomphe",
-]
-
-[[package]]
-name = "orion-stats"
-version = "0.1.0"
-dependencies = [
- "atomicoption",
- "memory-stats",
- "serde",
- "tikv-jemalloc-ctl",
-]
-
-[[package]]
-name = "orion-tracing"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "arrayvec 0.7.8",
- "bounded-integer",
- "http",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "orion-configuration",
- "orion-error",
- "orion-http-header",
- "orion-interner",
- "parking_lot",
- "rand 0.9.5",
- "serde",
- "smol_str",
- "thiserror 2.0.20",
- "thread-id",
- "traceparent",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "orion-wasm-types"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "http",
- "http-serde-ext",
- "serde",
- "smol_str",
-]
-
-[[package]]
-name = "orion-xds"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "atomic-take",
- "bytes",
- "futures",
- "http",
- "orion-configuration",
- "orion-data-plane-api",
- "orion-error",
- "serde",
- "serde_yaml",
- "smol_str",
- "thiserror 2.0.20",
- "tokio",
- "tokio-stream",
- "tower 0.5.3",
- "tracing",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]

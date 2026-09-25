@@ -1,0 +1,102 @@
+// Copyright 2025-2026 The arion-gateway Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use crate::Result;
+use arion_configuration::config::timezone::TimeZone;
+use atomicoption::AtomicOption;
+use chrono::Utc;
+use chrono_tz::Tz;
+use std::str::FromStr;
+use std::sync::atomic::Ordering;
+use tokio::task::JoinSet;
+use tracing::info;
+
+static LOCAL_OFFSET_SEC: AtomicOption<i32> = AtomicOption::none();
+
+pub fn local_offset_sec() -> Option<i32> {
+    LOCAL_OFFSET_SEC.as_ref(Ordering::Acquire).copied()
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum TimeZoneError {
+    #[error("Invalid timezone: {0}")]
+    InvalidTimeZone(#[from] chrono_tz::ParseError),
+}
+
+use chrono::{Datelike, TimeZone as ChronoTimeZone};
+
+pub fn observes_daylight_saving(tz: &Tz) -> bool {
+    let now = Utc::now();
+    let year = now.year();
+
+    let mut first_offset = None;
+    for month in 1..=12 {
+        if let Some(dt) = tz.with_ymd_and_hms(year, month, 1, 0, 0, 0).single() {
+            let offset_sec =
+                i32::try_from(dt.naive_local().signed_duration_since(dt.naive_utc()).num_seconds()).unwrap_or_default();
+            if let Some(first) = first_offset {
+                if first != offset_sec {
+                    return true;
+                }
+            } else {
+                first_offset = Some(offset_sec);
+            }
+        }
+    }
+    false
+}
+
+pub fn init_tz_cache(set: &mut JoinSet<Result<()>>, tz: &TimeZone) -> Result<()> {
+    let tz_local = tz.local.to_uppercase();
+    if tz_local.is_empty() || tz_local == "UTC" {
+        return Ok(());
+    }
+
+    info!("Initializing local timezone for {}...", tz.local);
+
+    let tz = Tz::from_str(&tz.local)?;
+
+    if !observes_daylight_saving(&tz) {
+        info!("Timezone {} has constant offset, setting it once", tz.name());
+        let now = Utc::now().with_timezone(&tz);
+        let offset_sec =
+            i32::try_from(now.naive_local().signed_duration_since(now.naive_utc()).num_seconds()).unwrap_or_default();
+        LOCAL_OFFSET_SEC.store(Ordering::Release, offset_sec);
+        arion_format::context::set_local_offset_sec(offset_sec);
+        return Ok(());
+    }
+
+    info!("Launching background task for DLS timezone {}", tz.name());
+
+    set.spawn(async move {
+        let mut prev_offset = 0;
+        loop {
+            let now = Utc::now().with_timezone(&tz);
+
+            // Calculate offset
+            let offset_sec = i32::try_from(now.naive_local().signed_duration_since(now.naive_utc()).num_seconds())
+                .unwrap_or_default();
+
+            if prev_offset != offset_sec {
+                prev_offset = offset_sec;
+                LOCAL_OFFSET_SEC.store(Ordering::Release, offset_sec);
+                arion_format::context::set_local_offset_sec(offset_sec);
+            }
+
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    });
+
+    Ok(())
+}

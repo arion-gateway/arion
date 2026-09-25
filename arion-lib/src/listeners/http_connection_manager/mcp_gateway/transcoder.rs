@@ -1,0 +1,79 @@
+// Copyright 2025-2026 The arion-gateway Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpRestQueryParams;
+use bytes::Bytes;
+use http::header::InvalidHeaderValue;
+use http::StatusCode;
+use rmcp::model::Request;
+use upon::Engine;
+
+use crate::ArionRequestBody;
+
+pub mod function_graph;
+pub mod rest;
+
+#[derive(Debug, thiserror::Error)]
+pub enum TranscoderError {
+    #[error("HeaderValue: {0}")]
+    InvalidHeaderValue(#[from] InvalidHeaderValue),
+    #[error("Http: {0}")]
+    HttpError(#[from] http::Error),
+    #[error("JSON parse error: {0}")]
+    JsonParseError(String),
+    #[error("UpstreamError error: {0}")]
+    UpstreamError(String),
+    #[error("Template render error: {0}")]
+    TemplateRenderError(#[from] upon::Error),
+}
+
+#[derive(Debug)]
+pub enum TranscoderType {
+    Rest(RestTranscoder),
+    FunctionGraph(FunctionGraphTranscoder),
+    // No transcoding for MCP usptreams
+    NoTranscoder,
+}
+
+#[derive(Debug)]
+pub enum CompiledTemplate<T> {
+    /// Use verbatim, skip the engine entirely (has priority when present).
+    Static(T),
+    /// Contains `{{...}}`: render via `template_engine`.
+    Dynamic,
+}
+
+#[derive(Debug)]
+pub struct RestTranscoder {
+    pub method: http::Method,
+    pub query_params: Vec<McpRestQueryParams>,
+    /// Always present: `Static` (pre-normalized with leading '/') or `Dynamic`.
+    pub path: CompiledTemplate<String>,
+    /// `None` = no body. Replaces the old `has_body_template` boolean.
+    pub body: Option<CompiledTemplate<Bytes>>,
+    template_engine: Engine<'static>,
+}
+
+#[derive(Debug)]
+pub struct FunctionGraphTranscoder;
+
+pub trait Transcoder {
+    fn encode(
+        &self,
+        http_headers: &http::HeaderMap,
+        mcp_request: &Request,
+    ) -> Result<http::Request<ArionRequestBody>, TranscoderError>;
+
+    fn decode(&self, upstream_body: Bytes, upstream_status: StatusCode) -> Result<serde_json::Value, TranscoderError>;
+}

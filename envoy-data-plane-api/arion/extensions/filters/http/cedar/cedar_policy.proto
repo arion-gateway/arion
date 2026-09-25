@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package arion.extensions.filters.http.cedar.cedar_policy.v3;
+
+// Cedar policy authorization filter.
+// Evaluates Cedar policies against request attributes to make authorization decisions.
+message CedarPolicy {
+  // Cedar policy text in Cedar DSL syntax.
+  // Multiple policies can be included in a single string.
+  string policies = 1;
+
+  // Cedar schema text in Cedar DSL syntax.
+  // Defines entity types, actions, and their valid relationships.
+  string schema = 2;
+
+  // Cedar entity definitions in JSON format.
+  // Defines the static entity hierarchy (group memberships, namespace assignments).
+  string entities = 3;
+
+  // Enforcement mode for the filter.
+  EnforcementMode enforcement_mode = 4;
+
+  // Behavior when policy evaluation fails (parse error, missing entity, etc.).
+  FailureMode failure_mode = 5;
+
+  // Cedar entity type used for the request principal.
+  // The JWT sub claim is used as the entity ID.
+  // Defaults to "User" when empty.
+  string principal_entity_type = 6;
+
+  // Cedar entity type used for the request resource.
+  // The URI path is used as the entity ID.
+  // Defaults to "HttpPath" when empty.
+  string resource_entity_type = 7;
+
+  // Schema is used to validate not only the policies at configuration time
+  // but also to validate the AuthorizationRequest generated from the HTTP
+  // request that is being evaluated.
+  optional bool validate_schema_per_request = 8;
+}
+
+// Enforcement mode for Cedar policy evaluation.
+enum EnforcementMode {
+  // Enforce the policy decision. Deny results in 403.
+  ENFORCE = 0;
+  // Log the policy decision but do not enforce it.
+  LOG_ONLY = 1;
+}
+
+// Behavior when Cedar policy evaluation encounters an error.
+enum FailureMode {
+  // Deny the request on evaluation failure (fail-closed).
+  FAIL_CLOSED = 0;
+  // Allow the request on evaluation failure (fail-open).
+  FAIL_OPEN = 1;
+}

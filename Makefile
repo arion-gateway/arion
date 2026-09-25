@@ -48,5 +48,5 @@ init:
 	@git submodule update --recursive
 
 docker-build: init
-	@echo "Building Docker image: orion-proxy"
-	docker build -t orion-proxy -f docker/Dockerfile .
+	@echo "Building Docker image: arion-proxy"
+	docker build -t arion-proxy -f docker/Dockerfile .

@@ -1,51 +1,52 @@
 [workspace]
 members = [
   "envoy-data-plane-api",
-  "orion-configuration",
-  "orion-data-plane-api",
-  "orion-error",
-  "orion-http-header",
-  "orion-e2e-tests",
-  "orion-interner",
-  "orion-format",
-  "orion-lib",
-  "orion-metrics",
-  "orion-stats",
-  "orion-proxy",
-  "orion-tracing",
-  "orion-wasm-types",
-  "orion-xds",
+  "arion-configuration",
+  "arion-data-plane-api",
+  "arion-error",
+  "arion-http-header",
+  "arion-e2e-tests",
+  "arion-interner",
+  "arion-format",
+  "arion-lib",
+  "arion-metrics",
+  "arion-stats",
+  "arion-proxy",
+  "arion-tracing",
+  "arion-wasm-types",
+  "arion-xds",
   "tools/hyper_unix_listener",
 ]
 exclude = [
-  "orion-wasm-sdk",
+  "arion-wasm-sdk",
+  "arion-wasm-sdk-macros",
 ]
 
 resolver = "2"
 
 
 [workspace.package]
-description  = "Orion Proxy is a cloud native proxy. Orion Proxy is configurable via Envoy xDS protocol"
+description  = "Arion Proxy is a cloud native proxy. Arion Proxy is configurable via Envoy xDS protocol"
 edition      = "2021"
 license-file = "./LICENSE"
 rust-version = "1.89"
 version      = "0.1.0"
 
 [workspace.dependencies]
-# --- Orion Internal Crates ---
+# --- Arion Internal Crates ---
 envoy-data-plane-api     = { path = "envoy-data-plane-api" }
-orion-configuration      = { path = "orion-configuration" }
-orion-data-plane-api     = { path = "orion-data-plane-api" }
-orion-error              = { path = "orion-error" }
-orion-format             = { path = "orion-format" }
-orion-http-header        = { path = "orion-http-header" }
-orion-interner           = { path = "orion-interner" }
-orion-lib                = { path = "orion-lib" }
-orion-metrics            = { path = "orion-metrics" }
-orion-stats              = { path = "orion-stats" }
-orion-tracing            = { path = "orion-tracing" }
-orion-wasm-types         = { path = "orion-wasm-types" }
-orion-xds                = { path = "orion-xds" }
+arion-configuration      = { path = "arion-configuration" }
+arion-data-plane-api     = { path = "arion-data-plane-api" }
+arion-error              = { path = "arion-error" }
+arion-format             = { path = "arion-format" }
+arion-http-header        = { path = "arion-http-header" }
+arion-interner           = { path = "arion-interner" }
+arion-lib                = { path = "arion-lib" }
+arion-metrics            = { path = "arion-metrics" }
+arion-stats              = { path = "arion-stats" }
+arion-tracing            = { path = "arion-tracing" }
+arion-wasm-types         = { path = "arion-wasm-types" }
+arion-xds                = { path = "arion-xds" }
 
 # --- Third-party Dependencies ---
 abort-on-drop            = "0.2"
@@ -295,4 +296,4 @@ module_name_repetitions             = "allow"
 must_use_candidate                  = "allow"
 needless_raw_string_hashes          = "allow"
 semicolon_if_nothing_returned       = "allow"
-ignore_without_reason               = "allow" # ignore is used in all orion-e2e tests
+ignore_without_reason               = "allow" # ignore is used in all arion-e2e tests

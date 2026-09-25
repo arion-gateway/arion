@@ -1,9 +1,0 @@
-[package]
-edition.workspace      = true
-license-file.workspace = true
-name                   = "orion-error"
-rust-version.workspace = true
-version.workspace      = true
-
-[lints]
-workspace = true

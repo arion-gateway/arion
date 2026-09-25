@@ -1,0 +1,9 @@
+[package]
+edition.workspace      = true
+license-file.workspace = true
+name                   = "arion-error"
+rust-version.workspace = true
+version.workspace      = true
+
+[lints]
+workspace = true

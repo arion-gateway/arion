@@ -1,10 +1,10 @@
 ### Description
 
-This document provides an overview of tracing functionality in Orion proxy.
+This document provides an overview of tracing functionality in Arion proxy.
 
 ### Configuration
 
-To enable tracing, the Orion proxy must be built with the `tracing` feature flag. Each HTTP Connection Manager (HCM) can be configured in the bootstrap YAML file with `tracing` settings. Below is an example configuration added to the HttpConnectionManager settings:
+To enable tracing, the Arion proxy must be built with the `tracing` feature flag. Each HTTP Connection Manager (HCM) can be configured in the bootstrap YAML file with `tracing` settings. Below is an example configuration added to the HttpConnectionManager settings:
 
 ```yaml
       tracing:
@@ -18,11 +18,11 @@ To enable tracing, the Orion proxy must be built with the `tracing` feature flag
                name: envoy.tracers.opentelemetry
                typed_config:
                    "@type": type.googleapis.com/envoy.config.trace.v3.OpenTelemetryConfig
-                   service_name: "orion-service-name"
+                   service_name: "arion-service-name"
                    grpc_service:
                      google_grpc:
                          target_uri: "http://192.168.86.27:4317"
-                         stat_prefix: "orion"
+                         stat_prefix: "arion"
 ```
 
 ### Opentelementry Attributes

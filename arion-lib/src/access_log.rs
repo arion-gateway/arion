@@ -1,0 +1,490 @@
+// Copyright 2025 The kmesh Authors
+// Copyright 2026 The arion-gateway Authors
+//
+// Modified by arion-gateway Authors.
+//
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+//
+
+#![allow(unused_macros)]
+
+mod deferred_init;
+mod log_writer;
+pub mod logger;
+mod pool;
+
+use arion_configuration::config::access_log::{AccessLogSink, AccessLogTarget};
+use arion_format::FormattedMessage;
+use base64::{prelude::BASE64_STANDARD, Engine};
+use flume::{SendError, TrySendError};
+use http::HeaderName;
+use logger::AccessLogger;
+use pool::LoggerPool;
+use smol_str::SmolStr;
+use std::sync::OnceLock;
+use tracing_rolling_file::RollingFrequency;
+
+#[derive(Debug, Clone, Default)]
+pub struct AccessLogHeaders {
+    pub incoming_request_header: Option<HeaderName>,
+    pub ext_proc_request_header: Option<HeaderName>,
+    pub upstream_request_header: Option<HeaderName>,
+    pub incoming_response_header: Option<HeaderName>,
+    pub ext_proc_response_header: Option<HeaderName>,
+    pub downstream_response_header: Option<HeaderName>,
+    pub wasm_header: Option<HeaderName>,
+}
+
+pub static ACCESS_LOG_HEADERS: OnceLock<AccessLogHeaders> = OnceLock::new();
+
+#[derive(Debug, thiserror::Error)]
+pub enum AccessLogHeaderError {
+    #[error("Header value is not a valid string: {0}")]
+    InvalidHeaderValue(#[from] http::header::ToStrError),
+    #[error("Failed to decode base64 header value: {0}")]
+    Base64DecodeError(#[from] base64::DecodeError),
+    #[error("Failed to parse JSON from header value: {0}")]
+    JsonParseError(#[from] serde_json::Error),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessLogHook {
+    IncomingRequest,
+    ExtProcRequest,
+    UpstreamRequest,
+    IncomingResponse,
+    ExtProcResponse,
+    DownstreamResponse,
+    Wasm,
+}
+
+/// Evaluates the access log hook by extracting the configured header,
+/// base64-decoding it, parsing it as JSON, and applying it to the loggers.
+/// Returns `Ok(())` if the header is not configured or not found (no-op).
+/// Returns an error only in case of actual data malformation.
+pub fn evaluate_base64_access_log_hook(
+    hook: AccessLogHook,
+    headers: &http::HeaderMap,
+    loggers: &mut [arion_format::LogFormatter],
+) -> Result<(), AccessLogHeaderError> {
+    let Some(headers_config) = ACCESS_LOG_HEADERS.get() else {
+        return Ok(());
+    };
+
+    let Some(header_name) = (match hook {
+        AccessLogHook::IncomingRequest => headers_config.incoming_request_header.as_ref(),
+        AccessLogHook::ExtProcRequest => headers_config.ext_proc_request_header.as_ref(),
+        AccessLogHook::UpstreamRequest => headers_config.upstream_request_header.as_ref(),
+        AccessLogHook::IncomingResponse => headers_config.incoming_response_header.as_ref(),
+        AccessLogHook::ExtProcResponse => headers_config.ext_proc_response_header.as_ref(),
+        AccessLogHook::DownstreamResponse => headers_config.downstream_response_header.as_ref(),
+        AccessLogHook::Wasm => headers_config.wasm_header.as_ref(),
+    }) else {
+        return Ok(());
+    };
+
+    let Some(header_value) = headers.get(header_name) else {
+        return Ok(());
+    };
+
+    let header_str = header_value.to_str()?;
+
+    // Base64 decode
+    let decoded_bytes = BASE64_STANDARD.decode(header_str)?;
+
+    // Parse JSON
+    let json_val = serde_json::from_slice::<serde_json::Value>(&decoded_bytes)?;
+
+    // Apply to loggers
+    for logger in loggers {
+        logger.with_value(&json_val);
+    }
+
+    Ok(())
+}
+
+/// Evaluates the access log hook by extracting the configured key from the given
+/// `KeyValueMap`, parsing it directly as JSON (without base64 decoding), and applying
+/// it to the loggers.
+#[cfg(feature = "metrics")]
+pub fn evaluate_plain_access_log_hook(
+    _hook: AccessLogHook,
+    headers: &arion_metrics::str_pair::StrMap<'_>,
+    loggers: &mut [arion_format::LogFormatter],
+) -> Result<(), AccessLogHeaderError> {
+    if headers.is_empty() {
+        return Ok(());
+    }
+
+    // Apply directly to loggers without intermediate allocations
+    for logger in loggers {
+        for (k, v) in headers {
+            logger.with_custom_value(k, v);
+        }
+    }
+
+    Ok(())
+}
+
+use flume::Sender;
+use std::{fmt::Display, hash::Hash};
+use tokio::task::JoinSet;
+use tracing::{error, info};
+
+#[macro_export]
+macro_rules! with_access_log {
+    ($fmt:expr, $ctx:expr) => {{
+        let fmt_val = $fmt;
+        if !fmt_val.is_empty() {
+            let ctx_val = $ctx;
+            for f in fmt_val.iter_mut() {
+                f.with_context(&ctx_val);
+            }
+        }
+    }};
+}
+
+/// Destination for an access logging event.
+///
+/// Identifies which logical entity produced a log entry so that loggers can
+/// apply the correct per-target configuration.
+///
+/// - `Listener`: a top-level listener identified by name.
+/// - `ListenerFilterChain`: a specific filter-chain within a listener, identified
+///   by the listener name and a hash of the filter-chain.
+/// - `Admin`: the admin interface.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Target {
+    Listener(SmolStr),
+    ListenerFilterChain(SmolStr, u64),
+    Admin,
+}
+
+impl From<AccessLogTarget> for Target {
+    fn from(value: AccessLogTarget) -> Self {
+        match value {
+            AccessLogTarget::Listener(name) => Target::Listener(name),
+            AccessLogTarget::ListenerFilterChain(name, hash) => Target::ListenerFilterChain(name, hash),
+            AccessLogTarget::Admin => Target::Admin,
+        }
+    }
+}
+
+impl Display for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Target::Listener(name) => write!(f, "Listener({name})"),
+            Target::ListenerFilterChain(lister_name, filter_chain_name) => {
+                write!(f, "Listener({lister_name}):FilterChain({filter_chain_name})")
+            },
+            Target::Admin => write!(f, "Admin"),
+        }
+    }
+}
+
+/// Messages exchanged with the background access-logger tasks.
+///
+/// - `Configure`: replaces the logger configuration for a given [`Target`].
+///   Sent once per target during initialiation or on xDS updates.
+/// - `Message`: delivers one or more pre-formatted log entries to be written
+///   to all sinks configured for the given [`Target`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AccessLogMessage {
+    Configure(Target, Vec<AccessLogSink>),
+    Message(Target, Vec<FormattedMessage>),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum LoggerError {
+    #[error("Failed to initialize logger: {0}")]
+    InitializationError(String),
+    #[error("Channel closed unexpectedly")]
+    SenderError,
+}
+
+static SENDER_POOL: OnceLock<LoggerPool<AccessLogMessage>> = OnceLock::new();
+
+/// Sends formatted log entries to the logger for the given target.
+///
+/// Behaviour depends on the `blocking` flag set during [`start_access_loggers`]:
+/// - **blocking**: awaits [`Sender::send`]; the caller is suspended until the
+///   channel has capacity.
+/// - **non-blocking**: uses [`Sender::try_send`] and logs an error if the
+///   buffer is full.
+///
+/// Logs an error and returns without panicking if no sender is available.
+#[allow(clippy::needless_pass_by_value)]
+#[inline]
+pub async fn log_access(target: Target, vec: Vec<FormattedMessage>) {
+    if vec.is_empty() {
+        return;
+    }
+    if let Some(sender) = get_sender() {
+        if is_blocking() {
+            if let Err(e) = sender.send_async(AccessLogMessage::Message(target, vec)).await {
+                error!("Failed to send access log message: {e}");
+            }
+        } else if let Err(e) = sender.try_send(AccessLogMessage::Message(target, vec)) {
+            error!("Failed to send access log message: {e}");
+        }
+    } else {
+        error!("Failed to send access log message: no available sender.");
+    }
+}
+
+/// Attempts a non-blocking send of formatted log entries.
+///
+/// Returns `Ok(())` if the message was enqueued, or a [`TrySendError`]
+/// carrying the original `Vec<FormattedMessage>` back to the caller if the
+/// channel is full ([`TrySendError::Full`]) or closed
+/// ([`TrySendError::Closed`]).
+///
+/// Does not await or block; use [`log_access`] when back-pressure is acceptable.
+#[allow(clippy::needless_pass_by_value)]
+pub fn try_log_access(target: Target, vec: Vec<FormattedMessage>) -> Result<(), TrySendError<Vec<FormattedMessage>>> {
+    if vec.is_empty() {
+        return Ok(());
+    }
+    if let Some(sender) = get_sender() {
+        sender.try_send(AccessLogMessage::Message(target, vec)).map_err(|e| match e {
+            TrySendError::Full(AccessLogMessage::Message(_, msg)) => TrySendError::Full(msg),
+            TrySendError::Disconnected(AccessLogMessage::Message(_, msg)) => TrySendError::Disconnected(msg),
+            _ => unreachable!(),
+        })
+    } else {
+        Err(TrySendError::Disconnected(vec))
+    }
+}
+
+/// Sends formatted log entries using a pre-reserved permit, with a fallback path.
+///
+/// First attempts to consume the permit from `permit` via an atomic take
+/// (zero-cost if it was already reserved). If the permit has already been
+/// taken (or was never set), falls back to [`try_log_access`]. If the
+/// `blocking` flag is set, a blocking send is performed using Flume to avoid
+/// panicking in async contexts.
+///
+/// This function is sync and safe to call from non-async contexts (e.g. body
+/// completion callbacks registered on [`InstrumentedBody`]).
+#[allow(clippy::needless_pass_by_value)]
+#[inline]
+pub fn blocking_log_access(target: Target, vec: Vec<FormattedMessage>) -> Result<(), SendError<AccessLogMessage>> {
+    if vec.is_empty() {
+        return Ok(());
+    }
+    if let Some(sender) = get_sender() {
+        if is_blocking() {
+            return sender.send(AccessLogMessage::Message(target, vec));
+        } else {
+            let _ = sender.try_send(AccessLogMessage::Message(target, vec));
+            return Ok(());
+        }
+    }
+
+    error!("Failed to send access log message: no available sender (channel closed)");
+    Ok(())
+}
+
+/// Initializes the global sender pool and spawns background logger tasks.
+///
+/// Creates `num_instances` independent [`AccessLogger`] tasks, each backed by
+/// its own bounded MPSC channel of capacity `buffer`. The senders are stored
+/// in the process-global [`SENDER_POOL`] (`OnceLock`); calling this function
+/// more than once has no effect and logs an error.
+///
+/// Each logger runs concurrently inside the provided Tokio runtime and
+/// processes [`AccessLogMessage`]s asynchronously.
+///
+/// # Arguments
+///
+/// * `num_instances` - Number of independent logger tasks to spawn. Using more
+///   than one reduces contention on the send side at the cost of out-of-order
+///   log entries across instances.
+/// * `buffer` - Bounded channel capacity per logger instance.
+/// * `frequency` - Optional log-file rolling frequency (from `tracing_rolling_file`).
+/// * `max_file_size` - Optional maximum size in bytes for each rolling log file.
+/// * `max_log_files` - Maximum number of retained rolling files per target.
+/// * `blocking` - When `true`, senders will await channel capacity instead of
+///   dropping messages when the buffer is full.
+///
+/// # Returns
+///
+/// A [`JoinSet<()>`] containing all spawned logger tasks. Dropping it cancels
+/// the loggers; awaiting [`JoinSet::join_all`] waits for them to finish.
+#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::too_many_arguments)]
+pub fn start_access_loggers(
+    num_instances: usize,
+    buffer: usize,
+    frequency: Option<RollingFrequency>,
+    max_file_size: Option<u64>,
+    max_log_files: usize,
+    blocking: bool,
+    headers: AccessLogHeaders,
+) -> JoinSet<()> {
+    let (mut senders, mut receivers) = (Vec::with_capacity(num_instances), Vec::with_capacity(num_instances));
+    for _ in 0..num_instances {
+        let (sender, receiver) = flume::bounded(buffer);
+        senders.push(sender);
+        receivers.push(receiver);
+    }
+
+    info!("Initializing access loggers...");
+
+    if ACCESS_LOG_HEADERS.set(headers).is_err() {
+        error!("Unable to initialize access log headers!");
+    }
+
+    if SENDER_POOL.set(LoggerPool { senders, blocking }).is_err() {
+        error!("Unable to initialize logger pool!");
+        return JoinSet::new(); // Return an empty JoinSet on error
+    }
+
+    let mut join_set = JoinSet::new();
+    for (i, recv) in receivers.into_iter().enumerate() {
+        join_set.spawn(async move {
+            let mut logger = AccessLogger::new(i, frequency, max_file_size, max_log_files);
+            logger.run(recv).await
+        });
+    }
+    join_set
+}
+
+/// Returns `true` if the global sender pool has been initialized with at least one sender.
+#[inline]
+pub fn is_access_log_enabled() -> bool {
+    SENDER_POOL.get().is_some_and(|pool| !pool.senders.is_empty())
+}
+
+/// Returns a reference to a sender selected from the pool by thread-id hash, or `None` if the pool is empty.
+#[inline]
+fn get_sender() -> Option<&'static Sender<AccessLogMessage>> {
+    SENDER_POOL.get().and_then(|pool| pool.get())
+}
+
+/// Returns a reference to the sender at `index`, or `None` if out of bounds.
+#[inline]
+#[allow(unused)]
+fn get_sender_at(index: usize) -> Option<&'static Sender<AccessLogMessage>> {
+    SENDER_POOL.get().and_then(|pool| pool.get_at(index))
+}
+
+/// Returns `true` if the logger pool was started in blocking mode.
+///
+/// In blocking mode, [`log_access`] awaits channel capacity rather than
+/// dropping messages when the buffer is full.
+#[inline]
+fn is_blocking() -> bool {
+    SENDER_POOL.get().map(|pool| pool.blocking).unwrap_or(false)
+}
+
+/// Broadcasts a configuration update for `target` to every logger instance.
+///
+/// Sends an [`AccessLogMessage::Configure`] to all senders in the pool so
+/// that every logger applies the new [`AccessLogConf`] list. Returns
+/// `Ok(())` if all sends succeed, or [`LoggerError::SenderError`] on the
+/// first failure.
+pub async fn update_configuration(target: Target, init: Vec<AccessLogSink>) -> Result<(), LoggerError> {
+    let pool =
+        SENDER_POOL.get().ok_or_else(|| LoggerError::InitializationError("Logger pool not initialized".into()))?;
+    for (i, senders) in pool.senders.iter().enumerate() {
+        if let Err(e) = senders.send_async(AccessLogMessage::Configure(target.clone(), init.clone())).await {
+            error!("Failed to send logger configuration to sender {i}: {e}");
+            return Err(LoggerError::SenderError);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    use arion_format::{
+        context::{
+            DownstreamContext, DownstreamResponseContext, FinishContext, InitContext, SocketAddrContext,
+            UpstreamContext,
+        },
+        types::ResponseFlags,
+        LogFormatter, DEFAULT_ACCESS_LOG_FORMAT,
+    };
+    use tokio::time::timeout;
+
+    fn build_request() -> http::Request<()> {
+        http::Request::builder().uri("https://www.rust-lang.org/").header("User-Agent", "awesome/1.0").body(()).unwrap()
+    }
+
+    fn build_response() -> http::Response<()> {
+        let builder = http::Response::builder().status(http::StatusCode::OK);
+        builder.body(()).unwrap()
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    #[tokio::test]
+    async fn test_access_loggers() {
+        let req = build_request();
+        let resp = build_response();
+
+        let formatter = LogFormatter::try_new(DEFAULT_ACCESS_LOG_FORMAT, false).unwrap();
+        let mut fmt = formatter.clone();
+
+        fmt.with_context(&InitContext { start_time: std::time::SystemTime::now() });
+        fmt.with_context(&DownstreamContext {
+            request: &req,
+            trace_id: None,
+            request_head_size: 0,
+            server_name: None,
+            socket_address: SocketAddrContext::default(),
+        });
+        fmt.with_context(&UpstreamContext {
+            authority: Some(req.uri().authority().unwrap()),
+            cluster_name: Some("test_cluster"),
+            route_name: "test_route",
+        });
+        fmt.with_context(&DownstreamResponseContext { response: &resp, response_head_size: 0 });
+        fmt.with_context(&FinishContext {
+            duration: Duration::from_millis(100),
+            bytes_received: 128,
+            bytes_sent: 256,
+            response_flags: ResponseFlags::NO_HEALTHY_UPSTREAM,
+            upstream_transport_failure_reason: None,
+            response_code_details: None,
+            connection_termination_details: None,
+        });
+
+        let message = fmt.into_message();
+
+        // initialize the logger pool with one channel for access log messages
+        let handles = start_access_loggers(1, 100, None, None, 3, true, AccessLogHeaders::default());
+
+        // send a new configuration for the logger(s)
+        update_configuration(
+            Target::Listener("test".into()),
+            vec![AccessLogSink::File("test-access.log".into()), AccessLogSink::Stderr],
+        )
+        .await
+        .unwrap();
+
+        // log the formatted message to file and stdout...
+        log_access(Target::Listener("test".into()), vec![message.clone(), message.clone()]).await;
+
+        // test blocking access as well
+        _ = blocking_log_access(Target::Listener("test".into()), vec![message.clone(), message.clone()]);
+
+        _ = timeout(Duration::from_secs(2), handles.join_all()).await;
+        std::fs::remove_file("test-access.log").unwrap();
+    }
+}

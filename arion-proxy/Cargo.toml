@@ -1,0 +1,78 @@
+[package]
+edition.workspace      = true
+license-file.workspace = true
+name                   = "arion-proxy"
+rust-version.workspace = true
+version.workspace      = true
+
+
+[[bin]]
+name = "arion"
+path = "src/main.rs"
+
+[dependencies]
+chrono.workspace = true
+abort-on-drop.workspace        = true
+dhat = { workspace = true, optional = true }
+futures.workspace              = true
+num_cpus.workspace             = true
+arion-configuration.workspace  = true
+arion-error.workspace          = true
+arion-format.workspace         = true
+arion-lib.workspace            = true
+arion-stats.workspace          = true
+arion-metrics = { workspace = true, optional = true }
+arion-tracing.workspace        = true
+arion-xds.workspace            = true
+parking_lot.workspace          = true
+pingora-timeout.workspace      = true
+tokio.workspace                = true
+tower.workspace                = true
+tracing.workspace              = true
+ahash.workspace                = true
+const_format.workspace         = true
+maud.workspace                 = true
+
+axum.workspace = true
+triomphe.workspace = true
+smol_str.workspace = true
+http.workspace = true
+opentelemetry.workspace = true
+regex.workspace = true
+serde = { workspace = true, features = ["rc"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber = { workspace = true, features = [
+  "alloc",
+  "env-filter",
+  "fmt",
+  "registry",
+  "std",
+] }
+smallvec.workspace = true
+
+[features]
+config-dump = []
+dhat-heap   = ["dep:dhat"]
+jemalloc    = ["dep:tikv-jemallocator", "arion-metrics/jemalloc", "arion-stats/jemalloc"]
+metrics     = ["dep:arion-metrics", "arion-lib/metrics"]
+instrumentation = ["arion-lib/instrumentation"]
+tracing     = ["arion-lib/tracing"]
+access-log  = ["arion-lib/access-log"]
+prometheus  = ["metrics"]
+wasm        = ["arion-lib/wasm"]
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+caps.workspace = true
+affinity.workspace = true
+
+[dev-dependencies]
+axum-test.workspace = true
+arion-data-plane-api.workspace = true
+
+[lints]
+workspace = true

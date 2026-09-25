@@ -1,0 +1,41 @@
+[package]
+edition.workspace      = true
+license-file.workspace = true
+name                   = "arion-metrics"
+rust-version.workspace = true
+version.workspace      = true
+
+[features]
+jemalloc = ["dep:tikv-jemalloc-ctl"]
+metrics  = []
+
+[dependencies]
+ahash.workspace = true
+papaya.workspace = true
+http.workspace = true
+http-serde-ext.workspace = true
+memory-stats.workspace = true
+nohash.workspace = true
+opentelemetry.workspace = true
+opentelemetry-otlp = { workspace = true, features = [
+  "grpc-tonic",
+  "http-json",
+  "hyper-client",
+  "serde",
+  "serde_json",
+  "serialize",
+  "tokio",
+  "tonic",
+] }
+opentelemetry_sdk.workspace = true
+arion-configuration.workspace = true
+arion-interner.workspace = true
+arion-stats.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+thread-id.workspace = true
+tikv-jemalloc-ctl = { workspace = true, optional = true, features = ["stats"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+smallvec.workspace = true
+const_format.workspace = true

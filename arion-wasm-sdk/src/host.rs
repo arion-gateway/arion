@@ -1,0 +1,174 @@
+// Copyright 2025-2026 The arion-gateway Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use crate::ffi;
+use crate::internal::DEFAULT_HEAP_BUF_SIZE;
+use arion_wasm_types::{ArionWasmError, CalloutRequest, CalloutResponse, GrpcCalloutRequest, GrpcCalloutResponse};
+
+/// Read the plugin configuration.
+pub fn get_plugin_config() -> Result<Option<String>, ArionWasmError> {
+    let mut buf: Vec<u8> = Vec::with_capacity(DEFAULT_HEAP_BUF_SIZE);
+    let mut written_len: u32 = 0;
+
+    loop {
+        let res = unsafe {
+            ffi::arion_get_plugin_config(buf.as_mut_ptr(), buf.capacity() as u32, &mut written_len as *mut u32)
+        };
+
+        match ArionWasmError::from_ffi(res) {
+            Ok(()) => {
+                unsafe {
+                    buf.set_len(written_len as usize);
+                }
+                return String::from_utf8(buf).map(Some).map_err(|_| ArionWasmError::InternalError);
+            },
+            Err(ArionWasmError::NotFound) => return Ok(None),
+            Err(ArionWasmError::BufferTooSmall) => {
+                let new_cap = buf.capacity().saturating_mul(2);
+                if new_cap == buf.capacity() {
+                    return Err(ArionWasmError::BufferTooSmall);
+                }
+                buf.reserve_exact(new_cap);
+            },
+            Err(other) => return Err(other),
+        }
+    }
+}
+
+/// Set multiple custom metric key-value pairs at once.
+pub fn set_custom_metrics<'a, I>(metrics: I) -> Result<(), ArionWasmError>
+where
+    I: IntoIterator<Item = (&'a str, &'a str)>,
+{
+    let pairs: Vec<(&str, &str)> = metrics.into_iter().collect();
+    let buf = bincode_next::serde::encode_to_vec(pairs.as_slice(), bincode_next::config::standard())
+        .map_err(|_| ArionWasmError::InternalError)?;
+    let res = unsafe { ffi::arion_set_custom_metrics(buf.as_ptr(), buf.len() as u32) };
+    ArionWasmError::from_ffi(res)
+}
+
+/// Set multiple access log operators at once.
+pub fn set_access_log_operators<'a, I>(operators: I) -> Result<(), ArionWasmError>
+where
+    I: IntoIterator<Item = (&'a str, &'a str)>,
+{
+    let pairs: Vec<(&str, &str)> = operators.into_iter().collect();
+    let buf = bincode_next::serde::encode_to_vec(pairs.as_slice(), bincode_next::config::standard())
+        .map_err(|_| ArionWasmError::InternalError)?;
+    let res = unsafe { ffi::arion_set_access_log_operators(buf.as_ptr(), buf.len() as u32) };
+    ArionWasmError::from_ffi(res)
+}
+
+/// Dispatches an asynchronous HTTP call using the host's cluster manager.
+pub fn dispatch_http_call(
+    cluster: &str,
+    request: http::Request<bytes::Bytes>,
+) -> Result<http::Response<bytes::Bytes>, ArionWasmError> {
+    let callout_req = CalloutRequest { cluster_name: cluster.into(), request };
+
+    let req_bytes = match bincode_next::serde::encode_to_vec(&callout_req, bincode_next::config::standard()) {
+        Ok(b) => b,
+        Err(_) => return Err(ArionWasmError::InternalError),
+    };
+
+    let mut resp_ptr: *mut u8 = std::ptr::null_mut();
+    let mut resp_len = 0u32;
+
+    let res = unsafe {
+        ffi::arion_dispatch_http_call(
+            req_bytes.as_ptr(),
+            req_bytes.len() as u32,
+            &mut resp_ptr as *mut *mut u8,
+            &mut resp_len as *mut u32,
+        )
+    };
+
+    if res == 0 {
+        if resp_ptr.is_null() {
+            return Err(ArionWasmError::InternalError);
+        }
+        let resp_buf = unsafe { Vec::from_raw_parts(resp_ptr, resp_len as usize, resp_len as usize) };
+        let callout_resp: CalloutResponse =
+            match bincode_next::serde::decode_from_slice(&resp_buf, bincode_next::config::standard()) {
+                Ok((resp, _)) => resp,
+                Err(_) => return Err(ArionWasmError::InternalError),
+            };
+        Ok(callout_resp.response)
+    } else {
+        Err(ArionWasmError::from_ffi(res).unwrap_err())
+    }
+}
+
+/// Dispatches an asynchronous gRPC call using the host's cluster manager.
+pub fn dispatch_grpc_call(request: &GrpcCalloutRequest) -> Result<GrpcCalloutResponse, ArionWasmError> {
+    let req_bytes = match bincode_next::serde::encode_to_vec(request, bincode_next::config::standard()) {
+        Ok(b) => b,
+        Err(_) => return Err(ArionWasmError::InternalError),
+    };
+
+    let mut resp_ptr: *mut u8 = std::ptr::null_mut();
+    let mut resp_len = 0u32;
+
+    let res = unsafe {
+        ffi::arion_dispatch_grpc_call(
+            req_bytes.as_ptr(),
+            req_bytes.len() as u32,
+            &mut resp_ptr as *mut *mut u8,
+            &mut resp_len as *mut u32,
+        )
+    };
+
+    if res == 0 {
+        if resp_ptr.is_null() {
+            return Err(ArionWasmError::InternalError);
+        }
+        let resp_buf = unsafe { Vec::from_raw_parts(resp_ptr, resp_len as usize, resp_len as usize) };
+        match bincode_next::serde::decode_from_slice(&resp_buf, bincode_next::config::standard()) {
+            Ok((resp, _)) => Ok(resp),
+            Err(_) => Err(ArionWasmError::InternalError),
+        }
+    } else {
+        Err(ArionWasmError::from_ffi(res).unwrap_err())
+    }
+}
+
+/// Sets an absolute IO timeout for all subsequent IO operations in the current context.
+///
+/// If any subsequent blocking IO operation (such as `dispatch_http_call`) does not complete
+/// before the timeout expires, it will return `ArionWasmError::Timeout`.
+pub fn set_io_timeout(duration: std::time::Duration) -> Result<(), ArionWasmError> {
+    let microseconds = duration.as_micros().try_into().unwrap_or(u64::MAX);
+    let res = unsafe { ffi::arion_set_io_timeout(microseconds) };
+    ArionWasmError::from_ffi(res)
+}
+
+/// Disarms the current IO timeout and returns the remaining time.
+///
+/// Returns `Ok(Duration::ZERO)` if no timeout was set, or if the timeout had already expired.
+pub fn clear_io_timeout() -> Result<std::time::Duration, ArionWasmError> {
+    let mut remaining_us = 0u64;
+    let res = unsafe { ffi::arion_clear_io_timeout(&mut remaining_us as *mut u64) };
+    ArionWasmError::from_ffi(res)?;
+    Ok(std::time::Duration::from_micros(remaining_us))
+}
+
+/// Suspends the execution of the WebAssembly module for the specified duration.
+///
+/// Thanks to Arion's asynchronous Wasm engine, this does not block the proxy server.
+/// It only suspends the current Wasm execution.
+pub fn sleep(duration: std::time::Duration) -> Result<(), ArionWasmError> {
+    let microseconds = duration.as_micros().try_into().unwrap_or(u64::MAX);
+    let res = unsafe { ffi::arion_sleep(microseconds) };
+    ArionWasmError::from_ffi(res)
+}

@@ -1,6 +1,6 @@
-# Orion MCP Gateway
+# Arion MCP Gateway
 
-The MCP gateway is an Orion HTTP filter that exposes a Model Context Protocol endpoint and maps MCP tool operations onto Orion-managed upstreams. A single gateway owns a tool registry. Tools can be configured statically, discovered from upstream MCP servers, or delivered incrementally through xDS.
+The MCP gateway is an Arion HTTP filter that exposes a Model Context Protocol endpoint and maps MCP tool operations onto Arion-managed upstreams. A single gateway owns a tool registry. Tools can be configured statically, discovered from upstream MCP servers, or delivered incrementally through xDS.
 
 
 ## Key Concepts
@@ -10,13 +10,13 @@ MCP client
   |
   | POST /mcp                         GET /sse for legacy downstream SSE
   v
-Orion listener -> HTTP connection manager -> MCP gateway filter
+Arion listener -> HTTP connection manager -> MCP gateway filter
   |
   | tools/list and tools/call
   v
 MCP tool registry
   |
-  +-- REST backend: transcode tool call to HTTP and route through an Orion cluster
+  +-- REST backend: transcode tool call to HTTP and route through an Arion cluster
   +-- MCP server backend: forward tool call to an upstream MCP server
   +-- Dynamic MCP server: discover upstream tools with tools/list and materialise them
 ```
@@ -29,7 +29,7 @@ The default REST pattern is:
 4. The HCM route uses `cluster_header` to send the request to the tool's cluster.
 5. The upstream HTTP response is converted back into an MCP `CallToolResult`.
 
-The streamable HTTP MCP endpoint is `/mcp`. Orion also supports a legacy downstream SSE handshake on `/sse`; that is separate from upstream MCP server communication, which is Streamable HTTP by design.
+The streamable HTTP MCP endpoint is `/mcp`. Arion also supports a legacy downstream SSE handshake on `/sse`; that is separate from upstream MCP server communication, which is Streamable HTTP by design.
 
 ## Quick Start
 
@@ -60,9 +60,9 @@ envoy_bootstrap:
                   statPrefix: ingress_mcp
                   codecType: HTTP1
                   httpFilters:
-                    - name: orion.filters.http.mcp
+                    - name: arion.filters.http.mcp
                       typed_config:
-                        "@type": type.googleapis.com/orion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
+                        "@type": type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
                         server_info:
                           name: weather-mcp-gateway
                           version: "1.0.0"
@@ -152,7 +152,7 @@ curl -s "$MCP_ENDPOINT" \
 The MCP gateway filter type URL is:
 
 ```text
-type.googleapis.com/orion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
+type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
 ```
 
 The filter can be used anywhere an HTTP filter can be configured before the router filter.
@@ -174,7 +174,7 @@ server_info:
   version: "1.0.0"
 ```
 
-`server_info.name` is the logical MCP server identity. Do not include `/` in the name. When `tds` is configured, Orion uses this name as part of the xDS resource scope.
+`server_info.name` is the logical MCP server identity. Do not include `/` in the name. When `tds` is configured, Arion uses this name as part of the xDS resource scope.
 
 ### Cluster Header
 
@@ -213,7 +213,7 @@ Every static tool has:
 
 ### REST Backend
 
-REST tools transcode MCP `tools/call` into HTTP requests routed through Orion clusters.
+REST tools transcode MCP `tools/call` into HTTP requests routed through Arion clusters.
 
 ```yaml
 tools:
@@ -257,11 +257,11 @@ REST backend fields:
 
 | Field | Description |
 |-------|-------------|
-| `cluster` | Orion cluster name used for routing. |
+| `cluster` | Arion cluster name used for routing. |
 | `method` | HTTP method, for example `GET`, `POST`, `PUT`, or `DELETE`. |
 | `path` | Path template rendered with `{{argument}}` values. A leading `/` is added if missing. |
 | `query_params` | Mappings from URL query parameter names to argument paths. |
-| `body_template` | Optional template for the HTTP request body. Orion sets `content-type: application/json` when present. |
+| `body_template` | Optional template for the HTTP request body. Arion sets `content-type: application/json` when present. |
 | `async` | For streamable HTTP clients, return the REST result on an event-stream response. Legacy downstream SSE already uses a separate response stream. |
 
 Path and body templates use `{{name}}` syntax. Query parameter `source` supports dot notation:
@@ -280,11 +280,11 @@ rest_backend:
 
 Missing query parameter sources are omitted. Input schema validation is the best way to make required template variables explicit.
 
-If `output_schema` is configured, Orion parses successful REST responses as JSON and validates them before returning structured MCP content. Without `output_schema`, Orion returns the upstream response body as text.
+If `output_schema` is configured, Arion parses successful REST responses as JSON and validates them before returning structured MCP content. Without `output_schema`, Arion returns the upstream response body as text.
 
 ### MCP Server Backend
 
-Static MCP-server tools forward `tools/call` to an upstream MCP server. Upstream MCP server communication is Streamable HTTP by design, so configure `transport: StreamableHttp`; upstream SSE is not supported. This is distinct from Orion's legacy downstream `/sse` support for clients.
+Static MCP-server tools forward `tools/call` to an upstream MCP server. Upstream MCP server communication is Streamable HTTP by design, so configure `transport: StreamableHttp`; upstream SSE is not supported. This is distinct from Arion's legacy downstream `/sse` support for clients.
 
 ```yaml
 tools:
@@ -295,14 +295,14 @@ tools:
       url: http://127.0.0.1:3001/mcp
 ```
 
-For a static MCP-server backend, the exposed tool name is also the upstream tool name. If the client calls `echo`, Orion calls `echo` on the upstream MCP server.
+For a static MCP-server backend, the exposed tool name is also the upstream tool name. If the client calls `echo`, Arion calls `echo` on the upstream MCP server.
 
-The upstream MCP server is authoritative for its tool schemas and result shape. Orion does not apply REST-style input or output schema validation to MCP-server backend calls.
+The upstream MCP server is authoritative for its tool schemas and result shape. Arion does not apply REST-style input or output schema validation to MCP-server backend calls.
 
 
 ## Dynamic MCP Servers
 
-`dynamic_mcp_servers` let Orion discover tools from upstream MCP servers at runtime. Orion calls `tools/list` on the upstream server, materialises each returned tool into the local registry, and exposes namespaced tool names.
+`dynamic_mcp_servers` let Arion discover tools from upstream MCP servers at runtime. Arion calls `tools/list` on the upstream server, materialises each returned tool into the local registry, and exposes namespaced tool names.
 
 ```yaml
 dynamic_mcp_servers:
@@ -313,13 +313,13 @@ dynamic_mcp_servers:
     cache_duration: 30s
 ```
 
-If upstream `github` returns a tool named `get_pull_request`, Orion exposes it as:
+If upstream `github` returns a tool named `get_pull_request`, Arion exposes it as:
 
 ```text
 github__get_pull_request
 ```
 
-When the client calls `github__get_pull_request`, Orion forwards the call upstream as `get_pull_request`.
+When the client calls `github__get_pull_request`, Arion forwards the call upstream as `get_pull_request`.
 
 Dynamic server fields:
 
@@ -334,8 +334,8 @@ Dynamic server fields:
 
 Discovery and refresh behavior:
 
-- Orion fetches dynamic tools when the registry is bootstrapped, usually by the first `tools/list` or semantic-search request.
-- When `cache_duration` expires, Orion refreshes the upstream tool list.
+- Arion fetches dynamic tools when the registry is bootstrapped, usually by the first `tools/list` or semantic-search request.
+- When `cache_duration` expires, Arion refreshes the upstream tool list.
 - A successful refresh evicts the old tools for that dynamic server and inserts the latest list.
 - A failed refresh logs a warning and leaves the previous materialised tools in place.
 
@@ -361,9 +361,9 @@ httpFilters:
             prefix: /
           requires:
             provider_name: tenant_jwks
-  - name: orion.filters.http.mcp
+  - name: arion.filters.http.mcp
     typed_config:
-      "@type": type.googleapis.com/orion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
+      "@type": type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
       server_info:
         name: secure-mcp
         version: "1.0.0"
@@ -396,13 +396,13 @@ See [Tool RBAC](RBAC.md) for the full RBAC reference.
 
 ### Motivation
 
-Semantic search is an important feature when providing a large catalog of tools to agents. Semantic search provides a way to filter available MCP tools based on the type of work the agent wants to perform. To do this, Orion injects a small `semantic_search` discovery tool, ranks the available tools against the agents query, and then returns or reveals the most relevant tool definitions. Assisted discovery is the mode that avoids sending the full catalog in the initial `tools/list`; direct mode keeps the full list available for simpler clients.
+Semantic search is an important feature when providing a large catalog of tools to agents. Semantic search provides a way to filter available MCP tools based on the type of work the agent wants to perform. To do this, Arion injects a small `semantic_search` discovery tool, ranks the available tools against the agents query, and then returns or reveals the most relevant tool definitions. Assisted discovery is the mode that avoids sending the full catalog in the initial `tools/list`; direct mode keeps the full list available for simpler clients.
 
 This is really important when a tenant or platform team has hundreds of tools, but any single task for an agent only needs a small subset.
 
 ### Configuration
 
-Semantic search is built into the MCP Gateway. With no `embeddings` block, Orion ranks tools locally with BM25 over each tool's name and description. Tool-name terms are weighted higher than description terms:
+Semantic search is built into the MCP Gateway. With no `embeddings` block, Arion ranks tools locally with BM25 over each tool's name and description. Tool-name terms are weighted higher than description terms:
 
 ```yaml
 envoy_bootstrap:
@@ -417,9 +417,9 @@ envoy_bootstrap:
                 typedConfig:
                   "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                   httpFilters:
-                    - name: orion.filters.http.mcp
+                    - name: arion.filters.http.mcp
                       typed_config:
-                        "@type": type.googleapis.com/orion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
+                        "@type": type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
                         server_info:
                           name: searchable-mcp
                           version: "1.0.0"
@@ -430,16 +430,16 @@ envoy_bootstrap:
                             top_k: 5
 ```
 
-To use vector ranking, add an optional `embeddings` block directly under `semantic_search_tool`. The remote endpoint is reached through a normal Orion cluster and must accept OpenAI-compatible embeddings requests.
+To use vector ranking, add an optional `embeddings` block directly under `semantic_search_tool`. The remote endpoint is reached through a normal Arion cluster and must accept OpenAI-compatible embeddings requests.
 
 ### Runnable Demo
 
-The repository includes a semantic-search demo at `orion-e2e-tests/examples/mcp_semantic_search.rs`. It starts Orion, four local REST backends, and a generated MCP gateway config using built-in BM25 ranking.
+The repository includes a semantic-search demo at `arion-e2e-tests/examples/mcp_semantic_search.rs`. It starts Arion, four local REST backends, and a generated MCP gateway config using built-in BM25 ranking.
 
 Run the demo:
 
 ```bash
-cargo run -p orion-e2e-tests --example mcp_semantic_search
+cargo run -p arion-e2e-tests --example mcp_semantic_search
 ```
 
 The demo prints the generated config path, the MCP endpoint, backend addresses, a sample semantic-search result, and a copy-pasteable `curl` flow that captures the real `mcp-session-id` from `initialize`.
@@ -448,16 +448,16 @@ Useful options:
 
 ```bash
 # Use assisted discovery and reveal only the best match.
-cargo run -p orion-e2e-tests --example mcp_semantic_search -- \
+cargo run -p arion-e2e-tests --example mcp_semantic_search -- \
   --assisted-discovery --top-k 1
 
 # Keep the generated YAML so you can inspect or reuse the exact config.
-cargo run -p orion-e2e-tests --example mcp_semantic_search -- --keep-config
+cargo run -p arion-e2e-tests --example mcp_semantic_search -- --keep-config
 ```
 
 ### Remote Embeddings
 
-Remote embeddings call an Orion cluster with an OpenAI-compatible request shape:
+Remote embeddings call an Arion cluster with an OpenAI-compatible request shape:
 
 Request:
 
@@ -509,19 +509,19 @@ semantic_search_tool:
     top_k: 5
 ```
 
-`path` defaults to `/v1/embeddings` when omitted. `dimensions` is optional; if it is omitted, Orion records the dimension from the first successful response and validates later responses against it.
-`allow_bm25_fallback` defaults to `true`; when set to `false`, Orion does not build BM25 term statistics and semantic-search calls fail if cosine ranking is unavailable.
+`path` defaults to `/v1/embeddings` when omitted. `dimensions` is optional; if it is omitted, Arion records the dimension from the first successful response and validates later responses against it.
+`allow_bm25_fallback` defaults to `true`; when set to `false`, Arion does not build BM25 term statistics and semantic-search calls fail if cosine ranking is unavailable.
 
 ### Search Text And Embeddings
 
-For remote embeddings, Orion builds semantic-search text from:
+For remote embeddings, Arion builds semantic-search text from:
 
 - tool name
 - tool description
 - input schema property names
 - input schema property descriptions
 
-If `embedding` is supplied on a tool, Orion uses that vector instead of generating one. When remote dimensions are known from config or a previous response, Orion validates supplied vectors against that dimension.
+If `embedding` is supplied on a tool, Arion uses that vector instead of generating one. When remote dimensions are known from config or a previous response, Arion validates supplied vectors against that dimension.
 
 BM25 fallback intentionally uses a narrower field set: tool name and tool description only, with tool-name tokens counted twice. Input-schema argument names and descriptions are ignored by BM25 so call-shape metadata does not dominate intent matching.
 
@@ -538,7 +538,7 @@ tools:
       path: /weather/{{city}}
 ```
 
-Ranking uses cosine similarity only when the query embedding succeeds and every candidate tool has an embedding. If query embedding fails or any candidate lacks a vector, Orion ranks the whole candidate set with BM25 over tool names and descriptions unless `allow_bm25_fallback` is `false`. TDS/xDS tool updates are not rejected because an embeddings endpoint is unavailable; when fallback is enabled, the tool is inserted and can be ranked by BM25 until vectors are available.
+Ranking uses cosine similarity only when the query embedding succeeds and every candidate tool has an embedding. If query embedding fails or any candidate lacks a vector, Arion ranks the whole candidate set with BM25 over tool names and descriptions unless `allow_bm25_fallback` is `false`. TDS/xDS tool updates are not rejected because an embeddings endpoint is unavailable; when fallback is enabled, the tool is inserted and can be ranked by BM25 until vectors are available.
 
 ### Direct Mode
 
@@ -548,8 +548,8 @@ Flow:
 
 1. Before a search, `tools/list` returns the normal tools plus `semantic_search`.
 2. The client calls `semantic_search` with `user_query`.
-3. Orion returns the top matching full tool definitions directly in the `semantic_search` result.
-4. Orion records those matches as the session's active tools, so a later `tools/list` in the same session is narrowed to `semantic_search` plus the ranked tools. In direct mode, `tools/call` is still allowed for any RBAC-permitted tool in the registry.
+3. Arion returns the top matching full tool definitions directly in the `semantic_search` result.
+4. Arion records those matches as the session's active tools, so a later `tools/list` in the same session is narrowed to `semantic_search` plus the ranked tools. In direct mode, `tools/call` is still allowed for any RBAC-permitted tool in the registry.
 
 The direct-mode result is an MCP `CallToolResult` whose first text content item contains a JSON array of MCP tool definitions.
 
@@ -578,7 +578,7 @@ Flow:
 
 1. Initial `tools/list` returns only `semantic_search`.
 2. The client calls `semantic_search` with `user_query`.
-3. Orion stores the matched tool names in the MCP session and emits a tool-list-changed notification.
+3. Arion stores the matched tool names in the MCP session and emits a tool-list-changed notification.
 4. A follow-up `tools/list` returns `semantic_search` plus the matched tools.
 5. `tools/call` is restricted to the active tools for that session.
 
@@ -605,7 +605,7 @@ Configure `tds.config_name` on the MCP gateway:
 
 ```yaml
 typed_config:
-  "@type": type.googleapis.com/orion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
+  "@type": type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
   server_info:
     name: tenant-a-mcp
     version: "1.0.0"
@@ -642,8 +642,8 @@ tenant-a-mcp/main
 TDS uses xDS extension resources with these type URLs:
 
 ```text
-type.googleapis.com/orion.extensions.filters.http.mcp.mcp_gateway.v3.Tool
-type.googleapis.com/orion.extensions.filters.http.mcp.mcp_gateway.v3.DynamicMcpServer
+type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.Tool
+type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.DynamicMcpServer
 ```
 
 Resource IDs must use this shape:
@@ -659,7 +659,7 @@ tenant-a-mcp/main/get_weather
 tenant-a-mcp/main/github
 ```
 
-For `Tool` resources, Orion treats `resource_name` as canonical. If the payload's `Tool.name` differs, Orion logs a warning and exposes the tool under `resource_name` so later removes target the same name. For `DynamicMcpServer` resources, make `resource_name` match the `DynamicMcpServer.name` carried in the resource payload.
+For `Tool` resources, Arion treats `resource_name` as canonical. If the payload's `Tool.name` differs, Arion logs a warning and exposes the tool under `resource_name` so later removes target the same name. For `DynamicMcpServer` resources, make `resource_name` match the `DynamicMcpServer.name` carried in the resource payload.
 
 ### Update And Remove Behavior
 
@@ -669,7 +669,7 @@ For `Tool` resources, Orion treats `resource_name` as canonical. If the payload'
 - Converts it through the same validation path as static config.
 - Adds or replaces a provided tool in the scoped registry.
 - Can overwrite a static tool with the same tool name.
-- If remote embeddings are configured and no embedding is supplied, Orion attempts to embed the tool after the update. If embedding fails, the update still succeeds and search uses BM25 until vectors are available.
+- If remote embeddings are configured and no embedding is supplied, Arion attempts to embed the tool after the update. If embedding fails, the update still succeeds and search uses BM25 until vectors are available.
 
 `Tool` remove:
 
@@ -712,7 +712,7 @@ tds:
 
 A resource named `tenant-a-mcp/main/search` updates only tenant A. Tenant B will not see it.
 
-For TDS-enabled gateways, Orion rejects duplicate `server_info.name` values within the same runtime. This prevents accidental xDS fan-out between unrelated listener scopes.
+For TDS-enabled gateways, Arion rejects duplicate `server_info.name` values within the same runtime. This prevents accidental xDS fan-out between unrelated listener scopes.
 
 ## Common Examples
 
@@ -782,9 +782,9 @@ envoy_bootstrap:
                 typedConfig:
                   "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                   httpFilters:
-                    - name: orion.filters.http.mcp
+                    - name: arion.filters.http.mcp
                       typed_config:
-                        "@type": type.googleapis.com/orion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
+                        "@type": type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
                         server_info:
                           name: tenant-a-mcp
                           version: "1.0.0"
@@ -834,16 +834,16 @@ tenant-a-mcp/main/github
 
 ### Multi-Tenant Gateway With Bind Device
 
-This pattern runs multiple tenants in one Orion instance while keeping each tenant's listener and upstream traffic on tenant-specific network interfaces. Orion supports Linux `SO_BINDTODEVICE` via Envoy `socket_options`.
+This pattern runs multiple tenants in one Arion instance while keeping each tenant's listener and upstream traffic on tenant-specific network interfaces. Arion supports Linux `SO_BINDTODEVICE` via Envoy `socket_options`.
 
 Important details:
 
 - Listener bind-device socket options apply to the downstream listener socket.
 - Cluster `upstream_bind_config.socket_options` apply to upstream connections.
-- Orion supports at most one bind-device socket option per listener or upstream bind config.
+- Arion supports at most one bind-device socket option per listener or upstream bind config.
 - `SO_BINDTODEVICE` is Linux-only.
 - `level: 1` and `name: 25` are the Linux socket option identifiers for `SOL_SOCKET` and `SO_BINDTODEVICE`.
-- `buf_value` is base64 for the interface name. A trailing null byte is optional; Orion appends it if missing.
+- `buf_value` is base64 for the interface name. A trailing null byte is optional; Arion appends it if missing.
 
 Two-tenant sketch:
 
@@ -870,9 +870,9 @@ envoy_bootstrap:
                   statPrefix: tenant_a_mcp
                   codecType: HTTP1
                   httpFilters:
-                    - name: orion.filters.http.mcp
+                    - name: arion.filters.http.mcp
                       typed_config:
-                        "@type": type.googleapis.com/orion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
+                        "@type": type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
                         server_info:
                           name: tenant-a-mcp
                           version: "1.0.0"
@@ -912,9 +912,9 @@ envoy_bootstrap:
                   statPrefix: tenant_b_mcp
                   codecType: HTTP1
                   httpFilters:
-                    - name: orion.filters.http.mcp
+                    - name: arion.filters.http.mcp
                       typed_config:
-                        "@type": type.googleapis.com/orion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
+                        "@type": type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
                         server_info:
                           name: tenant-b-mcp
                           version: "1.0.0"
@@ -994,5 +994,5 @@ Both resources can carry a `Tool` named `search_customer`, but they update diffe
 - Static tools and xDS-provided tools share the same provided-tool namespace; xDS can replace a static tool with the same name.
 - Dynamic tools are owned by their dynamic server and are removed by removing or replacing that server.
 - Configure upstream MCP server communication as Streamable HTTP by design.
-- If semantic search is enabled without `semantic_search_tool.embeddings`, Orion uses BM25 ranking locally.
-- If remote embeddings are configured, keep the embeddings endpoint behind a normal Orion cluster.
+- If semantic search is enabled without `semantic_search_tool.embeddings`, Arion uses BM25 ranking locally.
+- If remote embeddings are configured, keep the embeddings endpoint behind a normal Arion cluster.

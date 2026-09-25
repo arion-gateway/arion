@@ -1,8 +1,8 @@
 # Access Log
 
-The access log is a record of requests processed by Orion, useful for monitoring and debugging. Messages are formatted using `orion-format`, which implements the Envoy command-operator syntax (e.g. `%REQ(:METHOD)%`).
+The access log is a record of requests processed by Arion, useful for monitoring and debugging. Messages are formatted using `arion-format`, which implements the Envoy command-operator syntax (e.g. `%REQ(:METHOD)%`).
 
-Orion extends the standard Envoy format with **custom operators**: user-defined placeholders whose values are extracted at runtime from base64-encoded JSON payloads carried by configurable HTTP headers.
+Arion extends the standard Envoy format with **custom operators**: user-defined placeholders whose values are extracted at runtime from base64-encoded JSON payloads carried by configurable HTTP headers.
 
 ---
 
@@ -52,15 +52,15 @@ Orion extends the standard Envoy format with **custom operators**: user-defined 
 - **Multiple logger instances.** Multiple loggers can be enabled at the same time (configured via `num_instances`), each with its own channel, reducing contention on the sender side and improving I/O throughput.
 - **Balanced routing.** The macro `log_access_balanced!` selects a logger based on the hash of the calling thread ID. This means the same thread — and typically requests coming from the same connection — always hit the same logger.
 - **Lazy file creation.** Files are opened only when the first message is logged, avoiding empty log files when a logger is configured but never used.
-- **Log rotation** is supported and fully configurable in the Orion configuration (`access_log` section). The available options are `minutely`, `hourly`, and `daily` (default).
+- **Log rotation** is supported and fully configurable in the Arion configuration (`access_log` section). The available options are `minutely`, `hourly`, and `daily` (default).
 - **Per-listener configuration.** Each Listener can have its own access log configuration, including a different format string and a different sink type (file, stdout, stderr). A single listener can also write to multiple destinations.
-- **xDS support.** The system supports dynamic xDS configuration for access logs, allowing log configuration changes without restarting Orion.
+- **xDS support.** The system supports dynamic xDS configuration for access logs, allowing log configuration changes without restarting Arion.
 
 ### Formatting & operators
 
 - **Envoy-compatible format strings.** The format string uses the standard Envoy command-operator syntax: `%OPERATOR%` for general operators and `%REQ(HEADER)%` / `%RESP(HEADER)%` for request/response headers. All unquoted `%`-delimited placeholders that don't match a known operator will produce a **startup error**.
-- **Default format.** When no `text_format` is specified in the filter-chain configuration, Orion falls back to `DEFAULT_ACCESS_LOG_FORMAT`, which matches Envoy's default HTTP access log format.
-- **Custom operators.** Orion extends the Envoy syntax with user-defined operators whose values are supplied at runtime via base64-encoded JSON payloads in HTTP headers. See the [Custom Operators](#custom-operators) section below for details.
+- **Default format.** When no `text_format` is specified in the filter-chain configuration, Arion falls back to `DEFAULT_ACCESS_LOG_FORMAT`, which matches Envoy's default HTTP access log format.
+- **Custom operators.** Arion extends the Envoy syntax with user-defined operators whose values are supplied at runtime via base64-encoded JSON payloads in HTTP headers. See the [Custom Operators](#custom-operators) section below for details.
 
 ---
 
@@ -68,7 +68,7 @@ Orion extends the standard Envoy format with **custom operators**: user-defined 
 
 ### Global access log settings (`access_logging` section)
 
-The following options are set at the top level of the Orion configuration file, under the `access_logging` key. All fields are optional and have sensible defaults:
+The following options are set at the top level of the Arion configuration file, under the `access_logging` key. All fields are optional and have sensible defaults:
 
 ```yaml
 access_logging:
@@ -82,7 +82,7 @@ access_logging:
 
 ### Hook header configuration
 
-The `access_logging` section also accepts six optional header-name fields. Each field names an HTTP header that Orion will inspect at a specific point in the request/response lifecycle. When the named header is present, its value is base64-decoded into a JSON object which is then used to populate the custom operators.
+The `access_logging` section also accepts six optional header-name fields. Each field names an HTTP header that Arion will inspect at a specific point in the request/response lifecycle. When the named header is present, its value is base64-decoded into a JSON object which is then used to populate the custom operators.
 
 | Field                        | Hook point                                        |
 | ---------------------------- | -------------------------------------------------- |
@@ -93,18 +93,18 @@ The `access_logging` section also accepts six optional header-name fields. Each 
 | `ext_proc_response_header`   | After ext_proc response processing completes       |
 | `downstream_response_header` | Before the response is sent to the downstream      |
 
-Each field expects an HTTP header name (e.g. `x-orion-metadata`).
+Each field expects an HTTP header name (e.g. `x-arion-metadata`).
 
 ### Custom operators registration
 
-To use custom operators in your format strings, you must explicitly register them in the `custom_operators` list under `access_logging`. This list registers the valid custom operators in `orion-format`'s parser at startup.
+To use custom operators in your format strings, you must explicitly register them in the `custom_operators` list under `access_logging`. This list registers the valid custom operators in `arion-format`'s parser at startup.
 
 Example:
 
 ```yaml
 access_logging:
   blocking: true
-  incoming_request_header: "x-orion-metadata"
+  incoming_request_header: "x-arion-metadata"
   custom_operators:
     - "user_id"
     - "session_id"
@@ -127,7 +127,7 @@ filter_chains:
             - name: envoy.access_loggers.file
               typed_config:
                 "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
-                path: /var/log/orion/access.log
+                path: /var/log/arion/access.log
                 log_format:
                   text_format: |
                     [%START_TIME%] %REQ(:METHOD)% %REQ(:PATH)% %PROTOCOL%
@@ -145,17 +145,17 @@ Unknown placeholders cause a startup error.
 
 ## Custom Operators
 
-Custom operators let you inject dynamic key-value data into access log entries without modifying Orion's code. The mechanism decouples the **transport header** from the **logged fields**:
+Custom operators let you inject dynamic key-value data into access log entries without modifying Arion's code. The mechanism decouples the **transport header** from the **logged fields**:
 
 ### Lifecycle
 
 1. **Configuration.** In `access_logging` you specify:
-   - Which HTTP header to inspect at each of the six hook points (e.g. `incoming_request_header: "x-orion-metadata"`).
+   - Which HTTP header to inspect at each of the six hook points (e.g. `incoming_request_header: "x-arion-metadata"`).
    - The list of custom operators you intend to use in your format strings (e.g. `custom_operators: ["user_id", "session_id", "app_version"]`).
 
-2. **Format string.** You use the registered custom operators as placeholders in the access log format: `%user_id%`, `%session_id%`, `%app_version%`. At configuration parse time, Orion registers these in an internal allowlist (`CUSTOM_OPERATORS`).
+2. **Format string.** You use the registered custom operators as placeholders in the access log format: `%user_id%`, `%session_id%`, `%app_version%`. At configuration parse time, Arion registers these in an internal allowlist (`CUSTOM_OPERATORS`).
 
-3. **Request processing.** At each hook point, Orion checks whether the configured header is present in the current request/response headers. If it is:
+3. **Request processing.** At each hook point, Arion checks whether the configured header is present in the current request/response headers. If it is:
    - the header value is **base64-decoded**,
    - the decoded bytes are parsed as a **JSON object**,
    - each key in the JSON object is matched against custom operator names in the format string,
@@ -169,7 +169,7 @@ Custom operators let you inject dynamic key-value data into access log entries w
 
 The header value must be a **base64-encoded UTF-8 JSON string** representing a JSON object. The keys in the object must match the custom operator names.
 
-Example — setting `x-orion-metadata` to inject `user_id = "user-123"`, `session_id = "sess-456"`, and `app_version = "2.1.0"`:
+Example — setting `x-arion-metadata` to inject `user_id = "user-123"`, `session_id = "sess-456"`, and `app_version = "2.1.0"`:
 
 ```
 # Raw JSON:
@@ -182,7 +182,7 @@ eyJ1c2VyX2lkIjogInVzZXItMTIzIiwgInNlc3Npb25faWQiOiAic2Vzcy00NTYiLCAiYXBwX3ZlcnNp
 The header sent on the wire:
 
 ```
-x-orion-metadata: eyJ1c2VyX2lkIjogInVzZXItMTIzIiwgInNlc3Npb25faWQiOiAic2Vzcy00NTYiLCAiYXBwX3ZlcnNpb24iOiAiMi4xLjAifQ==
+x-arion-metadata: eyJ1c2VyX2lkIjogInVzZXItMTIzIiwgInNlc3Npb25faWQiOiAic2Vzcy00NTYiLCAiYXBwX3ZlcnNpb24iOiAiMi4xLjAifQ==
 ```
 
 ### Supported JSON value types
@@ -202,7 +202,7 @@ Nested objects are **not** expanded recursively — only the top-level keys are 
 
 ### Hook reference
 
-Orion defines six hooks, mirroring the `AccessLogHook` enum:
+Arion defines six hooks, mirroring the `AccessLogHook` enum:
 
 | Hook                    | Enum variant           | Description                                           |
 | ----------------------- | ---------------------- | ----------------------------------------------------- |
@@ -306,7 +306,7 @@ The tables below show all operators currently implemented. The **HCM** (HttpConn
 
 **Notes:**
 
-1. `%UPSTREAM_CLUSTER%` and `%UPSTREAM_CLUSTER_RAW%` are identical — Orion does not currently support `alt_stat_name` for clusters.
+1. `%UPSTREAM_CLUSTER%` and `%UPSTREAM_CLUSTER_RAW%` are identical — Arion does not currently support `alt_stat_name` for clusters.
 2. The `UNIQUE_ID` follows Envoy's convention: if the `x-request-id` header is present and valid, it is reused; otherwise a new unique ID is generated.
 3. `%UPSTREAM_HOST_NAME%` and `%UPSTREAM_HOST%` are currently identical — the distinction (hostname vs host+port) is not yet implemented.
 4. `%REQUESTED_SERVER_NAME%` is the TLS SNI value. It is populated only on TLS connections; on plaintext connections it renders as `"-"`.

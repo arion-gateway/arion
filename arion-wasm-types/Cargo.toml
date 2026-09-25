@@ -1,0 +1,13 @@
+[package]
+name = "arion-wasm-types"
+version = "0.1.0"
+edition = "2021"
+description = "Shared ABI types between the Arion proxy (host) and the Arion Wasm SDK (guest)."
+license = "Apache-2.0"
+
+[dependencies]
+http = "1.0"
+serde = { version = "1.0.228", features = ["derive"] }
+smol_str  = { version = "0.3.5", features = ["serde"] }
+http-serde-ext = { version = "1.0.2" }
+bytes = { workspace = true, features = ["serde"] }

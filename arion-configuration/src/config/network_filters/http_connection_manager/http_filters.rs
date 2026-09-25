@@ -1,0 +1,356 @@
+pub mod wasm;
+// Copyright 2025 The kmesh Authors
+// Copyright 2026 The arion-gateway Authors
+//
+// Modified by arion-gateway Authors.
+//
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+//
+
+pub mod cedar_policy;
+pub mod cors;
+pub mod ext_proc;
+pub mod http_rbac;
+pub mod jwt;
+pub mod local_rate_limit;
+pub mod mcp_gateway;
+pub mod router;
+pub mod user_rate_limit;
+
+use cedar_policy::CedarPolicy;
+pub use ext_proc::{ExtProcPerRoute, ExternalProcessor};
+use http_rbac::HttpRbac;
+use local_rate_limit::LocalRateLimit;
+pub use mcp_gateway::McpGateway;
+use smol_str::SmolStr;
+
+use serde::{Deserialize, Serialize};
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct FilterOverride {
+    // this field can be optional iff config is Some(_)
+    pub disabled: bool,
+    #[serde(skip_serializing_if = "is_default", default)]
+    pub filter_settings: Option<FilterConfigOverride>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(untagged, rename_all = "snake_case")]
+pub enum FilterConfigOverride {
+    LocalRateLimit(LocalRateLimit),
+    Rbac(Option<HttpRbac>),
+    ExternalProcessor(ExtProcPerRoute),
+}
+
+impl From<FilterConfigOverride> for FilterOverride {
+    fn from(value: FilterConfigOverride) -> Self {
+        Self { disabled: false, filter_settings: Some(value) }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct HttpFilter {
+    pub name: SmolStr,
+    #[serde(skip_serializing_if = "is_default", default)]
+    pub disabled: bool,
+    #[serde(flatten)]
+    pub filter: HttpFilterType,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "filter_type", content = "filter_settings")]
+#[serde(bound(deserialize = ""))]
+pub enum HttpFilterType {
+    Wasm(WasmConfig),
+    Rbac(HttpRbac),
+    RateLimit(LocalRateLimit),
+    ExternalProcessor(ExternalProcessor),
+    JwtAuthentication(JwtAuthentication),
+    Cors(CorsConfig),
+    CorsPolicy(CorsConfig),
+    McpGateway(McpGateway),
+    UserRateLimit(UserRateLimiter),
+    CedarPolicy(CedarPolicy),
+}
+
+#[cfg(feature = "envoy-conversions")]
+pub(crate) use envoy_conversions::*;
+
+use crate::config::network_filters::http_connection_manager::http_filters::{
+    cors::CorsConfig, jwt::JwtAuthentication, user_rate_limit::UserRateLimiter, wasm::WasmConfig,
+};
+
+use super::is_default;
+
+#[cfg(feature = "envoy-conversions")]
+mod envoy_conversions {
+    #![allow(deprecated)]
+    use super::{
+        ext_proc::ExtProcPerRoute, FilterConfigOverride, FilterOverride, HttpFilter, HttpFilterType, HttpRbac,
+    };
+    use crate::config::common::*;
+    use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::cedar::cedar_policy::v3::CedarPolicy as ProtoCedarPolicy;
+    use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::McpGateway as ArionMcpGateway;
+    use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::user_rate_limit::v3::UserRateLimiter as ArionUserRateLimiter;
+    use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::cors::v3::Cors;
+    use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::cors::v3::CorsPolicy;
+    use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::wasm::v3::Wasm as EnvoyWasm;
+    use arion_data_plane_api::envoy_data_plane_api::{
+        envoy::{
+            config::route::v3::FilterConfig as EnvoyFilterConfig,
+            extensions::filters::{
+                http::{
+                    ext_proc::v3::{
+                        ExtProcPerRoute as EnvoyExtProcPerRoute, ExternalProcessor as EnvoyExternalProcessor,
+                    },
+                    jwt_authn::v3::JwtAuthentication as EnvoyJwtAuthentication,
+                    local_ratelimit::v3::LocalRateLimit as EnvoyLocalRateLimit,
+                    rbac::v3::{Rbac as EnvoyRbac, RbacPerRoute as EnvoyRbacPerRoute},
+                    router::v3::Router as EnvoyRouter,
+                },
+                network::http_connection_manager::v3::{
+                    http_filter::ConfigType as EnvoyConfigType, HttpFilter as EnvoyHttpFilter,
+                },
+            },
+        },
+        google::protobuf::Any,
+        prost::Message,
+    };
+    use smol_str::SmolStr;
+
+    #[derive(Debug, Clone)]
+    pub(crate) struct SupportedEnvoyHttpFilter {
+        pub name: SmolStr,
+        pub disabled: bool,
+        pub filter: SupportedEnvoyFilter,
+    }
+
+    impl TryFrom<EnvoyHttpFilter> for SupportedEnvoyHttpFilter {
+        type Error = GenericError;
+        fn try_from(envoy: EnvoyHttpFilter) -> Result<Self, Self::Error> {
+            let EnvoyHttpFilter { name, is_optional, disabled, config_type } = envoy;
+            unsupported_field!(is_optional)?;
+            let name = required!(name)?;
+            match required!(config_type).map(|x| match x {
+                EnvoyConfigType::ConfigDiscovery(_) => {
+                    Err(GenericError::unsupported_variant("ConfigDiscovery")).with_node(name.clone())
+                },
+                EnvoyConfigType::TypedConfig(typed_config) => SupportedEnvoyFilter::try_from(typed_config),
+            }) {
+                Ok(Ok(filter)) => Ok(Self { name: SmolStr::from(name), filter, disabled }),
+                Err(e) | Ok(Err(e)) => Err(e.with_name(name)),
+            }
+        }
+    }
+
+    impl TryFrom<SupportedEnvoyHttpFilter> for HttpFilter {
+        type Error = GenericError;
+        fn try_from(value: SupportedEnvoyHttpFilter) -> Result<Self, Self::Error> {
+            let SupportedEnvoyHttpFilter { name, disabled, filter } = value;
+            Ok(Self { name, disabled, filter: filter.try_into()? })
+        }
+    }
+
+    impl TryFrom<SupportedEnvoyFilter> for HttpFilterType {
+        type Error = GenericError;
+        fn try_from(value: SupportedEnvoyFilter) -> Result<Self, Self::Error> {
+            match value {
+                SupportedEnvoyFilter::Wasm(wasm) => wasm.try_into().map(Self::Wasm),
+                SupportedEnvoyFilter::LocalRateLimit(lr) => lr.try_into().map(Self::RateLimit),
+                SupportedEnvoyFilter::Rbac(rbac) => rbac.try_into().map(Self::Rbac),
+                SupportedEnvoyFilter::ExternalProcessor(ext_proc) => ext_proc.try_into().map(Self::ExternalProcessor),
+                SupportedEnvoyFilter::McpGateway(mcp_gateway) => mcp_gateway.try_into().map(Self::McpGateway),
+                SupportedEnvoyFilter::Router(_) => {
+                    Err(GenericError::from_msg("router filter has to be the last filter in the chain"))
+                },
+                SupportedEnvoyFilter::JwtAuthentication(jwt) => jwt.try_into().map(Self::JwtAuthentication),
+                SupportedEnvoyFilter::Cors(c) => c.try_into().map(Self::Cors),
+                SupportedEnvoyFilter::CorsPolicy(c) => c.try_into().map(Self::CorsPolicy),
+                SupportedEnvoyFilter::UserRateLimiter(user_rate_limit) => {
+                    user_rate_limit.try_into().map(Self::UserRateLimit)
+                },
+                SupportedEnvoyFilter::CedarPolicy(cedar) => cedar.try_into().map(Self::CedarPolicy),
+            }
+        }
+    }
+
+    #[allow(clippy::large_enum_variant)]
+    #[derive(Debug, Clone)]
+    pub(crate) enum SupportedEnvoyFilter {
+        Wasm(EnvoyWasm),
+        LocalRateLimit(EnvoyLocalRateLimit),
+        Rbac(EnvoyRbac),
+        Router(EnvoyRouter),
+        ExternalProcessor(EnvoyExternalProcessor),
+        JwtAuthentication(EnvoyJwtAuthentication),
+        Cors(Cors),
+        CorsPolicy(CorsPolicy),
+        McpGateway(ArionMcpGateway),
+        UserRateLimiter(ArionUserRateLimiter),
+        CedarPolicy(ProtoCedarPolicy),
+    }
+
+    impl TryFrom<Any> for SupportedEnvoyFilter {
+        type Error = GenericError;
+        fn try_from(typed_config: Any) -> Result<Self, Self::Error> {
+            match typed_config.type_url.as_str() {
+                "type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm" => {
+                    EnvoyWasm::decode(typed_config.value.as_slice()).map(Self::Wasm)
+                },
+                "type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit" => {
+                    EnvoyLocalRateLimit::decode(typed_config.value.as_slice()).map(Self::LocalRateLimit)
+                },
+                "type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC" => {
+                    EnvoyRbac::decode(typed_config.value.as_slice()).map(Self::Rbac)
+                },
+                "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor" => {
+                    EnvoyExternalProcessor::decode(typed_config.value.as_slice()).map(Self::ExternalProcessor)
+                },
+                "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router" => {
+                    EnvoyRouter::decode(typed_config.value.as_slice()).map(Self::Router)
+                },
+                "type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors" => {
+                    Cors::decode(typed_config.value.as_slice()).map(Self::Cors)
+                },
+                "type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy" => {
+                    CorsPolicy::decode(typed_config.value.as_slice()).map(Self::CorsPolicy)
+                },
+                "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication" => {
+                    EnvoyJwtAuthentication::decode(typed_config.value.as_slice()).map(Self::JwtAuthentication)
+                },
+                "type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway" => {
+                    ArionMcpGateway::decode(typed_config.value.as_slice()).map(Self::McpGateway)
+                },
+                "type.googleapis.com/arion.extensions.filters.http.user_rate_limit.v3.UserRateLimiter" => {
+                    ArionUserRateLimiter::decode(typed_config.value.as_slice()).map(Self::UserRateLimiter)
+                },
+                "type.googleapis.com/arion.extensions.filters.http.cedar.cedar_policy.v3.CedarPolicy" => {
+                    ProtoCedarPolicy::decode(typed_config.value.as_slice()).map(Self::CedarPolicy)
+                },
+                _ => return Err(GenericError::unsupported_variant(typed_config.type_url)),
+            }
+            .map_err(|e| {
+                GenericError::from_msg_with_cause(
+                    format!("failed to parse protobuf for \"{}\"", typed_config.type_url),
+                    e,
+                )
+            })
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    #[allow(clippy::large_enum_variant)]
+    pub enum SupportedEnvoyFilterOverride {
+        LocalRateLimit(EnvoyLocalRateLimit),
+        Rbac(EnvoyRbacPerRoute),
+        ExternalProcessor(EnvoyExtProcPerRoute),
+    }
+
+    impl TryFrom<Any> for SupportedEnvoyFilterOverride {
+        type Error = GenericError;
+        fn try_from(typed_config: Any) -> Result<Self, Self::Error> {
+            match typed_config.type_url.as_str() {
+                "type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit" => {
+                    EnvoyLocalRateLimit::decode(typed_config.value.as_slice()).map(Self::LocalRateLimit)
+                },
+                "type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBACPerRoute" => {
+                    EnvoyRbacPerRoute::decode(typed_config.value.as_slice()).map(Self::Rbac)
+                },
+                "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute" => {
+                    EnvoyExtProcPerRoute::decode(typed_config.value.as_slice()).map(Self::ExternalProcessor)
+                },
+                _ => return Err(GenericError::unsupported_variant(typed_config.type_url)),
+            }
+            .map_err(|e| {
+                GenericError::from_msg_with_cause(
+                    format!("failed to parse protobuf for \"{}\"", typed_config.type_url),
+                    e,
+                )
+            })
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    #[allow(clippy::large_enum_variant)]
+    pub enum MaybeWrappedEnvoyFilter {
+        Wrapped(EnvoyFilterConfig),
+        Direct(SupportedEnvoyFilterOverride),
+    }
+
+    impl TryFrom<Any> for MaybeWrappedEnvoyFilter {
+        type Error = GenericError;
+        fn try_from(typed_config: Any) -> Result<Self, Self::Error> {
+            match typed_config.type_url.as_str() {
+                "type.googleapis.com/envoy.config.route.v3.FilterConfig" => {
+                    EnvoyFilterConfig::decode(typed_config.value.as_slice()).map(Self::Wrapped).map_err(|e| {
+                        GenericError::from_msg_with_cause(
+                            format!("failed to parse protobuf for \"{}\"", typed_config.type_url),
+                            e,
+                        )
+                    })
+                },
+                _ => SupportedEnvoyFilterOverride::try_from(typed_config).map(Self::Direct),
+            }
+        }
+    }
+
+    impl TryFrom<SupportedEnvoyFilterOverride> for FilterConfigOverride {
+        type Error = GenericError;
+        fn try_from(value: SupportedEnvoyFilterOverride) -> Result<Self, Self::Error> {
+            match value {
+                SupportedEnvoyFilterOverride::LocalRateLimit(envoy) => envoy.try_into().map(Self::LocalRateLimit),
+                SupportedEnvoyFilterOverride::Rbac(EnvoyRbacPerRoute { rbac }) => {
+                    rbac.map(HttpRbac::try_from).transpose().map(Self::Rbac)
+                },
+                SupportedEnvoyFilterOverride::ExternalProcessor(envoy) => {
+                    ExtProcPerRoute::try_from(envoy).map(Self::ExternalProcessor)
+                },
+            }
+        }
+    }
+
+    impl TryFrom<Any> for FilterConfigOverride {
+        type Error = GenericError;
+        fn try_from(envoy: Any) -> Result<Self, Self::Error> {
+            let supported = SupportedEnvoyFilterOverride::try_from(envoy)?;
+            supported.try_into()
+        }
+    }
+    impl TryFrom<EnvoyFilterConfig> for FilterOverride {
+        type Error = GenericError;
+        fn try_from(envoy: EnvoyFilterConfig) -> Result<Self, Self::Error> {
+            let EnvoyFilterConfig { config, is_optional, disabled } = envoy;
+            unsupported_field!(is_optional)?;
+            let filter_settings = config.map(FilterConfigOverride::try_from).transpose().with_node("config")?;
+            Ok(Self { disabled, filter_settings })
+        }
+    }
+
+    impl TryFrom<MaybeWrappedEnvoyFilter> for FilterOverride {
+        type Error = GenericError;
+        fn try_from(envoy: MaybeWrappedEnvoyFilter) -> Result<Self, Self::Error> {
+            match envoy {
+                MaybeWrappedEnvoyFilter::Direct(envoy) => FilterConfigOverride::try_from(envoy).map(Self::from),
+                MaybeWrappedEnvoyFilter::Wrapped(envoy) => envoy.try_into(),
+            }
+        }
+    }
+
+    impl TryFrom<Any> for FilterOverride {
+        type Error = GenericError;
+        fn try_from(envoy: Any) -> Result<Self, Self::Error> {
+            MaybeWrappedEnvoyFilter::try_from(envoy)?.try_into()
+        }
+    }
+}

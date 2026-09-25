@@ -1,0 +1,12 @@
+[package]
+name = "arion-http-header"
+version.workspace      = true
+edition.workspace      = true
+
+license-file.workspace = true
+rust-version.workspace = true
+[lints]
+workspace = true
+
+[dependencies]
+http.workspace = true

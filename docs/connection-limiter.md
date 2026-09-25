@@ -47,10 +47,10 @@ The counter is decremented as soon as a connection closes, making the slot avail
 
 ## Observability
 
-The filter emits debug logs under the `connection_limit` target. To enable them, set the `RUST_LOG` environment variable before starting Orion:
+The filter emits debug logs under the `connection_limit` target. To enable them, set the `RUST_LOG` environment variable before starting Arion:
 
 ```sh
-RUST_LOG=connection_limit=debug ./orion
+RUST_LOG=connection_limit=debug ./arion
 ```
 
 Three log events are emitted:

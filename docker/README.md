@@ -1,6 +1,6 @@
-# Orion Docker Setup
+# Arion Docker Setup
 
-This document provides detailed instructions for building and running Orion using Docker.
+This document provides detailed instructions for building and running Arion using Docker.
 
 ## Building the Image
 
@@ -8,7 +8,7 @@ This document provides detailed instructions for building and running Orion usin
 # Initialize git submodules before building
 git submodule update --init --recursive
 
-docker build -t orion-proxy -f docker/Dockerfile .
+docker build -t arion-proxy -f docker/Dockerfile .
 ```
 
 ## Running the Container
@@ -20,8 +20,8 @@ Use port mapping:
 ```bash
 docker run -d \
   -p 8000:8000 \
-  --name orion-proxy \
-  orion-proxy
+  --name arion-proxy \
+  arion-proxy
 ```
 
 For full functionality (including TCP proxy):
@@ -30,8 +30,8 @@ For full functionality (including TCP proxy):
 docker run -d \
   -p 8000:8000 \
   -p 8001:8001 \
-  --name orion-proxy \
-  orion-proxy
+  --name arion-proxy \
+  arion-proxy
 ```
 
 Alternative with host networking:
@@ -39,8 +39,8 @@ Alternative with host networking:
 ```bash
 docker run -d \
   --network host \
-  --name orion-proxy \
-  orion-proxy
+  --name arion-proxy \
+  arion-proxy
 ```
 
 > **Note**: Host networking may not work in all Docker environments (e.g., Docker Desktop on macOS/Windows). Use port mapping for reliable access to services.
@@ -54,9 +54,9 @@ Mount your own configuration file:
 ```bash
 docker run -d \
   --network host \
-  -v /path/to/your/config.yaml:/etc/orion/orion-runtime.yaml \
-  --name orion-proxy \
-  orion-proxy
+  -v /path/to/your/config.yaml:/etc/arion/arion-runtime.yaml \
+  --name arion-proxy \
+  arion-proxy
 ```
 
 ### Control Plane Setup
@@ -67,8 +67,8 @@ Configure with external control plane:
 docker run -d \
   --network host \
   -e CONTROL_PLANE_IP=<your_control_plane_ip> \
-  --name orion-proxy \
-  orion-proxy
+  --name arion-proxy \
+  arion-proxy
 ```
 
 ### Environment Variables
@@ -77,16 +77,16 @@ docker run -d \
 | ------------------ | ---------------------------------------- | ----------- |
 | `CONTROL_PLANE_IP` | IP address of the control plane          | `127.0.0.1` |
 | `LOG_LEVEL`        | Logging level (debug, info, warn, error) | `info`      |
-| `ORION_CPU_LIMIT`  | Number of CPU cores/threads to use. Set this to control Orion's concurrency, especially in containers. | (auto-detect) |
+| `ARION_CPU_LIMIT`  | Number of CPU cores/threads to use. Set this to control Arion's concurrency, especially in containers. | (auto-detect) |
 ### Example: Setting CPU Limit in Docker
 
-To explicitly set the number of CPU cores/threads Orion should use:
+To explicitly set the number of CPU cores/threads Arion should use:
 
 ```bash
 docker run -d \
-  -e ORION_CPU_LIMIT=2 \
-  --name orion-proxy \
-  orion-proxy
+  -e ARION_CPU_LIMIT=2 \
+  --name arion-proxy \
+  arion-proxy
 ```
 
 Or, in Kubernetes, use the Downward API as shown in the main README.
@@ -121,24 +121,24 @@ The default configuration points to backend servers at `127.0.0.1:4001` and `127
 
 ```bash
 # Create a custom network
-docker network create orion-net
+docker network create arion-net
 
 # Start test backend servers on the network
-docker run -d --network orion-net --name backend1 nginx:alpine
-docker run -d --network orion-net --name backend2 nginx:alpine
+docker run -d --network arion-net --name backend1 nginx:alpine
+docker run -d --network arion-net --name backend2 nginx:alpine
 
 # Update config to use container names instead of localhost
-cp orion-proxy/conf/orion-runtime.yaml my-config.yaml
+cp arion-proxy/conf/arion-runtime.yaml my-config.yaml
 sed -i 's/127.0.0.1:4001/backend1:80/g' my-config.yaml
 sed -i 's/127.0.0.1:4002/backend2:80/g' my-config.yaml
 
-# Run Orion on the same network
+# Run Arion on the same network
 docker run -d \
-  --network orion-net \
+  --network arion-net \
   -p 8000:8000 \
-  -v $(pwd)/my-config.yaml:/etc/orion/orion-runtime.yaml \
-  --name orion-proxy \
-  orion-proxy
+  -v $(pwd)/my-config.yaml:/etc/arion/arion-runtime.yaml \
+  --name arion-proxy \
+  arion-proxy
 ```
 
 **Alternative with host networking:**
@@ -148,14 +148,14 @@ docker run -d \
 docker run -d -p 4001:80 --name backend1 nginx:alpine
 docker run -d -p 4002:80 --name backend2 nginx:alpine
 
-# Run Orion with host networking (uses default config)
+# Run Arion with host networking (uses default config)
 docker run -d \
   --network host \
-  --name orion-proxy \
-  orion-proxy
+  --name arion-proxy \
+  arion-proxy
 ```
 
-For production deployment, update the cluster configuration in `orion-runtime.yaml` to point to your actual backend service IPs and ports.
+For production deployment, update the cluster configuration in `arion-runtime.yaml` to point to your actual backend service IPs and ports.
 
 ## Port Reference
 
