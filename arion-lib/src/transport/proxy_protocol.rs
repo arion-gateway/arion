@@ -30,7 +30,6 @@ use arion_configuration::config::{
     listener_filters::DownstreamProxyProtocolConfig,
     transport::{PassTlvMatchType, ProxyProtocolPassThroughTlvs, TlvEntry, UpstreamProxyProtocolConfig},
 };
-use arion_error::Context;
 use ppp::{v1, v2, HeaderResult};
 use rustls::ClientConfig;
 use std::{
@@ -169,7 +168,7 @@ impl ProxyProtocolReader {
         stream
             .read_exact(initial_buf)
             .await
-            .with_context_msg(format!("Failed to read initial bytes from peer {peer_address}"))?;
+            .map_err(|e| Error::with_source(format!("Failed to read initial bytes from peer {peer_address}"), e))?;
 
         // Safe comparison using get()
         if buffer.get(..V1_PREFIX_LEN) == Some(v1::PROTOCOL_PREFIX.as_bytes()) {
@@ -178,7 +177,8 @@ impl ProxyProtocolReader {
 
             for i in V1_PREFIX_LEN..max_v1 {
                 // Safe byte write with get_mut
-                let byte = stream.read_u8().await.with_context_msg("Problem reading V1 header bytes")?;
+                let byte =
+                    stream.read_u8().await.map_err(|e| Error::with_source("Problem reading V1 header bytes", e))?;
                 if let Some(slot) = buffer.get_mut(i) {
                     *slot = byte;
                 }
@@ -205,7 +205,7 @@ impl ProxyProtocolReader {
             stream
                 .read_exact(v2_min_buf)
                 .await
-                .with_context_msg(format!("Problem reading V2 bytes from {peer_address}"))?;
+                .map_err(|e| Error::with_source(format!("Problem reading V2 bytes from {peer_address}"), e))?;
 
             if buffer.get(..V2_PREFIX_LEN) == Some(v2::PROTOCOL_PREFIX) {
                 // Extract length using safe get() and array conversion
@@ -229,7 +229,10 @@ impl ProxyProtocolReader {
                         .get_mut(V2_MINIMUM_LEN..full_length)
                         .ok_or_else(|| Error::new("Dynamic buffer range invalid"))?;
 
-                    stream.read_exact(tail_buf).await.with_context_msg("Problem reading V2 into extended buffer")?;
+                    stream
+                        .read_exact(tail_buf)
+                        .await
+                        .map_err(|e| Error::with_source("Problem reading V2 into extended buffer", e))?;
                     Some(dynamic_buffer)
                 } else {
                     // Safe read into the remaining part of the fixed buffer
@@ -237,7 +240,10 @@ impl ProxyProtocolReader {
                         .get_mut(V2_MINIMUM_LEN..full_length)
                         .ok_or_else(|| Error::new("V2 full length exceeds fixed buffer capacity"))?;
 
-                    stream.read_exact(tail_buf).await.with_context_msg("Problem reading V2 into fixed buffer")?;
+                    stream
+                        .read_exact(tail_buf)
+                        .await
+                        .map_err(|e| Error::with_source("Problem reading V2 into fixed buffer", e))?;
                     None
                 };
                 Ok(DetectedHeader::V2 { extra_buffer })
@@ -359,7 +365,7 @@ impl ProxyProtocolConfigurator {
         S: AsyncWrite + Unpin,
     {
         let header = self.build_proxy_header(connection_metadata)?;
-        stream.write_all(&header).await.with_context_msg("Failed to write proxy protocol header")?;
+        stream.write_all(&header).await.map_err(|e| Error::with_source("Failed to write proxy protocol header", e))?;
         Ok(())
     }
 

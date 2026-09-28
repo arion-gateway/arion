@@ -36,7 +36,6 @@ use arion_configuration::config::network_filters::http_connection_manager::{
     route::{RouteAction, RouteMatchResult},
     RetryPolicy,
 };
-use arion_error::Context;
 #[cfg(feature = "metrics")]
 use arion_metrics::metrics::http as http_metrics;
 use http::{uri::Parts as UriParts, Uri};
@@ -141,7 +140,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
                     let path_and_query_replacement = if let Some(rewrite) = &self.rewrite {
                         rewrite
                             .apply(parts.uri.path_and_query(), route_match)
-                            .with_context_msg("invalid path after rewrite")?
+                            .map_err(|e| crate::Error::with_source("invalid path after rewrite", e))?
                     } else {
                         None
                     };
@@ -152,7 +151,8 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
                             new_parts.scheme = scheme;
                             new_parts.authority = authority;
                             new_parts.path_and_query = path_and_query_replacement;
-                            Uri::from_parts(new_parts).with_context_msg("failed to replace request path_and_query")?
+                            Uri::from_parts(new_parts)
+                                .map_err(|e| crate::Error::with_source("failed to replace request path_and_query", e))?
                         }
                     }
                     parts.version = svc_channel.http_version().into();
@@ -258,8 +258,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
                 drop(acquired);
                 match resp {
                     Err(err) => {
-                        let err = err.into_inner();
-                        let event_error = UpstreamError::try_infer_from(&err);
+                        let event_error = UpstreamError::try_infer_from(err.as_ref());
                         let flags = event_error.clone().map(ResponseFlags::from).unwrap_or_default();
                         let event_kind = event_error.map_or(EventFailure::ViaUpstream.into(), EventKind::Upstream);
                         debug!(

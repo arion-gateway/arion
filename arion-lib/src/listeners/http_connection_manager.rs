@@ -1538,7 +1538,7 @@ impl TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
         } else {
             response
         };
-        response.map_err(|e| Box::new(e.into_inner()) as Box<dyn std::error::Error + Send + Sync>)
+        response.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
     }
 }
 

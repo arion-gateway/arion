@@ -20,11 +20,12 @@
 
 use abort_on_drop::ChildTask;
 use arion_configuration::config::{bootstrap::Node, cluster::ClusterSpecifier, Listener};
+use arion_error::Result;
 use arion_lib::{
     access_log::{update_configuration, Target},
     clusters::cluster::ClusterType,
     ConfigurationSenders, ConversionContext, EndpointHealthUpdate, HealthCheckManager, ListenerConfigurationChange,
-    ListenerFactory, PartialClusterLoadAssignment, PartialClusterType, Result, RouteConfigurationChange, SecretManager,
+    ListenerFactory, PartialClusterLoadAssignment, PartialClusterType, RouteConfigurationChange, SecretManager,
 };
 use arion_xds::{
     start_aggregate_client_no_retry_loop,
@@ -278,7 +279,7 @@ impl XdsConfigurationHandler {
                     },
                     Err(err) => {
                         warn!("Got invalid update for listener {id}");
-                        Err(err)
+                        Err(err.into())
                     },
                 }
             },
@@ -289,7 +290,7 @@ impl XdsConfigurationHandler {
                     Ok(cluster) => self.add_cluster(cluster).await,
                     Err(err) => {
                         warn!("Got invalid update for cluster {id}");
-                        Err(err)
+                        Err(err.into())
                     },
                 }
             },
@@ -319,7 +320,7 @@ impl XdsConfigurationHandler {
                     },
                     Err(err) => {
                         warn!("Got invalid update for cluster load assignment {id}");
-                        Err(err)
+                        Err(err.into())
                     },
                 }
             },
@@ -339,7 +340,7 @@ impl XdsConfigurationHandler {
                     },
                     Err(err) => {
                         warn!("Got invalid update for cluster load assignment {id}");
-                        Err(err)
+                        Err(err.into())
                     },
                 }
             },

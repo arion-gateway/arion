@@ -137,7 +137,7 @@ pub fn acquire_http_upstream(
     let routing_context = RoutingContext::try_from((&routing_requirement, request, hash_state))
         .map_err(|source| AcquireHttpUpstreamError::RoutingContext { cluster_id, source })?;
     let channels = clusters_manager::get_http_connection(cluster_id, routing_context)
-        .map_err(|source| AcquireHttpUpstreamError::Connection { cluster_id, source: Box::new(source.into_inner()) })?;
+        .map_err(|source| AcquireHttpUpstreamError::Connection { cluster_id, source: Box::new(source) })?;
 
     Ok(AcquiredHttpUpstream { channels, cluster_id, _permit: permit })
 }

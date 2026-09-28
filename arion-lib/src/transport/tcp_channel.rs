@@ -18,7 +18,6 @@
 //
 //
 
-use arion_error::Context;
 use std::{net::SocketAddr, sync::Arc as StdArc};
 use triomphe::Arc;
 
@@ -88,7 +87,7 @@ impl TcpChannelConnector {
                         let (tcp_stream, cluster_name) = socket_connector
                             .connect()
                             .await
-                            .map_err(|e| e.with_context_msg("TCP connection failed"))?;
+                            .map_err(|e| crate::Error::with_source("TCP connection failed", e))?;
 
                         let upstream_local_addr = tcp_stream.local_addr().ok();
                         let upstream_peer_addr = tcp_stream.peer_addr().ok();
@@ -109,7 +108,7 @@ impl TcpChannelConnector {
                         let (stream, cluster_name) = internal_connector
                             .connect(connection_metadata.clone().map(Arc::new))
                             .await
-                            .map_err(|e| e.with_context_msg("Internal connection failed"))?;
+                            .map_err(|e| crate::Error::with_source("Internal connection failed", e))?;
 
                         (stream, cluster_name, None, None)
                     },

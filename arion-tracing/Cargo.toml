@@ -12,7 +12,6 @@ tracing = []
 arion-http-header.workspace = true
 arion-interner.workspace = true
 arion-configuration.workspace = true
-arion-error.workspace = true
 
 bounded-integer.workspace = true
 tracing.workspace = true

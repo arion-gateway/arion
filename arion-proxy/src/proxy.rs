@@ -41,11 +41,11 @@ use tokio::{sync::mpsc::Sender, task::JoinSet};
 #[cfg(feature = "access-log")]
 use arion_lib::access_log::{start_access_loggers, update_configuration, AccessLogHeaders};
 
-use arion_error::Context;
+use arion_error::{Context, Result};
 use arion_lib::{
     build_listener_factories, clusters::cluster::ClusterType, get_secrets_and_clusters, new_configuration_channel,
     runtime_config, ConfigurationReceivers, ConfigurationSenders, ListenerConfigurationChange, PartialClusterType,
-    Result, SecretManager,
+    SecretManager,
 };
 #[cfg(feature = "metrics")]
 use arion_metrics::{metrics::init_global_metrics, wait_for_metrics_setup, OtelExporterConfig};
@@ -461,7 +461,11 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
 }
 
 fn register_initial_clusters(clusters: Vec<PartialClusterType>) -> Result<Vec<ClusterType>> {
-    clusters.into_iter().map(arion_lib::clusters::add_cluster).collect::<Result<_>>()
+    clusters
+        .into_iter()
+        .map(arion_lib::clusters::add_cluster)
+        .collect::<arion_lib::Result<Vec<_>>>()
+        .map_err(arion_error::Error::from)
 }
 
 async fn push_initial_listeners(

@@ -269,7 +269,7 @@ impl Http2Pool {
         match &self.connect {
             Http2Connect::Plain(connector) => {
                 let mut connector = connector.clone();
-                let io = connector.call(self.dst.clone()).await.map_err(Error::from)?;
+                let io = connector.call(self.dst.clone()).await?;
                 handshake(io, &self.http2_options).await
             },
             Http2Connect::Tls(connector) => {

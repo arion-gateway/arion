@@ -59,10 +59,14 @@ impl CedarHttpFilterInner {
             &conf.schema,
             &conf.entities,
             conf.validate_schema_per_request,
-        )?;
-        let principal_type = parse_entity_type(&conf.principal_entity_type)?;
-        let resource_type = parse_entity_type(&conf.resource_entity_type)?;
-        let action_type = parse_entity_type("Action")?;
+        )
+        .map_err(|e| crate::Error::with_source("Failed to build Cedar policy store", e))?;
+        let principal_type = parse_entity_type(&conf.principal_entity_type)
+            .map_err(|e| crate::Error::with_source("Failed to parse Cedar principal entity type", e))?;
+        let resource_type = parse_entity_type(&conf.resource_entity_type)
+            .map_err(|e| crate::Error::with_source("Failed to parse Cedar resource entity type", e))?;
+        let action_type = parse_entity_type("Action")
+            .map_err(|e| crate::Error::with_source("Failed to parse Cedar action entity type", e))?;
         let anonymous_principal = entity_uid_from_type(&principal_type, "anonymous");
         Ok(Self {
             store: Arc::new(store),

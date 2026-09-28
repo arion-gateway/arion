@@ -16,7 +16,6 @@ http-body.workspace = true
 http-body-util.workspace = true
 hyper-util.workspace = true
 arion-configuration.workspace = true
-arion-error.workspace = true
 arion-format.workspace = true
 arion-http-header.workspace = true
 arion-interner.workspace = true

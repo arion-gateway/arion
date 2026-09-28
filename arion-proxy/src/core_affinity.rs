@@ -19,7 +19,7 @@
 //
 
 use arion_configuration::config::runtime::{Affinity, CoreId};
-use arion_lib::Result;
+use arion_error::Result;
 use std::collections::{BTreeMap, HashSet};
 
 use crate::runtime::RuntimeId;

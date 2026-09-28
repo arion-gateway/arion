@@ -50,7 +50,7 @@ fn check_config_file(file_path: &str) -> Result<(), arion_error::Error> {
     let bootstrap = Config::new(&Options::from_path_to_envoy(file_path))?.bootstrap;
     // but ancillary files are stored in workspace root - adjust PWD
     let d = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").canonicalize()?;
-    with_current_dir(&d, || get_listeners_and_clusters(bootstrap).map(|_| ()))
+    with_current_dir(&d, || get_listeners_and_clusters(bootstrap).map(|_| ()).map_err(arion_error::Error::from))
 }
 
 #[test]

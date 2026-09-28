@@ -19,7 +19,8 @@
 //
 
 use arion_configuration::{config::Config, options::Options};
-use arion_lib::{metrics, Result, RUNTIME_CONFIG};
+use arion_error::Result;
+use arion_lib::{metrics, RUNTIME_CONFIG};
 use arion_stats::{set_proxy_state, ProxyState};
 
 #[macro_use]
@@ -96,7 +97,7 @@ mod proxy_tracing {
     };
 
     use arion_configuration::config::LogConfig as LogConf;
-    use arion_lib::Result;
+    use arion_error::Result;
 
     #[derive(Clone, Default)]
     struct CustomTime;

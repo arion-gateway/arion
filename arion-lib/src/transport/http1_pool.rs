@@ -274,7 +274,7 @@ impl Http1Pool {
         match &self.connect {
             Http1Connect::Plain(connector) => {
                 let mut connector = connector.clone();
-                let io = connector.call(self.dst.clone()).await.map_err(Error::from)?;
+                let io = connector.call(self.dst.clone()).await?;
                 handshake(io).await
             },
             Http1Connect::Tls(connector) => {

@@ -206,7 +206,9 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
 
         let filter = match filter {
             #[cfg(feature = "wasm")]
-            HttpFilterType::Wasm(conf) => HttpFilterValue::Wasm(WasmFilter::try_new(conf)?),
+            HttpFilterType::Wasm(conf) => HttpFilterValue::Wasm(
+                WasmFilter::try_new(conf).map_err(|e| crate::Error::with_source("Failed to build Wasm filter", e))?,
+            ),
             #[cfg(not(feature = "wasm"))]
             HttpFilterType::Wasm(_) => {
                 return Err("HTTP Wasm filter requires building Arion with the `wasm` Cargo feature \
@@ -221,7 +223,9 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
                 HttpFilterValue::JwtAuthentication(builder.build())
             },
             HttpFilterType::Cors(conf) | HttpFilterType::CorsPolicy(conf) => HttpFilterValue::Cors(conf.into()),
-            HttpFilterType::McpGateway(mcp) => HttpFilterValue::McpGateway(Box::new(mcp.try_into()?)),
+            HttpFilterType::McpGateway(mcp) => HttpFilterValue::McpGateway(Box::new(
+                mcp.try_into().map_err(|e| crate::Error::with_source("Failed to build MCP gateway filter", e))?,
+            )),
             HttpFilterType::UserRateLimit(user_rate_limit) => {
                 HttpFilterValue::UserRateLimit(user_rate_limit.try_into()?)
             },

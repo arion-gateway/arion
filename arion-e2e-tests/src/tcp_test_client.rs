@@ -61,6 +61,10 @@ impl TcpTestClient {
                             response.extend_from_slice(slice);
                         }
                     },
+                    Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {
+                        tracing::debug!("Connection reset by peer, returning received data so far");
+                        break;
+                    },
                     Err(e) => return Err(e),
                 }
             }

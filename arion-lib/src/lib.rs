@@ -74,7 +74,128 @@ pub use listeners_manager::{ListenerConfigurationChange, ListenersManager, Route
 pub use secrets::{CertInfo, SecretManager};
 pub(crate) use transport::AsyncInstrumentedStream;
 
-pub type Error = arion_error::Error;
+use std::error::Error as StdError;
+
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("Upstream connection failed: {context:?}")]
+    UpstreamConnection {
+        context: crate::transport::connector::TcpErrorContext,
+        #[source]
+        source: Box<dyn StdError + Send + Sync>,
+    },
+    #[error("{message}")]
+    WithSource {
+        message: String,
+        #[source]
+        source: Box<dyn StdError + Send + Sync>,
+    },
+    #[error("{0}")]
+    Message(String),
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
+    #[error("{0}")]
+    Http(#[from] http::Error),
+    #[error("{0}")]
+    InvalidUri(#[from] http::uri::InvalidUri),
+    /// Catch-all for leaf foreign errors. The concrete type is preserved inside
+    /// the box, so it stays reachable via [`Error::find_source`] and the `source()` chain.
+    /// Boxing (instead of one variant per type) keeps `Error` compact and avoids
+    /// recursive-type issues (e.g. `UpstreamError` itself can contain an `Error`).
+    /// NOTE: deliberately NOT `#[error(transparent)]`: transparent delegates `source()`
+    /// to the inner error, skipping this level and breaking `downcast`-based
+    /// classification (`UpstreamError::try_infer_from`, `find_source`).
+    #[error("{0}")]
+    Boxed(#[from] Box<dyn StdError + Send + Sync>),
+}
+
+impl Error {
+    pub fn new(msg: impl Into<String>) -> Self {
+        Self::Message(msg.into())
+    }
+
+    pub fn with_source(message: impl Into<String>, source: impl Into<Box<dyn StdError + Send + Sync>>) -> Self {
+        Self::WithSource { message: message.into(), source: source.into() }
+    }
+
+    pub fn find_source<T: StdError + 'static>(&self) -> Option<&T> {
+        let mut curr: Option<&(dyn StdError + 'static)> = Some(self);
+        while let Some(e) = curr {
+            if let Some(downcasted) = e.downcast_ref::<T>() {
+                return Some(downcasted);
+            }
+            curr = e.source();
+        }
+        None
+    }
+
+    /// Walks the `source()` chain looking for the [`TcpErrorContext`]
+    /// carried by an [`Error::UpstreamConnection`].
+    /// Replaces the old `arion_error::get_context_data::<TcpErrorContext>()` lookup.
+    pub fn upstream_context(&self) -> Option<&crate::transport::connector::TcpErrorContext> {
+        let mut curr: Option<&(dyn StdError + 'static)> = Some(self);
+        while let Some(e) = curr {
+            match e.downcast_ref::<Self>() {
+                Some(Self::UpstreamConnection { context, .. }) => return Some(context),
+                _ => curr = e.source(),
+            }
+        }
+        None
+    }
+}
+
+impl From<String> for Error {
+    fn from(msg: String) -> Self {
+        Self::Message(msg)
+    }
+}
+
+impl From<&str> for Error {
+    fn from(msg: &str) -> Self {
+        Self::Message(msg.to_owned())
+    }
+}
+
+impl AsRef<dyn StdError + Send + Sync + 'static> for Error {
+    fn as_ref(&self) -> &(dyn StdError + Send + Sync + 'static) {
+        self
+    }
+}
+
+/// Generates `From` impls that box leaf foreign errors into [`Error::Boxed`].
+/// Used for error types that are only propagated (never matched on) so they
+/// don't each deserve a dedicated variant.
+macro_rules! boxed_error_from {
+    ($($t:ty),* $(,)?) => {
+        $(impl From<$t> for Error {
+            fn from(err: $t) -> Self {
+                Self::Boxed(err.into())
+            }
+        })*
+    };
+}
+
+boxed_error_from!(
+    hyper::Error,
+    http::uri::InvalidUriParts,
+    webpki::types::InvalidDnsNameError,
+    rustls::Error,
+    tonic::Status,
+    chrono_tz::ParseError,
+    tokio::sync::broadcast::error::RecvError,
+    tokio::sync::mpsc::error::TryRecvError,
+    tokio::sync::oneshot::error::RecvError,
+    x509_parser::asn1_rs::Err<x509_parser::error::X509Error>,
+    arion_configuration::config::core::DataSourceReadError,
+    arion_configuration::config::common::GenericError,
+    arion_configuration::config::cluster::health_check::ClusterHostnameError,
+    crate::clusters::clusters_manager::RoutingContextError,
+    crate::event_error::UpstreamError,
+);
+
+pub use crate::transport::connector::TcpErrorContext;
 pub type Result<T> = ::core::result::Result<T, Error>;
 
 pub use crate::body::poly_body::PolyBody;

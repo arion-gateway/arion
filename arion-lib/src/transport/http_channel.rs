@@ -273,7 +273,8 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
                 let on_complete = Clone::clone(&body.on_complete);
 
                 let body_timeout = body.inner.timeout;
-                let collected = body.collect().await.map_err(Error::from)?;
+                let collected =
+                    body.collect().await.map_err(|e| Error::with_source("Failed to collect request body", e))?;
                 let replay_body = http_body_util::Full::new(collected.to_bytes());
 
                 let mut last_error: Option<Error> = None;
@@ -615,7 +616,7 @@ impl HttpChannel {
         let collected_bytes = if http_body::Body::size_hint(&body).exact() == Some(0) {
             bytes::Bytes::new()
         } else {
-            body.collect().await.map_err(Error::from)?.to_bytes()
+            body.collect().await.map_err(|e| Error::with_source("Failed to collect request body", e))?.to_bytes()
         };
 
         let body = http_body_util::Full::new(collected_bytes);
@@ -764,7 +765,7 @@ impl HttpChannel {
                             Ok(SyntheticHttpResponse::bad_gateway(EventKind::Upstream(event_error), response_flags)
                                 .into_response(version))
                         },
-                        UpstreamError::Error(_) => Ok(SyntheticHttpResponse::internal_server_error(
+                        UpstreamError::BoxError(_) => Ok(SyntheticHttpResponse::internal_server_error(
                             EventKind::Upstream(event_error),
                             response_flags,
                         )

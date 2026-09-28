@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use arion_error::Error;
 use arion_format::types::ResponseFlags as FmtResponseFlags;
 use arion_interner::StringInterner;
 use http::Response;
@@ -45,8 +44,8 @@ pub enum UpstreamError {
     #[allow(unused)]
     #[error("Http3PostConnectFailure")]
     Http3PostConnectFailure,
-    #[error("Error: {0}")]
-    Error(#[from] Error),
+    #[error("BoxError: {0}")]
+    BoxError(#[from] BoxError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -125,7 +124,7 @@ impl EventKind {
                 UpstreamError::Reset => Some(ResponseCodeDetails("upstream_reset_after_response_started{TCP_RESET}")),
                 UpstreamError::RefusedStream => Some(ResponseCodeDetails("http2.remote_refuse")),
                 UpstreamError::Http3PostConnectFailure => Some(ResponseCodeDetails("http3.remote_reset")),
-                UpstreamError::Error(_) => Some(ResponseCodeDetails("internal_error")),
+                UpstreamError::BoxError(_) => Some(ResponseCodeDetails("internal_error")),
             },
             EventKind::Downstream(err) => match err {
                 DownstreamError::Io(err) => Some(ResponseCodeDetails::from(err)),
@@ -259,7 +258,7 @@ impl TryFrom<&UpstreamError> for UpstreamTransportEventError {
             UpstreamError::Http3PostConnectFailure => Ok(UpstreamTransportEventError("http3_post_connect_failure")),
 
             // Generic or non-transport errors fall through as Err
-            UpstreamError::Error(_) => Err(()),
+            UpstreamError::BoxError(_) => Err(()),
         }
     }
 }
@@ -286,7 +285,7 @@ impl Clone for UpstreamError {
             UpstreamError::Reset => UpstreamError::Reset,
             UpstreamError::RefusedStream => UpstreamError::RefusedStream,
             UpstreamError::Http3PostConnectFailure => UpstreamError::Http3PostConnectFailure,
-            UpstreamError::Error(err) => UpstreamError::Error(Error::new(err.to_string())),
+            UpstreamError::BoxError(err) => UpstreamError::BoxError(BoxError::new(err.to_string())),
         }
     }
 }
@@ -314,7 +313,7 @@ impl From<UpstreamError> for ResponseFlags {
             UpstreamError::Reset | UpstreamError::RefusedStream | UpstreamError::Http3PostConnectFailure => {
                 ResponseFlags(FmtResponseFlags::UPSTREAM_REMOTE_RESET)
             },
-            UpstreamError::Error(_) => ResponseFlags(FmtResponseFlags::LOCAL_RESET),
+            UpstreamError::BoxError(_) => ResponseFlags(FmtResponseFlags::LOCAL_RESET),
         }
     }
 }
@@ -398,27 +397,57 @@ impl<'a> TryInferFrom<&'a (dyn std::error::Error + 'static)> for UpstreamError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::connector::ConnectError;
-    use arion_error::ContextualError;
+    use crate::transport::connector::{ConnectError, TcpErrorContext};
 
     #[test]
     fn test_error_chain_debug() {
         let io_err = io::Error::new(io::ErrorKind::ConnectionRefused, "Connection refused");
         let upstream_err = UpstreamError::Io(io_err);
         let connect_err = ConnectError::Event(upstream_err);
-        let with_ctx = ContextualError::new(connect_err);
-        let err: arion_error::Error = with_ctx.into();
+        let err = BoxError::UpstreamConnection {
+            context: TcpErrorContext {
+                upstream_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 8080)),
+                response_flags: arion_format::types::ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
+                cluster_name: "test_cluster",
+            },
+            source: Box::new(connect_err),
+        };
 
         println!("DEBUG TEST: err = {err:?}");
-        println!("DEBUG TEST: err.inner() = {:?}", err.inner());
+        println!("DEBUG TEST: err display = {err}");
 
-        let mut temp_err: Option<&dyn std::error::Error> = Some(err.inner());
+        let mut temp_err: Option<&(dyn std::error::Error + 'static)> = Some(&err);
         while let Some(e) = temp_err {
             println!("DEBUG TEST: cause = {}, type = {:?}", e, e.source().map(|_| "has_source"));
             temp_err = e.source();
         }
 
-        let found = find_error_in_chain::<io::Error>(err.inner());
+        let found = err.find_source::<io::Error>();
         assert!(found.is_some(), "Should find std::io::Error in chain!");
+
+        let ctx = err.upstream_context().expect("Should find TcpErrorContext in chain!");
+        assert_eq!(ctx.cluster_name, "test_cluster");
+    }
+
+    #[test]
+    fn test_error_classification_through_wrappers() {
+        // `try_infer_from` must see through `Boxed`/`WithSource` layers:
+        // this is what timeout metrics and MCP timeout detection rely on.
+        let err = BoxError::from(UpstreamError::RouteTimeout);
+        let inferred = UpstreamError::try_infer_from(err.as_ref());
+        assert!(matches!(inferred, Some(UpstreamError::RouteTimeout)), "boxed: got {inferred:?}");
+
+        let err = BoxError::with_source(
+            "TCP connection failed",
+            BoxError::from(UpstreamError::ConnectTimeout(elapsed())),
+        );
+        let inferred = UpstreamError::try_infer_from(err.as_ref());
+        assert!(
+            matches!(inferred, Some(UpstreamError::ConnectTimeout(_))),
+            "wrapped: got {inferred:?}"
+        );
+
+        let err = BoxError::from(io::Error::new(io::ErrorKind::ConnectionRefused, "nope"));
+        assert!(err.find_source::<io::Error>().is_some(), "io::Error not found through Io variant");
     }
 }

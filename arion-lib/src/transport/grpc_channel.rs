@@ -113,10 +113,7 @@ impl Service<Request<GrpcBody>> for GrpcService {
 
     fn call(&mut self, req: Request<GrpcBody>) -> Self::Future {
         // Tower/tonic entrypoint (xDS, health, etc.): no live downstream request.
-        self.clone()
-            .do_call(req, RequestCtx::default())
-            .map_err(|e| Box::new(crate::Error::into_inner(e)) as arion_xds::grpc_deps::Error)
-            .boxed()
+        self.clone().do_call(req, RequestCtx::default()).map_err(|e| Box::new(e) as arion_xds::grpc_deps::Error).boxed()
     }
 }
 

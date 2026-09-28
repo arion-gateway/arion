@@ -27,8 +27,6 @@ use lru_time_cache::LruCache;
 use ref_cast::RefCast;
 use rustls::ClientConfig;
 
-use arion_error::Context;
-
 use arion_configuration::config::{
     cluster::{ClusterDiscoveryType, HealthCheck, OriginalDstRoutingMethod},
     transport::BindDevice,
@@ -254,10 +252,12 @@ impl OriginalDstCluster {
         match self.global.upstream_port_override {
             Some(port_override) => {
                 let host = authority.host();
-                let upd_auth = format!("{host}:{port_override}").parse::<Authority>().with_context_msg(format!(
-                    "Failed to apply port override {port_override} for cluster {}",
-                    self.global.name
-                ))?;
+                let upd_auth = format!("{host}:{port_override}").parse::<Authority>().map_err(|e| {
+                    crate::Error::with_source(
+                        format!("Failed to apply port override {port_override} for cluster {}", self.global.name),
+                        e,
+                    )
+                })?;
 
                 Ok(Cow::Owned(upd_auth))
             },

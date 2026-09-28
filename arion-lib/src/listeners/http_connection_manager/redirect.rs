@@ -30,7 +30,6 @@ use crate::{body::timeout_body::TimeoutBody, ArionRequestBody, ArionResponseBody
 use arion_configuration::config::network_filters::http_connection_manager::route::{
     AuthorityRedirect, RedirectAction, RouteMatchResult,
 };
-use arion_error::Context;
 use http::{
     header::LOCATION,
     uri::{Authority, Parts as UriParts, PathAndQuery, Scheme},
@@ -73,13 +72,16 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (&'a RouteMatchResult, &'a st
                     Some(h.clone())
                 } else {
                     let uri = format!("{h}:{port}");
-                    Some(Authority::from_str(&uri).with_context_msg("invalid uri \"{uri}\"")?)
+                    Some(
+                        Authority::from_str(&uri)
+                            .map_err(|e| Error::with_source(format!("invalid uri \"{uri}\""), e))?,
+                    )
                 }
             },
             // port redirect with a host in the original uri
             (Some(AuthorityRedirect::PortRedirect(port)), (Some(h), _)) => {
                 let uri = format!("{h}:{port}");
-                Some(Authority::from_str(&uri).with_context_msg("invalid uri \"{uri}\"")?)
+                Some(Authority::from_str(&uri).map_err(|e| Error::with_source(format!("invalid uri \"{uri}\""), e))?)
             },
             // a port redirection with no known host
             (Some(AuthorityRedirect::PortRedirect(_)), (None, _)) => {
@@ -90,7 +92,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (&'a RouteMatchResult, &'a st
         // strip query if specified
         let orig_path_and_query = if let Some(orig) = orig_path_and_query {
             if orig.query().is_some() && self.strip_query {
-                Some(PathAndQuery::from_str(orig.path()).with_context_msg("failed to strip query")?)
+                Some(PathAndQuery::from_str(orig.path()).map_err(|e| Error::with_source("failed to strip query", e))?)
             } else {
                 Some(orig)
             }
@@ -104,7 +106,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (&'a RouteMatchResult, &'a st
         let path_and_query = if let Some(prs) = self.path_rewrite_specifier.as_ref() {
             if let Some(replacement) = prs
                 .apply(orig_path_and_query.as_ref(), route_match_result)
-                .with_context_msg("invalid path or query following replacement")?
+                .map_err(|e| Error::with_source("invalid path or query following replacement", e))?
             {
                 Some(replacement)
             } else {
@@ -121,9 +123,9 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (&'a RouteMatchResult, &'a st
             parts.path_and_query = path_and_query;
             parts
         })
-        .with_context_msg("failed to reconstruct uri after applying redirect params")?;
-        let redirect_target =
-            HeaderValue::from_str(&new_uri.to_string()).with_context_msg("couldn't convert uri to header value")?;
+        .map_err(|e| Error::with_source("failed to reconstruct uri after applying redirect params", e))?;
+        let redirect_target = HeaderValue::from_str(&new_uri.to_string())
+            .map_err(|e| Error::with_source("couldn't convert uri to header value", e))?;
         rsp.headers_mut().and_then(|hm| hm.insert(LOCATION, redirect_target));
         rsp.body(TimeoutBody::new(None, PolyBody::default()).into()).map_err(Error::from)
     }
