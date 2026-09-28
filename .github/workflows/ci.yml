@@ -18,10 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Initialize git submodules
         run: git submodule update --init --recursive
-      
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -29,33 +29,33 @@ jobs:
             ${{ env.CARGO_CACHE_PATH }}
             ${{ env.CARGO_GIT_PATH }}
           key: ${{ runner.os }}-cargo-checks-${{ hashFiles('**/Cargo.lock', 'envoy-data-plane-api/build.rs') }}
-      
+
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      
+
       - name: Setup Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           components: rustfmt, clippy
           profile: minimal
-      
+
       - name: Check formatting
         run: cargo fmt --all -- --check
-      
+
       - name: Run clippy (fail on warnings)
-        run: cargo clippy --all-targets --all-features 
+        run: cargo clippy --all-targets --all-features
 
   # Build and test that share artifacts
   build-and-test:
-    name: build + test
+    name: build + unit-test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Initialize git submodules
         run: git submodule update --init --recursive
-      
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -64,18 +64,59 @@ jobs:
             ${{ env.CARGO_GIT_PATH }}
             ${{ env.TARGET_DIR }}
           key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock', 'envoy-data-plane-api/build.rs') }}
-      
+
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      
+
       - name: Setup Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           profile: minimal
-      
+
       - name: Build (release)
         run: cargo build --workspace --release --locked
-      
+
       - name: Run tests
         run: cargo test --workspace --release --locked
+
+  # E2E tests spawn the arion binary, so build it (all features) first
+  e2e-test:
+    name: build + e2e-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize git submodules
+        run: git submodule update --init --recursive
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.CARGO_CACHE_PATH }}
+            ${{ env.CARGO_GIT_PATH }}
+            ${{ env.TARGET_DIR }}
+            arion-wasm-sdk/target
+          key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('**/Cargo.lock', 'envoy-data-plane-api/build.rs') }}
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown # for the Wasm test filters
+          profile: minimal
+
+      - name: Build arion (all features)
+        run: cargo build -p arion-proxy --all-features --locked
+
+      # arion-e2e-tests/build.rs builds these too, but only warns if that fails
+      - name: Build Wasm test filters
+        working-directory: arion-wasm-sdk
+        run: cargo build --target wasm32-unknown-unknown --workspace
+
+      - name: Run e2e tests
+        run: cargo test -p arion-e2e-tests --no-fail-fast -- --test-threads 1 --ignored --no-capture
