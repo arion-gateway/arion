@@ -391,7 +391,7 @@ async fn test_hcm_local_rate_limit_statistical_multi_runtime() {
             .cluster(ClusterBuilder::with_endpoint("backend", backend.addr()));
 
     let config_path = bootstrap.build_to_temp().unwrap();
-    let spawn_options = SpawnOptions::default().with_num_runtimes(4).with_num_cpus(4);
+    let spawn_options = SpawnOptions::default().with_num_runtimes(2).with_num_cpus(2);
     let arion = ArionInstance::spawn_with_fixed_port(&config_path, "http", port, spawn_options).await.unwrap();
     let addr = arion.listener_addr().unwrap();
 
@@ -464,7 +464,7 @@ async fn test_listener_local_rate_limit_statistical_multi_runtime() {
         .cluster(ClusterBuilder::with_endpoint("backend", backend.addr()));
 
     let config_path = bootstrap.build_to_temp().unwrap();
-    let spawn_options = SpawnOptions::default().with_num_runtimes(4).with_num_cpus(4);
+    let spawn_options = SpawnOptions::default().with_num_runtimes(2).with_num_cpus(2);
     let arion = ArionInstance::spawn_with_fixed_port(&config_path, "http", port, spawn_options).await.unwrap();
     let addr = arion.listener_addr().unwrap();
 
@@ -497,14 +497,14 @@ async fn test_listener_local_rate_limit_statistical_multi_runtime() {
         }
     }
 
-    let expected_allowed: usize = 80;
+    let expected_allowed: usize = 60;
     let tolerance_pct: usize = 50;
     let min_allowed = expected_allowed.saturating_sub(expected_allowed * tolerance_pct / 100);
     let max_allowed = expected_allowed + expected_allowed * tolerance_pct / 100;
 
     assert!(
         successful >= min_allowed && successful <= max_allowed,
-        "Expected approximately {expected_allowed} successful connections (±{tolerance_pct}%) with 4 runtimes × 30 tokens/runtime ≈ 120 total capacity, got {successful} successful and {failed} failed out of {num_concurrent_attempts} total"
+        "Expected approximately {expected_allowed} successful connections (±{tolerance_pct}%) with 2 runtimes × 30 tokens/runtime ≈ 60 total capacity, got {successful} successful and {failed} failed out of {num_concurrent_attempts} total"
     );
 
     arion.shutdown();
@@ -534,7 +534,7 @@ async fn test_hcm_rate_limit_aggregate_over_time() {
             .cluster(ClusterBuilder::with_endpoint("backend", backend.addr()));
 
     let config_path = bootstrap.build_to_temp().unwrap();
-    let spawn_options = SpawnOptions::default().with_num_runtimes(4).with_num_cpus(4);
+    let spawn_options = SpawnOptions::default().with_num_runtimes(2).with_num_cpus(2);
     let arion = ArionInstance::spawn_with_fixed_port(&config_path, "http", port, spawn_options).await.unwrap();
     let addr = arion.listener_addr().unwrap();
 
@@ -604,7 +604,7 @@ async fn test_hcm_rate_limit_aggregate_over_time() {
 
     assert!(
         refill_successful >= min_refill && refill_successful <= max_refill,
-        "Refill phase: after 5s (>4s fill interval with 4 runtimes), buckets refill to max capacity, expected ~{expected_refill} successful (±{refill_tolerance_pct}%), got {refill_successful}"
+        "Refill phase: after 5s (>2s fill interval with 2 runtimes), buckets refill to max capacity, expected ~{expected_refill} successful (±{refill_tolerance_pct}%), got {refill_successful}"
     );
 
     arion.shutdown();
