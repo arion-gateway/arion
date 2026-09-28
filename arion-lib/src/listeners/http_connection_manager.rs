@@ -128,7 +128,9 @@ use crate::utils::StreamMetrics;
 
 use arion_configuration::config::network_filters::{
     early_header_mutation::EarlyHeaderMutation,
-    http_connection_manager::{HeaderModifiersAdd, HeaderModifiersRemove, Route, VirtualHost, XffSettings},
+    http_connection_manager::{
+        HeaderModifiersAdd, HeaderModifiersRemove, RequestHost, Route, VirtualHost, XffSettings,
+    },
     tracing::{TracingConfig, TracingKey},
 };
 use arion_format::types::ResponseFlags as FmtResponseFlags;
@@ -1067,8 +1069,9 @@ fn select_virtual_host<'a, T>(
     request: &Request<T>,
     virtual_hosts: &'a [VirtualHost],
 ) -> Option<(usize, &'a VirtualHost)> {
+    let host = RequestHost::from_request(request)?;
     let mapped_vhs = virtual_hosts.iter().enumerate().filter_map(|(idx, vh)| {
-        let maybe_score = vh.domains.iter().map(|domain| domain.eval_lpm_request(request)).max().flatten();
+        let maybe_score = vh.domains.iter().map(|domain| domain.eval_lpm(host)).max().flatten();
         maybe_score.map(|score| (idx, vh, score))
     });
 
@@ -2211,15 +2214,26 @@ mod tests {
         assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some((2, &vh3)));
 
         let request = Request::builder().header("host", "blah.domain3.com:8000").body(()).unwrap();
-        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), None);
+        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some((2, &vh3)));
 
         let request = Request::builder().header("host", "domain2.com:8000").body(()).unwrap();
-        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), None);
+        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some((1, &vh2)));
+
+        let request = Request::builder().header("host", "domain1.com:9000").body(()).unwrap();
+        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some((0, &vh1)));
 
         let domains2 = vec!["domain2.com:8000"].into_iter().flat_map(MatchHost::try_from).collect();
         let vh2 = VirtualHost { domains: domains2, ..Default::default() };
         let request = Request::builder().header("host", "domain2.com").body(()).unwrap();
         assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), None);
+
+        let domains4 = vec!["domain2.com"].into_iter().flat_map(MatchHost::try_from).collect();
+        let vh4 = VirtualHost { domains: domains4, ..Default::default() };
+        let request = Request::builder().header("host", "domain2.com:8000").body(()).unwrap();
+        assert_eq!(select_virtual_host(&request, &[vh2.clone(), vh4.clone()]), Some((0, &vh2)));
+
+        let request = Request::builder().header("host", "domain2.com:9000").body(()).unwrap();
+        assert_eq!(select_virtual_host(&request, &[vh2.clone(), vh4.clone()]), Some((1, &vh4)));
     }
 
     #[test]
