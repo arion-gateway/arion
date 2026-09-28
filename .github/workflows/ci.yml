@@ -80,7 +80,7 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --release --locked
 
-  # E2E tests spawn the arion binary, so build it (all features) first
+  # E2E tests spawn the arion binary, so build it (release, all features) first
   e2e-test:
     name: build + e2e-test
     runs-on: ubuntu-latest
@@ -110,13 +110,17 @@ jobs:
           target: wasm32-unknown-unknown # for the Wasm test filters
           profile: minimal
 
-      - name: Build arion (all features)
-        run: cargo build -p arion-proxy --all-features --locked
+      - name: Build arion (release, all features)
+        run: cargo build -p arion-proxy --all-features --release --locked
 
-      # arion-e2e-tests/build.rs builds these too, but only warns if that fails
+      # arion-e2e-tests/build.rs builds these too, but only warns if that fails.
+      # Kept as debug: filters_wasm.rs loads them from wasm32-unknown-unknown/debug/
       - name: Build Wasm test filters
         working-directory: arion-wasm-sdk
         run: cargo build --target wasm32-unknown-unknown --workspace
 
       - name: Run e2e tests
-        run: cargo test -p arion-e2e-tests --no-fail-fast -- --test-threads 1 --ignored --no-capture
+        env:
+          # The harness prefers target/debug/arion when present, so pin the release build
+          ARION_BIN: ${{ github.workspace }}/target/release/arion
+        run: cargo test -p arion-e2e-tests --release --no-fail-fast -- --test-threads 1 --ignored --no-capture
