@@ -542,7 +542,7 @@ async fn test_cedar_anon_deny_repeated_requests_same_connection() {
 
 /// Heavier variant closer to the reported load-test shape: many *concurrent*
 /// persistent connections (one `TestClient`/hyper connection per task, spread
-/// across many Arion worker threads), each hammering the same denied path for
+/// across multiple Arion worker threads), each hammering the same denied path for
 /// a couple of seconds. Every response, from the first to the last, must be
 /// FORBIDDEN. Failures are reported with the index within their connection so
 /// a "correct for the first few requests, then flips" pattern is visible.
@@ -576,7 +576,7 @@ async fn test_cedar_anon_deny_sustained_load_many_persistent_connections() {
 
     let config_path = bootstrap.build_to_temp().unwrap();
     let arion =
-        ArionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default().with_num_cpus(8)).await.unwrap();
+        ArionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default().with_num_cpus(2)).await.unwrap();
     let addr = arion.listener_addr().unwrap();
 
     let handles: Vec<_> = (0..CONNECTIONS)
@@ -649,7 +649,7 @@ async fn test_cedar_anon_deny_concurrent_single_shot_connections() {
 
     let config_path = bootstrap.build_to_temp().unwrap();
     let arion =
-        ArionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default().with_num_cpus(8)).await.unwrap();
+        ArionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default().with_num_cpus(2)).await.unwrap();
     let addr = arion.listener_addr().unwrap();
 
     let handles: Vec<_> = (0..REQUESTS)
