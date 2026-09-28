@@ -133,7 +133,7 @@ impl Error {
 
     /// Walks the `source()` chain looking for the [`TcpErrorContext`]
     /// carried by an [`Error::UpstreamConnection`].
-    /// Replaces the old `arion_error::get_context_data::<TcpErrorContext>()` lookup.
+    /// Replaces the old `get_context_data::<TcpErrorContext>()` lookup.
     pub fn upstream_context(&self) -> Option<&crate::transport::connector::TcpErrorContext> {
         let mut curr: Option<&(dyn StdError + 'static)> = Some(self);
         while let Some(e) = curr {

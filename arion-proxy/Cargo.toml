@@ -17,7 +17,7 @@ dhat = { workspace = true, optional = true }
 futures.workspace              = true
 num_cpus.workspace             = true
 arion-configuration.workspace  = true
-arion-error.workspace          = true
+anyhow.workspace                 = true
 arion-format.workspace         = true
 arion-lib.workspace            = true
 arion-stats.workspace          = true

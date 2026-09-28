@@ -3,7 +3,6 @@ members = [
   "envoy-data-plane-api",
   "arion-configuration",
   "arion-data-plane-api",
-  "arion-error",
   "arion-http-header",
   "arion-e2e-tests",
   "arion-interner",
@@ -37,7 +36,6 @@ version      = "0.1.0"
 envoy-data-plane-api     = { path = "envoy-data-plane-api" }
 arion-configuration      = { path = "arion-configuration" }
 arion-data-plane-api     = { path = "arion-data-plane-api" }
-arion-error              = { path = "arion-error" }
 arion-format             = { path = "arion-format" }
 arion-http-header        = { path = "arion-http-header" }
 arion-interner           = { path = "arion-interner" }

@@ -41,7 +41,7 @@ use tokio::{sync::mpsc::Sender, task::JoinSet};
 #[cfg(feature = "access-log")]
 use arion_lib::access_log::{start_access_loggers, update_configuration, AccessLogHeaders};
 
-use arion_error::{Context, Result};
+use anyhow::{Context, Result};
 use arion_lib::{
     build_listener_factories, clusters::cluster::ClusterType, get_secrets_and_clusters, new_configuration_channel,
     runtime_config, ConfigurationReceivers, ConfigurationSenders, ListenerConfigurationChange, PartialClusterType,
@@ -75,22 +75,21 @@ fn calculate_num_threads_per_runtime(num_cpus: usize, num_runtimes: usize) -> Re
     let avail_cpus = core_affinity::get_avail_core_num()?;
     if num_cpus > avail_cpus {
         return Err(
-            format!("The number of CPUs ({num_cpus}) exceeds those available for this process ({avail_cpus})").into()
+            anyhow::anyhow!("The number of CPUs ({num_cpus}) exceeds those available for this process ({avail_cpus})")
         );
     }
 
     let threads = num_cpus / num_runtimes;
     if threads == 0 {
         return Err(
-            format!("The number of runtimes greater than the number of cpus ({num_cpus} < {num_runtimes})").into()
+            anyhow::anyhow!("The number of runtimes greater than the number of cpus ({num_cpus} < {num_runtimes})")
         );
     }
 
     if !num_cpus.is_multiple_of(num_runtimes) {
-        return Err(format!(
+        return Err(anyhow::anyhow!(
             "The number of CPUs ({num_cpus}) is not a multiple of the number of runtimes ({num_runtimes})",
-        )
-        .into());
+        ));
     }
 
     Ok(threads)
@@ -166,13 +165,13 @@ fn launch_runtimes(
     let node = bootstrap.node.clone().unwrap_or_else(|| Node { id: "".into(), cluster_id: "".into() });
 
     let (secret_manager, clusters) =
-        get_secrets_and_clusters(&bootstrap).with_context_msg("Failed to get secrets and clusters")?;
+        get_secrets_and_clusters(&bootstrap).context("Failed to get secrets and clusters")?;
     let listener_factories = build_listener_factories(bootstrap.static_resources.listeners.clone(), &secret_manager)
-        .with_context_msg("failed to build listener factories")?;
+        .context("failed to build listener factories")?;
     let secret_manager = Arc::new(RwLock::new(secret_manager));
 
     if listener_factories.is_empty() && ads_cluster_names.is_empty() {
-        return Err("No listeners and no ads clusters configured".into());
+        return Err(anyhow::anyhow!("No listeners and no ads clusters configured"));
     }
 
     #[allow(clippy::used_underscore_binding)]
@@ -213,7 +212,7 @@ fn launch_runtimes(
     //
 
     let num_threads_per_runtime = calculate_num_threads_per_runtime(num_cpus, num_runtimes)
-        .with_context_msg("failed to calculate number of threads to use per runtime")?;
+        .context("failed to calculate number of threads to use per runtime")?;
 
     #[cfg(feature = "metrics")]
     init_global_metrics(
@@ -445,7 +444,7 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
     if exporters.is_empty() {
         info!("OTEL metrics: stats_sink not configured (skipped)");
     } else {
-        arion_metrics::otel_launch_exporter(&exporters).await?;
+        arion_metrics::otel_launch_exporter(&exporters).await.map_err(|e| anyhow::anyhow!("{e}"))?;
     }
 
     // spawn tracing exporters...
@@ -465,7 +464,7 @@ fn register_initial_clusters(clusters: Vec<PartialClusterType>) -> Result<Vec<Cl
         .into_iter()
         .map(arion_lib::clusters::add_cluster)
         .collect::<arion_lib::Result<Vec<_>>>()
-        .map_err(arion_error::Error::from)
+        .map_err(anyhow::Error::from)
 }
 
 async fn push_initial_listeners(
@@ -485,7 +484,7 @@ async fn push_initial_listeners(
         .await
         .into_iter()
         .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(Into::<arion_error::Error>::into)?;
+        .map_err(Into::<anyhow::Error>::into)?;
     }
 
     Ok(())

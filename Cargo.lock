@@ -211,8 +211,8 @@ name = "arion-configuration"
 version = "0.1.0"
 dependencies = [
  "ahash",
+ "anyhow",
  "arion-data-plane-api",
- "arion-error",
  "arion-format",
  "arion-interner",
  "base64 0.22.1",
@@ -313,10 +313,6 @@ dependencies = [
  "tracing-test",
  "uuid",
 ]
-
-[[package]]
-name = "arion-error"
-version = "0.1.0"
 
 [[package]]
 name = "arion-format"
@@ -510,9 +506,9 @@ dependencies = [
  "abort-on-drop",
  "affinity",
  "ahash",
+ "anyhow",
  "arion-configuration",
  "arion-data-plane-api",
- "arion-error",
  "arion-format",
  "arion-lib",
  "arion-metrics",

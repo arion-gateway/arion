@@ -20,7 +20,7 @@
 
 #![allow(clippy::wildcard_imports)]
 
-use arion_error::Error;
+use anyhow::Error;
 pub(crate) type BoxedError = Box<dyn std::error::Error + Send + Sync>;
 
 #[allow(clippy::wildcard_imports, clippy::too_many_lines)]

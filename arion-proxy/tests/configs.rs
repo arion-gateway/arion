@@ -45,20 +45,20 @@ where
 }
 
 #[allow(clippy::expect_used)]
-fn check_config_file(file_path: &str) -> Result<(), arion_error::Error> {
+fn check_config_file(file_path: &str) -> anyhow::Result<()> {
     // file_path is relative to crate root
     let bootstrap = Config::new(&Options::from_path_to_envoy(file_path))?.bootstrap;
     // but ancillary files are stored in workspace root - adjust PWD
     let d = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").canonicalize()?;
-    with_current_dir(&d, || get_listeners_and_clusters(bootstrap).map(|_| ()).map_err(arion_error::Error::from))
+    with_current_dir(&d, || get_listeners_and_clusters(bootstrap).map(|_| ()).map_err(anyhow::Error::from))
 }
 
 #[test]
-fn bootstrap_demo_static() -> Result<(), arion_error::Error> {
+fn bootstrap_demo_static() -> anyhow::Result<()> {
     check_config_file("conf/demo/demo-static.yaml")
 }
 
 #[test]
-fn bootstrap_demo_dynamic() -> Result<(), arion_error::Error> {
+fn bootstrap_demo_dynamic() -> anyhow::Result<()> {
     check_config_file("conf/demo/demo-dynamic.yaml")
 }

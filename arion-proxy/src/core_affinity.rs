@@ -19,7 +19,7 @@
 //
 
 use arion_configuration::config::runtime::{Affinity, CoreId};
-use arion_error::Result;
+use anyhow::Result;
 use std::collections::{BTreeMap, HashSet};
 
 use crate::runtime::RuntimeId;
@@ -38,7 +38,7 @@ pub fn get_avail_core_num() -> Result<usize> {
     #[cfg(target_os = "linux")]
     {
         affinity::get_thread_affinity()
-            .map_err(|err| format!("get_avail_core_num: {err}").into())
+            .map_err(|err| anyhow::anyhow!("get_avail_core_num: {err}").into())
             .map(|cpus| cpus.len())
     }
     #[cfg(not(target_os = "linux"))]
@@ -55,7 +55,7 @@ pub fn get_core_ids() -> Result<Vec<CoreId>> {
     #[cfg(target_os = "linux")]
     {
         affinity::get_thread_affinity()
-            .map_err(|err| format!("get_cores_id: {err}").into())
+            .map_err(|err| anyhow::anyhow!("get_cores_id: {err}").into())
             .map(|cores| cores.into_iter().map(CoreId::new).collect())
     }
 
@@ -80,12 +80,12 @@ pub fn set_cores_for_current(#[allow(unused_variables)] cores: &[CoreId]) -> Res
     #[cfg(target_os = "linux")]
     {
         affinity::set_thread_affinity(cores.iter().map(|x| **x).collect::<Vec<usize>>())
-            .map_err(|err| format!("set_cores_for_current: {err}").into())
+            .map_err(|err| anyhow::anyhow!("set_cores_for_current: {err}").into())
     }
 
     #[cfg(not(target_os = "linux"))]
     {
-        Err(arion_error::Error::new("set_cores_for_current: not supported on this platform"))
+        Err(anyhow::anyhow!("set_cores_for_current: not supported on this platform"))
     }
 }
 
@@ -116,7 +116,7 @@ fn group_by_numa(cores: Vec<CoreId>, cpuinfo: &str) -> Result<Vec<Vec<CoreId>>> 
         .collect::<BTreeMap<_, _>>();
 
     if processor_map.is_empty() {
-        return Err("cpuinfo: parser error".into());
+        return Err(anyhow::anyhow!("cpuinfo: parser error"));
     }
 
     let mut groups: BTreeMap<CoreId, Vec<CoreId>> = BTreeMap::new();
@@ -124,7 +124,7 @@ fn group_by_numa(cores: Vec<CoreId>, cpuinfo: &str) -> Result<Vec<Vec<CoreId>>> 
         if let Some(key) = processor_map.get(&core) {
             groups.entry(CoreId::new(*key)).or_default().push(core);
         } else {
-            return Err(format!("cpuinfo: could not find mapping for core {core}").into());
+            return Err(anyhow::anyhow!("cpuinfo: could not find mapping for core {core}"));
         }
     }
 
@@ -149,17 +149,16 @@ impl AffinityStrategy for Affinity {
             Affinity::Runtimes(rs) => {
                 let v = rs
                     .get(*runtime_id)
-                    .ok_or_else(|| format!("could not find configuration for runtime {runtime_id}"))
+                    .ok_or_else(|| anyhow::anyhow!("could not find configuration for runtime {runtime_id}"))
                     .cloned()?;
 
                 let v = v.into_iter().take(cores_wanted).collect::<Vec<_>>();
                 if v.len() != cores_wanted {
-                    return Err(format!(
+                    return Err(anyhow::anyhow!(
                         "not enough cores for runtime {runtime_id} - wanted: {}, available: {}",
                         cores_wanted,
                         v.len()
-                    )
-                    .into());
+                    ));
                 }
 
                 Ok(v)
@@ -188,11 +187,10 @@ fn run_strategy(
     let aff_set = aff.clone().into_iter().flatten().collect::<HashSet<_>>();
 
     if !avail_set.is_superset(&aff_set) {
-        return Err(format!(
+        return Err(anyhow::anyhow!(
             "the cores {:?} are available",
             aff_set.difference(&avail_set).copied().collect::<Vec<_>>()
-        )
-        .into());
+        ));
     }
 
     // Perform a round-robin selection among the NUMA vectors, selecting the node and
@@ -202,12 +200,12 @@ fn run_strategy(
         .0
         .checked_rem(aff.len())
         .and_then(|idx| aff.get(idx))
-        .ok_or_else(|| "unexpected affinity vector length".to_owned())?;
+        .ok_or_else(|| anyhow::anyhow!("unexpected affinity vector length"))?;
 
     let cores = node
         .iter()
         .skip(
-            runtime_id.0.checked_div(aff.len()).ok_or_else(|| "unexpected affinity vector length".to_owned())?
+            runtime_id.0.checked_div(aff.len()).ok_or_else(|| anyhow::anyhow!("unexpected affinity vector length"))?
                 * cores_wanted,
         )
         .take(cores_wanted)
@@ -217,8 +215,7 @@ fn run_strategy(
     if cores.len() == cores_wanted {
         Ok(cores)
     } else {
-        Err(format!("not enough cores for runtime {runtime_id} - wanted: {}, available: {}", cores_wanted, cores.len())
-            .into())
+        Err(anyhow::anyhow!("not enough cores for runtime {runtime_id} - wanted: {}, available: {}", cores_wanted, cores.len()))
     }
 }
 

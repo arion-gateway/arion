@@ -136,13 +136,13 @@ fn get_container_cpu_limit() -> crate::Result<usize> {
 
 fn get_cgroup_v2_cpu_limit() -> crate::Result<usize> {
     if !std::path::Path::new("/sys/fs/cgroup/cgroup.controllers").exists() {
-        return Err("cgroups v2 not available".into());
+        return Err(anyhow::anyhow!("cgroups v2 not available"));
     }
 
     if let Ok(content) = std::fs::read_to_string("/sys/fs/cgroup/cpu.max") {
         return parse_cgroup_v2_cpu_max(&content);
     }
-    Err("No cgroups v2 CPU limit found".into())
+    Err(anyhow::anyhow!("No cgroups v2 CPU limit found"))
 }
 
 fn parse_cgroup_v2_cpu_max(content: &str) -> crate::Result<usize> {
@@ -158,7 +158,7 @@ fn parse_cgroup_v2_cpu_max(content: &str) -> crate::Result<usize> {
             if quota > 0 && period > 0 {
                 // Standard ceiling division to calculate required cores
                 let cpus = usize::try_from((quota + period - 1) / period)
-                    .map_err(|_e| "Failed to convert CPU count to usize")?;
+                    .map_err(|_e| anyhow::anyhow!("Failed to convert CPU count to usize"))?;
 
                 if cpus > 0 {
                     return Ok(cpus);
@@ -170,7 +170,7 @@ fn parse_cgroup_v2_cpu_max(content: &str) -> crate::Result<usize> {
         _ => {},
     }
 
-    Err("No valid cgroups v2 CPU limit found".into())
+    Err(anyhow::anyhow!("No valid cgroups v2 CPU limit found"))
 }
 
 fn get_cgroup_v1_cpu_limit() -> crate::Result<usize> {
@@ -190,13 +190,13 @@ fn parse_cgroup_v1_cpu_limit(quota_content: &str, period_content: &str) -> crate
 
     if quota > 0 && period > 0 {
         let cpus =
-            usize::try_from((quota + period - 1) / period).map_err(|_e| "Failed to convert CPU count to usize")?;
+            usize::try_from((quota + period - 1) / period).map_err(|_e| anyhow::anyhow!("Failed to convert CPU count to usize"))?;
         if cpus > 0 {
             return Ok(cpus);
         }
     }
 
-    Err("No valid cgroups v1 CPU limit found".into())
+    Err(anyhow::anyhow!("No valid cgroups v1 CPU limit found"))
 }
 
 fn get_cgroup_v1_cpu_path() -> crate::Result<String> {
@@ -220,7 +220,7 @@ fn parse_cgroup_v1_cpu_path(cgroup_content: &str) -> crate::Result<String> {
     if std::path::Path::new("/sys/fs/cgroup/cpu").exists() {
         Ok("/sys/fs/cgroup/cpu".to_owned())
     } else {
-        Err("CPU cgroup path not found".into())
+        Err(anyhow::anyhow!("CPU cgroup path not found"))
     }
 }
 

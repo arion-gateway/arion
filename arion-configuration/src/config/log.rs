@@ -18,7 +18,7 @@
 //
 //
 
-use arion_error::{Context, Error};
+use anyhow::Error;
 use http::HeaderName;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::num::NonZeroUsize;
@@ -176,7 +176,7 @@ where
     Option::<String>::deserialize(deserializer).and_then(|maybe_string| {
         maybe_string.map(|s| EnvFilter::builder().parse(s)).transpose().map_err(
             |e: tracing_subscriber::filter::ParseError| {
-                serde::de::Error::custom(Error::from(e).with_context_msg("failed to parse log level config"))
+                serde::de::Error::custom(Error::from(e).context("failed to parse log level config"))
             },
         )
     })
