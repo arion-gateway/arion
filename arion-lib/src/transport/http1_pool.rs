@@ -280,17 +280,15 @@ impl Http1Pool {
             },
             Http1Connect::Tls(connector) => {
                 let mut connector = connector.clone();
-                let io = connector.call(self.dst.clone()).await.map_err(|e| {
-                    match e.downcast::<crate::Error>() {
-                        Ok(err) => *err,
-                        Err(e) => match e.downcast::<std::io::Error>() {
-                            Ok(io_err) => Error::upstream(UpstreamError::Io(*io_err)),
-                            Err(e) => match e.downcast::<rustls::Error>() {
-                                Ok(tls_err) => Error::Tls(crate::TlsError::Rustls(*tls_err)),
-                                Err(other) => Error::Tls(crate::TlsError::Certificate(other.to_string())),
-                            },
+                let io = connector.call(self.dst.clone()).await.map_err(|e| match e.downcast::<crate::Error>() {
+                    Ok(err) => *err,
+                    Err(e) => match e.downcast::<std::io::Error>() {
+                        Ok(io_err) => Error::upstream(UpstreamError::Io(*io_err)),
+                        Err(e) => match e.downcast::<rustls::Error>() {
+                            Ok(tls_err) => Error::Tls(crate::TlsError::Rustls(*tls_err)),
+                            Err(other) => Error::Tls(crate::TlsError::Certificate(other.to_string())),
                         },
-                    }
+                    },
                 })?;
                 handshake(io).await
             },
@@ -325,7 +323,8 @@ async fn handshake<T>(io: T) -> Result<SendRequest<ArionRequestBody>>
 where
     T: Read + Write + Unpin + Send + 'static,
 {
-    let (mut sender, conn) = Http1Builder::new().writev(false).handshake(io).await.map_err(|e| Error::upstream(UpstreamError::from(e)))?;
+    let (mut sender, conn) =
+        Http1Builder::new().writev(false).handshake(io).await.map_err(|e| Error::upstream(UpstreamError::from(e)))?;
     tokio::spawn(async move {
         if let Err(err) = conn.with_upgrades().await {
             debug!("upstream http1 connection closed: {err}");

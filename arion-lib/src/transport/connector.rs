@@ -55,8 +55,6 @@ use {crate::get_shard_id, arion_metrics::metrics::clusters, opentelemetry::KeyVa
 
 use super::{bind_device::BindDevice, resolve};
 
-
-
 #[derive(Clone, Debug)]
 pub enum ConnectUsing {
     Socket {
@@ -155,90 +153,106 @@ impl LocalConnectorWithDNSResolver {
 
         async move {
             let host = addr.host();
-            let port = addr.port_u16().ok_or_else(|| crate::Error::upstream_with_context(
-                TcpErrorContext {
-                    upstream_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
-                    response_flags: ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
-                    cluster_name,
-                },
-                UpstreamError::Io(io::Error::new(
-                    io::ErrorKind::AddrNotAvailable,
-                    format!("Port has to be set {addr:?}"),
-                )),
-            ))?;
+            let port = addr.port_u16().ok_or_else(|| {
+                crate::Error::upstream_with_context(
+                    TcpErrorContext {
+                        upstream_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
+                        response_flags: ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
+                        cluster_name,
+                    },
+                    UpstreamError::Io(io::Error::new(
+                        io::ErrorKind::AddrNotAvailable,
+                        format!("Port has to be set {addr:?}"),
+                    )),
+                )
+            })?;
 
-            let addr = resolve(host, port).await.map_err(|e| crate::Error::upstream_with_context(
-                TcpErrorContext {
-                    upstream_addr: SocketAddr::from(([0, 0, 0, 0], port)),
-                    response_flags: ResponseFlags::DNS_RESOLUTION_FAILED,
-                    cluster_name,
-                },
-                UpstreamError::Io(e),
-            ))?;
+            let addr = resolve(host, port).await.map_err(|e| {
+                crate::Error::upstream_with_context(
+                    TcpErrorContext {
+                        upstream_addr: SocketAddr::from(([0, 0, 0, 0], port)),
+                        response_flags: ResponseFlags::DNS_RESOLUTION_FAILED,
+                        cluster_name,
+                    },
+                    UpstreamError::Io(e),
+                )
+            })?;
 
             let sock = match addr {
-                std::net::SocketAddr::V4(_) => TcpSocket::new_v4().map_err(|e| crate::Error::upstream_with_context(
-                    TcpErrorContext {
-                        upstream_addr: addr,
-                        response_flags: ResponseFlags::NO_HEALTHY_UPSTREAM | ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
-                        cluster_name,
-                    },
-                    UpstreamError::Io(e),
-                ))?,
-                std::net::SocketAddr::V6(_) => TcpSocket::new_v6().map_err(|e| crate::Error::upstream_with_context(
-                    TcpErrorContext {
-                        upstream_addr: addr,
-                        response_flags: ResponseFlags::NO_HEALTHY_UPSTREAM | ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
-                        cluster_name,
-                    },
-                    UpstreamError::Io(e),
-                ))?,
+                std::net::SocketAddr::V4(_) => TcpSocket::new_v4().map_err(|e| {
+                    crate::Error::upstream_with_context(
+                        TcpErrorContext {
+                            upstream_addr: addr,
+                            response_flags: ResponseFlags::NO_HEALTHY_UPSTREAM
+                                | ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
+                            cluster_name,
+                        },
+                        UpstreamError::Io(e),
+                    )
+                })?,
+                std::net::SocketAddr::V6(_) => TcpSocket::new_v6().map_err(|e| {
+                    crate::Error::upstream_with_context(
+                        TcpErrorContext {
+                            upstream_addr: addr,
+                            response_flags: ResponseFlags::NO_HEALTHY_UPSTREAM
+                                | ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
+                            cluster_name,
+                        },
+                        UpstreamError::Io(e),
+                    )
+                })?,
             };
 
             if let Some(device) = device {
                 // binding might succeed here but still fail later
                 // e.g. with an non-categorized error on connect
                 debug!("Binding socket to: {:?}", device);
-                super::bind_device::bind_device(&sock, &device).map_err(|e| crate::Error::upstream_with_context(
-                    TcpErrorContext {
-                        upstream_addr: addr,
-                        response_flags: ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
-                        cluster_name,
-                    },
-                    UpstreamError::Io(e),
-                ))?;
+                super::bind_device::bind_device(&sock, &device).map_err(|e| {
+                    crate::Error::upstream_with_context(
+                        TcpErrorContext {
+                            upstream_addr: addr,
+                            response_flags: ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
+                            cluster_name,
+                        },
+                        UpstreamError::Io(e),
+                    )
+                })?;
             }
 
             let stream = if let Some(connection_timeout) = connection_timeout {
                 fast_timeout(connection_timeout, sock.connect(addr))
                     .await // Result<Result<TcpStream, io::Error>>, Elapsed>
-                    .map_err(|_e| crate::Error::upstream_with_context(
-                        TcpErrorContext {
-                            upstream_addr: addr,
-                            response_flags: ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
-                            cluster_name,
-                        },
-                        UpstreamError::ConnectTimeout(elapsed()),
-                    ))? // Result<TcpStream, io::Error>
-                    .map_err(|orig| crate::Error::upstream_with_context(
-                        TcpErrorContext {
-                            upstream_addr: addr,
-                            response_flags: ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
-                            cluster_name,
-                        },
-                        UpstreamError::Io(orig),
-                    ))?
+                    .map_err(|_e| {
+                        crate::Error::upstream_with_context(
+                            TcpErrorContext {
+                                upstream_addr: addr,
+                                response_flags: ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
+                                cluster_name,
+                            },
+                            UpstreamError::ConnectTimeout(elapsed()),
+                        )
+                    })? // Result<TcpStream, io::Error>
+                    .map_err(|orig| {
+                        crate::Error::upstream_with_context(
+                            TcpErrorContext {
+                                upstream_addr: addr,
+                                response_flags: ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
+                                cluster_name,
+                            },
+                            UpstreamError::Io(orig),
+                        )
+                    })?
             } else {
-                sock.connect(addr)
-                    .await
-                    .map_err(|orig| crate::Error::upstream_with_context(
+                sock.connect(addr).await.map_err(|orig| {
+                    crate::Error::upstream_with_context(
                         TcpErrorContext {
                             upstream_addr: addr,
                             response_flags: ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
                             cluster_name,
                         },
                         UpstreamError::Io(orig),
-                    ))?
+                    )
+                })?
             };
 
             #[cfg(target_os = "linux")]
@@ -512,5 +526,3 @@ impl Service<Uri> for UnifiedConnector {
         }
     }
 }
-
-

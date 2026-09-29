@@ -206,9 +206,7 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
 
         let filter = match filter {
             #[cfg(feature = "wasm")]
-            HttpFilterType::Wasm(conf) => HttpFilterValue::Wasm(
-                WasmFilter::try_new(conf)?,
-            ),
+            HttpFilterType::Wasm(conf) => HttpFilterValue::Wasm(WasmFilter::try_new(conf)?),
             #[cfg(not(feature = "wasm"))]
             HttpFilterType::Wasm(_) => {
                 return Err("HTTP Wasm filter requires building Arion with the `wasm` Cargo feature \
@@ -223,9 +221,7 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
                 HttpFilterValue::JwtAuthentication(builder.build())
             },
             HttpFilterType::Cors(conf) | HttpFilterType::CorsPolicy(conf) => HttpFilterValue::Cors(conf.into()),
-            HttpFilterType::McpGateway(mcp) => HttpFilterValue::McpGateway(Box::new(
-                mcp.try_into()?,
-            )),
+            HttpFilterType::McpGateway(mcp) => HttpFilterValue::McpGateway(Box::new(mcp.try_into()?)),
             HttpFilterType::UserRateLimit(user_rate_limit) => {
                 HttpFilterValue::UserRateLimit(user_rate_limit.try_into()?)
             },

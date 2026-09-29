@@ -358,16 +358,12 @@ impl From<&h2::Error> for DownstreamError {
     fn from(err: &h2::Error) -> Self {
         if let Some(reason) = err.reason() {
             match reason {
-                h2::Reason::NO_ERROR | h2::Reason::CANCEL | h2::Reason::REFUSED_STREAM => {
-                    DownstreamError::Reset
-                }
+                h2::Reason::NO_ERROR | h2::Reason::CANCEL | h2::Reason::REFUSED_STREAM => DownstreamError::Reset,
                 h2::Reason::PROTOCOL_ERROR
                 | h2::Reason::FRAME_SIZE_ERROR
                 | h2::Reason::FLOW_CONTROL_ERROR
                 | h2::Reason::SETTINGS_TIMEOUT
-                | h2::Reason::COMPRESSION_ERROR => {
-                    DownstreamError::Protocol(format!("h2 protocol error: {reason:?}"))
-                }
+                | h2::Reason::COMPRESSION_ERROR => DownstreamError::Protocol(format!("h2 protocol error: {reason:?}")),
                 _ => DownstreamError::Reset,
             }
         } else {
@@ -441,17 +437,14 @@ impl From<&h2::Error> for UpstreamError {
         if let Some(reason) = err.reason() {
             match reason {
                 h2::Reason::REFUSED_STREAM => UpstreamError::RefusedStream,
-                h2::Reason::CONNECT_ERROR => UpstreamError::Io(io::Error::new(
-                    io::ErrorKind::ConnectionRefused,
-                    "H2 connection refused",
-                )),
+                h2::Reason::CONNECT_ERROR => {
+                    UpstreamError::Io(io::Error::new(io::ErrorKind::ConnectionRefused, "H2 connection refused"))
+                },
                 h2::Reason::PROTOCOL_ERROR
                 | h2::Reason::FRAME_SIZE_ERROR
                 | h2::Reason::FLOW_CONTROL_ERROR
                 | h2::Reason::SETTINGS_TIMEOUT
-                | h2::Reason::COMPRESSION_ERROR => {
-                    UpstreamError::Protocol(format!("h2 protocol error: {reason:?}"))
-                }
+                | h2::Reason::COMPRESSION_ERROR => UpstreamError::Protocol(format!("h2 protocol error: {reason:?}")),
                 _ => UpstreamError::Reset,
             }
         } else {

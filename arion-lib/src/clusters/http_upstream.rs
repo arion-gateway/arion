@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{net::SocketAddr};
+use std::net::SocketAddr;
 
 use arion_configuration::config::{
     cluster::ClusterSpecifier, network_filters::http_connection_manager::route::HashPolicy,

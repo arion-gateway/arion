@@ -18,8 +18,8 @@
 //
 //
 
-use arion_configuration::config::runtime::{Affinity, CoreId};
 use anyhow::Result;
+use arion_configuration::config::runtime::{Affinity, CoreId};
 use std::collections::{BTreeMap, HashSet};
 
 use crate::runtime::RuntimeId;
@@ -215,7 +215,11 @@ fn run_strategy(
     if cores.len() == cores_wanted {
         Ok(cores)
     } else {
-        Err(anyhow::anyhow!("not enough cores for runtime {runtime_id} - wanted: {}, available: {}", cores_wanted, cores.len()))
+        Err(anyhow::anyhow!(
+            "not enough cores for runtime {runtime_id} - wanted: {}, available: {}",
+            cores_wanted,
+            cores.len()
+        ))
     }
 }
 

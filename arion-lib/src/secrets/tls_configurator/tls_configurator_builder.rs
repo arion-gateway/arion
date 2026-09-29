@@ -274,15 +274,12 @@ impl TlsContextBuilder<WantsToBuildServer> {
             (true, None) => {
                 return Err("requireClientCertificate is true but no validation_context is configured".into());
             },
-            (true, Some(certificate_store)) => Some(
-                WebPkiClientVerifier::builder(StdArc::clone(certificate_store))
-                    .build()?,
-            ),
-            (false, Some(certificate_store)) => Some(
-                WebPkiClientVerifier::builder(StdArc::clone(certificate_store))
-                    .allow_unauthenticated()
-                    .build()?,
-            ),
+            (true, Some(certificate_store)) => {
+                Some(WebPkiClientVerifier::builder(StdArc::clone(certificate_store)).build()?)
+            },
+            (false, Some(certificate_store)) => {
+                Some(WebPkiClientVerifier::builder(StdArc::clone(certificate_store)).allow_unauthenticated().build()?)
+            },
             (false, None) => None,
         };
 
@@ -402,8 +399,7 @@ impl TlsContextBuilder<WantsToBuildClient> {
 
         let builder = match self.state.trust_chain_verification {
             TrustChainVerification::VerifyTrustChain => {
-                let verifier = WebPkiServerVerifier::builder(StdArc::clone(&self.state.certificate_store))
-                    .build()?;
+                let verifier = WebPkiServerVerifier::builder(StdArc::clone(&self.state.certificate_store)).build()?;
                 builder.with_webpki_verifier(verifier)
             },
             TrustChainVerification::AcceptUntrusted => {

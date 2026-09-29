@@ -74,16 +74,16 @@ pub fn run_arion(
 fn calculate_num_threads_per_runtime(num_cpus: usize, num_runtimes: usize) -> Result<usize> {
     let avail_cpus = core_affinity::get_avail_core_num()?;
     if num_cpus > avail_cpus {
-        return Err(
-            anyhow::anyhow!("The number of CPUs ({num_cpus}) exceeds those available for this process ({avail_cpus})")
-        );
+        return Err(anyhow::anyhow!(
+            "The number of CPUs ({num_cpus}) exceeds those available for this process ({avail_cpus})"
+        ));
     }
 
     let threads = num_cpus / num_runtimes;
     if threads == 0 {
-        return Err(
-            anyhow::anyhow!("The number of runtimes greater than the number of cpus ({num_cpus} < {num_runtimes})")
-        );
+        return Err(anyhow::anyhow!(
+            "The number of runtimes greater than the number of cpus ({num_cpus} < {num_runtimes})"
+        ));
     }
 
     if !num_cpus.is_multiple_of(num_runtimes) {

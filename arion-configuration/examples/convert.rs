@@ -20,20 +20,18 @@
 
 #![allow(clippy::print_stdout)]
 
-use arion_configuration::config::Bootstrap;
 use anyhow::{Context, Result};
+use arion_configuration::config::Bootstrap;
 use std::fs::File;
 
 fn main() -> Result<()> {
-    let bootstrap = Bootstrap::deserialize_from_envoy(
-        File::open("bootstrap.yaml").context("failed to open bootstrap.yaml")?,
-    )
-    .context("failed to convert envoy to arion")?;
+    let bootstrap =
+        Bootstrap::deserialize_from_envoy(File::open("bootstrap.yaml").context("failed to open bootstrap.yaml")?)
+            .context("failed to convert envoy to arion")?;
     let yaml = serde_yaml::to_string(&bootstrap).context("failed to serialize arion")?;
     std::fs::write("arion.yaml", yaml.as_bytes())?;
-    let bootstrap: Bootstrap =
-        serde_yaml::from_reader(File::open("arion.yaml").context("failed to open arion.yaml")?)
-            .context("failed to read yaml from file")?;
+    let bootstrap: Bootstrap = serde_yaml::from_reader(File::open("arion.yaml").context("failed to open arion.yaml")?)
+        .context("failed to read yaml from file")?;
     let yaml = serde_yaml::to_string(&bootstrap).context("failed to round-trip serialize arion")?;
     println!("{yaml}");
     Ok(())

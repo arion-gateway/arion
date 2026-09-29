@@ -189,8 +189,8 @@ fn parse_cgroup_v1_cpu_limit(quota_content: &str, period_content: &str) -> crate
     let period: i64 = period_content.trim().parse()?;
 
     if quota > 0 && period > 0 {
-        let cpus =
-            usize::try_from((quota + period - 1) / period).map_err(|_e| anyhow::anyhow!("Failed to convert CPU count to usize"))?;
+        let cpus = usize::try_from((quota + period - 1) / period)
+            .map_err(|_e| anyhow::anyhow!("Failed to convert CPU count to usize"))?;
         if cpus > 0 {
             return Ok(cpus);
         }

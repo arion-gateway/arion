@@ -103,9 +103,9 @@ mod envoy_conversions {
         options::Options,
         Result,
     };
+    use anyhow::Context;
     use arion_data_plane_api::decode::from_serde_deserializer;
     pub use arion_data_plane_api::envoy_data_plane_api::envoy::config::bootstrap::v3::Bootstrap as EnvoyBootstrap;
-    use anyhow::Context;
     use serde::Deserialize;
 
     #[derive(Deserialize)]
@@ -139,9 +139,7 @@ mod envoy_conversions {
             .with_context(|| format!("failed to deserialize {}", track.path()))?;
             Bootstrap::try_from(envoy).context("failed to convert into arion bootstrap")
         })()
-        .with_context(|| {
-            anyhow::anyhow!("failed to read config from \"{}\"", envoy_path.as_ref().display())
-        })
+        .with_context(|| format!("failed to read config from \"{}\"", envoy_path.as_ref().display()))
     }
 
     impl Config {
@@ -168,9 +166,8 @@ mod envoy_conversions {
                         metrics,
                         timezone,
                         envoy_bootstrap,
-                    } = deserialize_yaml(config).with_context(|| {
-                        anyhow::anyhow!(format!("failed to deserialize \"{}\"", config.display()))
-                    })?;
+                    } = deserialize_yaml(config)
+                        .with_context(|| format!("failed to deserialize \"{}\"", config.display()))?;
 
                     if let Some(ref conf) = access_log_config {
                         let mut custom_ops = std::collections::HashSet::new();

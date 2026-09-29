@@ -102,9 +102,8 @@ impl TcpChannelConnector {
                         (stream, cluster_name, upstream_local_addr, upstream_peer_addr)
                     },
                     UnifiedConnector::Internal(internal_connector) => {
-                        let (stream, cluster_name) = internal_connector
-                            .connect(connection_metadata.clone().map(Arc::new))
-                            .await?;
+                        let (stream, cluster_name) =
+                            internal_connector.connect(connection_metadata.clone().map(Arc::new)).await?;
 
                         (stream, cluster_name, None, None)
                     },

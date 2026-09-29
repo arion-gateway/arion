@@ -177,20 +177,14 @@ impl Error {
     }
 
     pub fn upstream(error: impl Into<crate::event_error::UpstreamError>) -> Self {
-        Self::Upstream {
-            context: None,
-            error: Box::new(error.into()),
-        }
+        Self::Upstream { context: None, error: Box::new(error.into()) }
     }
 
     pub fn upstream_with_context(
         context: crate::transport::connector::TcpErrorContext,
         error: impl Into<crate::event_error::UpstreamError>,
     ) -> Self {
-        Self::Upstream {
-            context: Some(context),
-            error: Box::new(error.into()),
-        }
+        Self::Upstream { context: Some(context), error: Box::new(error.into()) }
     }
 
     pub fn find_source<T: StdError + 'static>(&self) -> Option<&T> {
@@ -573,4 +567,3 @@ fn init() {
         .install_default()
         .expect("Could not install crypto provider (aws-lc-rs)");
 }
-

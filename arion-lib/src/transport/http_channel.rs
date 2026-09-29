@@ -273,10 +273,9 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
                 let on_complete = Clone::clone(&body.on_complete);
 
                 let body_timeout = body.inner.timeout;
-                let collected = body
-                    .collect()
-                    .await
-                    .map_err(|e| Error::Downstream(Box::new(crate::event_error::DownstreamError::from_dyn_error(&e))))?;
+                let collected = body.collect().await.map_err(|e| {
+                    Error::Downstream(Box::new(crate::event_error::DownstreamError::from_dyn_error(&e)))
+                })?;
                 let replay_body = http_body_util::Full::new(collected.to_bytes());
 
                 let mut last_error: Option<Error> = None;

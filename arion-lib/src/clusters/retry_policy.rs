@@ -149,3 +149,23 @@ impl<'a, B: Body> RetryCondition<'a, B> {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    #[test]
+    fn retry_on() {
+        assert_eq!("5xx".parse::<RetryOn>().unwrap(), RetryOn::Err5xx);
+        assert_eq!("gateway-error".parse::<RetryOn>().unwrap(), RetryOn::GatewayError);
+        assert_eq!("reset".parse::<RetryOn>().unwrap(), RetryOn::Reset);
+        assert_eq!("connect-failure".parse::<RetryOn>().unwrap(), RetryOn::ConnectFailure);
+        assert_eq!("envoy-ratelimited".parse::<RetryOn>().unwrap(), RetryOn::EnvoyRateLimited);
+        assert_eq!("retriable-4xx".parse::<RetryOn>().unwrap(), RetryOn::Retriable4xx);
+        assert_eq!("refused-stream".parse::<RetryOn>().unwrap(), RetryOn::RefusedStream);
+        assert_eq!("retriable-status-codes".parse::<RetryOn>().unwrap(), RetryOn::RetriableStatusCodes);
+        assert_eq!("retriable-headers".parse::<RetryOn>().unwrap(), RetryOn::RetriableHeaders);
+        "unknown".parse::<RetryOn>().unwrap_err();
+    }
+}

@@ -205,7 +205,10 @@ impl ProxyProtocolReader {
             }
 
             if !end_found {
-                return Err(ProxyProtocolError::InvalidHeader("Invalid V1 header: terminator not found or header too long".to_string()).into());
+                return Err(ProxyProtocolError::InvalidHeader(
+                    "Invalid V1 header: terminator not found or header too long".to_string(),
+                )
+                .into());
             }
             Ok(DetectedHeader::V1)
         } else {
@@ -219,8 +222,11 @@ impl ProxyProtocolReader {
 
             if buffer.get(..V2_PREFIX_LEN) == Some(v2::PROTOCOL_PREFIX) {
                 // Extract length using safe get() and array conversion
-                let b1 = *buffer.get(V2_LENGTH_INDEX).ok_or(ProxyProtocolError::BufferBounds("Invalid V2 length index"))?;
-                let b2 = *buffer.get(V2_LENGTH_INDEX + 1).ok_or(ProxyProtocolError::BufferBounds("Invalid V2 length index + 1"))?;
+                let b1 =
+                    *buffer.get(V2_LENGTH_INDEX).ok_or(ProxyProtocolError::BufferBounds("Invalid V2 length index"))?;
+                let b2 = *buffer
+                    .get(V2_LENGTH_INDEX + 1)
+                    .ok_or(ProxyProtocolError::BufferBounds("Invalid V2 length index + 1"))?;
 
                 let length = u16::from_be_bytes([b1, b2]) as usize;
                 let full_length = V2_MINIMUM_LEN + length;
@@ -229,7 +235,8 @@ impl ProxyProtocolReader {
                     let mut dynamic_buffer = Vec::with_capacity(full_length);
 
                     // Safe extension: get() ensures we only copy what exists
-                    let head = buffer.get(..V2_MINIMUM_LEN).ok_or(ProxyProtocolError::BufferBounds("Buffer truncated"))?;
+                    let head =
+                        buffer.get(..V2_MINIMUM_LEN).ok_or(ProxyProtocolError::BufferBounds("Buffer truncated"))?;
                     dynamic_buffer.extend_from_slice(head);
 
                     // Ensure length is set for read_exact
@@ -287,9 +294,10 @@ impl ProxyProtocolReader {
                     proxy_local_address: local_address,
                 })
             },
-            HeaderResult::V1(Err(error)) => {
-                Err(ProxyProtocolError::InvalidHeader(format!("Detected, but failed to parse proxy protocol V1 header: {error}")).into())
-            },
+            HeaderResult::V1(Err(error)) => Err(ProxyProtocolError::InvalidHeader(format!(
+                "Detected, but failed to parse proxy protocol V1 header: {error}"
+            ))
+            .into()),
             HeaderResult::V2(Ok(header)) => {
                 let (original_peer_address, original_destination_address) = match header.addresses {
                     v2::Addresses::IPv4(ip) => (
@@ -301,7 +309,10 @@ impl ProxyProtocolReader {
                         SocketAddr::new(IpAddr::V6(ip.destination_address), ip.destination_port),
                     ),
                     v2::Addresses::Unix(unix) => {
-                        return Err(ProxyProtocolError::UnsupportedAddress(format!("Unix socket addresses are not supported: {unix:?}")).into());
+                        return Err(ProxyProtocolError::UnsupportedAddress(format!(
+                            "Unix socket addresses are not supported: {unix:?}"
+                        ))
+                        .into());
                     },
                     v2::Addresses::Unspecified => {
                         return Ok(DownstreamConnectionMetadata::FromSocket { peer_address, local_address });
@@ -332,9 +343,10 @@ impl ProxyProtocolReader {
                     proxy_local_address: local_address,
                 })
             },
-            HeaderResult::V2(Err(error)) => {
-                Err(ProxyProtocolError::InvalidHeader(format!("Detected, but failed to parse proxy protocol V2 header: {error}")).into())
-            },
+            HeaderResult::V2(Err(error)) => Err(ProxyProtocolError::InvalidHeader(format!(
+                "Detected, but failed to parse proxy protocol V2 header: {error}"
+            ))
+            .into()),
         }
     }
 }
@@ -391,7 +403,10 @@ impl ProxyProtocolConfigurator {
                 format!("PROXY TCP6 {} {} {} {}\r\n", src.ip(), dst.ip(), src.port(), dst.port())
             },
             _ => {
-                return Err(ProxyProtocolError::UnsupportedAddress("Mixed IPv4/IPv6 addresses not supported in proxy protocol v1".to_string()).into());
+                return Err(ProxyProtocolError::UnsupportedAddress(
+                    "Mixed IPv4/IPv6 addresses not supported in proxy protocol v1".to_string(),
+                )
+                .into());
             },
         };
         Ok(header.into_bytes())
@@ -420,14 +435,16 @@ impl ProxyProtocolConfigurator {
                     };
                     if should_pass_through {
                         let tlv_type: u8 = tlv_type.clone().into();
-                        builder = builder
-                            .write_tlv(tlv_type, value)
-                            .map_err(|e| ProxyProtocolError::BuildHeader(format!("Failed to add pass-through TLV: {e}")))?;
+                        builder = builder.write_tlv(tlv_type, value).map_err(|e| {
+                            ProxyProtocolError::BuildHeader(format!("Failed to add pass-through TLV: {e}"))
+                        })?;
                     }
                 }
             }
         }
-        builder.build().map_err(|e| ProxyProtocolError::BuildHeader(format!("Failed to build proxy protocol v2 header: {e}")).into())
+        builder.build().map_err(|e| {
+            ProxyProtocolError::BuildHeader(format!("Failed to build proxy protocol v2 header: {e}")).into()
+        })
     }
 }
 

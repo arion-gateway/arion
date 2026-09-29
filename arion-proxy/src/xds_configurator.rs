@@ -19,8 +19,8 @@
 //
 
 use abort_on_drop::ChildTask;
-use arion_configuration::config::{bootstrap::Node, cluster::ClusterSpecifier, Listener};
 use anyhow::Result;
+use arion_configuration::config::{bootstrap::Node, cluster::ClusterSpecifier, Listener};
 use arion_lib::{
     access_log::{update_configuration, Target},
     clusters::cluster::ClusterType,
@@ -159,7 +159,8 @@ impl XdsConfigurationHandler {
         let worker_task: ChildTask<_> = tokio::spawn(async move {
             let subscribe = worker.run().await;
             info!("Worker exited {subscribe:?}");
-        }).into();
+        })
+        .into();
 
         Ok(Some((client, StdArc::new(subscription_manager), worker_task)))
     }
@@ -238,9 +239,9 @@ impl XdsConfigurationHandler {
                 let _ = send_change_to_runtimes(&self.route_senders, change).await.ok();
                 match fast_timeout(ROUTE_UPDATE_TIMEOUT, notify.notified()).await {
                     Ok(()) => Ok(()),
-                    Err(_) => {
-                        Err(anyhow::anyhow!("RouteConfiguration '{id}' removal timed-out waiting to be applied by runtime(s)"))
-                    },
+                    Err(_) => Err(anyhow::anyhow!(
+                        "RouteConfiguration '{id}' removal timed-out waiting to be applied by runtime(s)"
+                    )),
                 }
             },
             arion_xds::xds::model::TypeUrl::Secret => {
@@ -299,9 +300,9 @@ impl XdsConfigurationHandler {
                 let _ = send_change_to_runtimes(&self.route_senders, change).await.ok();
                 match fast_timeout(ROUTE_UPDATE_TIMEOUT, notify.notified()).await {
                     Ok(()) => Ok(()),
-                    Err(_) => {
-                        Err(anyhow::anyhow!("RouteConfiguration '{id}' update timedout waiting to be applied by runtime(s)"))
-                    },
+                    Err(_) => Err(anyhow::anyhow!(
+                        "RouteConfiguration '{id}' update timedout waiting to be applied by runtime(s)"
+                    )),
                 }
             },
             XdsResourcePayload::Endpoints(id, cla) => {

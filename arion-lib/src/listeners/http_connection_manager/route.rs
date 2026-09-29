@@ -138,9 +138,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
                 let mut upstream_request: Request<ArionRequestBody> = {
                     let (mut parts, body) = request.into_parts();
                     let path_and_query_replacement = if let Some(rewrite) = &self.rewrite {
-                        rewrite
-                            .apply(parts.uri.path_and_query(), route_match)
-                            .map_err(crate::Error::from)?
+                        rewrite.apply(parts.uri.path_and_query(), route_match).map_err(crate::Error::from)?
                     } else {
                         None
                     };
