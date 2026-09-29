@@ -258,16 +258,9 @@ impl SecretManager {
         };
         Ok(secret)
     }
-    pub fn remove(&mut self, secret_id: &str, secret_type: &Type) -> Result<()> {
-        match secret_type {
-            Type::TlsCertificate(_) => {
-                let _ = self.certificate_secrets.remove(secret_id);
-            },
-            Type::ValidationContext(_) => {
-                let _ = self.validation_contexts.remove(secret_id);
-            },
-        }
-        Ok(())
+    pub fn remove(&mut self, secret_id: &str) {
+        let _ = self.certificate_secrets.remove(secret_id);
+        let _ = self.validation_contexts.remove(secret_id);
     }
 
     pub fn get_certificate(&self, secret_id: &str) -> Result<Option<TransportSecret>> {
