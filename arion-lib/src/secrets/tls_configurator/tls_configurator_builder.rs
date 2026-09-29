@@ -276,14 +276,12 @@ impl TlsContextBuilder<WantsToBuildServer> {
             },
             (true, Some(certificate_store)) => Some(
                 WebPkiClientVerifier::builder(StdArc::clone(certificate_store))
-                    .build()
-                    .map_err(|e| crate::Error::with_source("Failed to build client certificate verifier", e))?,
+                    .build()?,
             ),
             (false, Some(certificate_store)) => Some(
                 WebPkiClientVerifier::builder(StdArc::clone(certificate_store))
                     .allow_unauthenticated()
-                    .build()
-                    .map_err(|e| crate::Error::with_source("Failed to build client certificate verifier", e))?,
+                    .build()?,
             ),
             (false, None) => None,
         };
@@ -405,8 +403,7 @@ impl TlsContextBuilder<WantsToBuildClient> {
         let builder = match self.state.trust_chain_verification {
             TrustChainVerification::VerifyTrustChain => {
                 let verifier = WebPkiServerVerifier::builder(StdArc::clone(&self.state.certificate_store))
-                    .build()
-                    .map_err(|e| crate::Error::with_source("Failed to build server certificate verifier", e))?;
+                    .build()?;
                 builder.with_webpki_verifier(verifier)
             },
             TrustChainVerification::AcceptUntrusted => {

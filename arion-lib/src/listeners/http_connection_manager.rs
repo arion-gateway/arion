@@ -110,7 +110,7 @@ use crate::{
         response_flags::{BodyKind, ResponseFlags},
         timeout_body::TimeoutBody,
     },
-    event_error::{EventFailure, EventKind},
+    event_error::{EventFailure, EventKind, UpstreamError},
     get_shard_id,
     listeners::{
         http_connection_manager::http_modifiers::ModifiersExtractor,
@@ -1528,8 +1528,9 @@ impl TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
         let response = if let Err(err) = response {
             error!("Error during handling HTTP transaction: {}", err);
             let msg = err.to_string();
+            let event_error = err.as_upstream_error().cloned().unwrap_or_else(|| UpstreamError::Other(msg.clone()));
             let response = SyntheticHttpResponse::internal_server_error(
-                EventKind::Upstream(err.into()),
+                EventKind::Upstream(event_error),
                 ResponseFlags(arion_format::types::ResponseFlags::LOCAL_RESET),
             )
             .with_body(msg)

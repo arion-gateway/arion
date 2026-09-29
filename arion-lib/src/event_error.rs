@@ -14,14 +14,12 @@
 
 use arion_format::types::ResponseFlags as FmtResponseFlags;
 use arion_interner::StringInterner;
-use http::Response;
 use smol_str::SmolStr;
 use std::error::Error as ErrorTrait;
 use std::io;
 use tokio::time::error::Elapsed;
 
-use crate::Error as BoxError;
-use crate::{body::response_flags::ResponseFlags, clusters::retry_policy::RetryCondition};
+use crate::body::response_flags::ResponseFlags;
 
 #[derive(Debug, thiserror::Error)]
 pub enum UpstreamError {
@@ -33,7 +31,7 @@ pub enum UpstreamError {
     ),
     #[error("ConnectTimeout")]
     ConnectTimeout(#[from] Elapsed),
-    #[error("PerTryTimeout)")]
+    #[error("PerTryTimeout")]
     PerTryTimeout,
     #[error("RouteTimeout")]
     RouteTimeout,
@@ -44,8 +42,10 @@ pub enum UpstreamError {
     #[allow(unused)]
     #[error("Http3PostConnectFailure")]
     Http3PostConnectFailure,
-    #[error("BoxError: {0}")]
-    BoxError(#[from] BoxError),
+    #[error("Protocol error: {0}")]
+    Protocol(String),
+    #[error("Other upstream error: {0}")]
+    Other(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -58,6 +58,12 @@ pub enum DownstreamError {
     ),
     #[error("Reset")]
     Reset,
+    #[error("Protocol error: {0}")]
+    Protocol(String),
+    #[error("Timeout")]
+    Timeout,
+    #[error("Other downstream error: {0}")]
+    Other(String),
 }
 
 #[derive(Debug, Clone)]
@@ -124,11 +130,15 @@ impl EventKind {
                 UpstreamError::Reset => Some(ResponseCodeDetails("upstream_reset_after_response_started{TCP_RESET}")),
                 UpstreamError::RefusedStream => Some(ResponseCodeDetails("http2.remote_refuse")),
                 UpstreamError::Http3PostConnectFailure => Some(ResponseCodeDetails("http3.remote_reset")),
-                UpstreamError::BoxError(_) => Some(ResponseCodeDetails("internal_error")),
+                UpstreamError::Protocol(_) => Some(ResponseCodeDetails("upstream_protocol_error")),
+                UpstreamError::Other(_) => Some(ResponseCodeDetails("internal_error")),
             },
             EventKind::Downstream(err) => match err {
                 DownstreamError::Io(err) => Some(ResponseCodeDetails::from(err)),
                 DownstreamError::Reset => Some(ResponseCodeDetails("downstream_connection_reset")),
+                DownstreamError::Protocol(_) => Some(ResponseCodeDetails("downstream_protocol_error")),
+                DownstreamError::Timeout => Some(ResponseCodeDetails("downstream_request_timeout")),
+                DownstreamError::Other(_) => Some(ResponseCodeDetails("downstream_internal_error")),
             },
             EventKind::Failure(fail) => match fail {
                 EventFailure::AdminFilterResponse => Some(ResponseCodeDetails("admin_filter_response")),
@@ -158,6 +168,9 @@ impl EventKind {
             EventKind::Downstream(err) => match err {
                 DownstreamError::Io(err) => Some(ConnectionTerminationDetails::from(err)),
                 DownstreamError::Reset => Some(ConnectionTerminationDetails("downstream_connection_reset")),
+                DownstreamError::Protocol(_) => Some(ConnectionTerminationDetails("downstream_protocol_error")),
+                DownstreamError::Timeout => Some(ConnectionTerminationDetails("downstream_timeout")),
+                DownstreamError::Other(_) => Some(ConnectionTerminationDetails("downstream_error")),
             },
             EventKind::Upstream(_) | EventKind::Failure(_) => None,
         }
@@ -257,8 +270,9 @@ impl TryFrom<&UpstreamError> for UpstreamTransportEventError {
             // HTTP/3 specific post-connect failure
             UpstreamError::Http3PostConnectFailure => Ok(UpstreamTransportEventError("http3_post_connect_failure")),
 
-            // Generic or non-transport errors fall through as Err
-            UpstreamError::BoxError(_) => Err(()),
+            UpstreamError::Protocol(_) => Ok(UpstreamTransportEventError("upstream_protocol_error")),
+
+            UpstreamError::Other(_) => Err(()),
         }
     }
 }
@@ -285,7 +299,8 @@ impl Clone for UpstreamError {
             UpstreamError::Reset => UpstreamError::Reset,
             UpstreamError::RefusedStream => UpstreamError::RefusedStream,
             UpstreamError::Http3PostConnectFailure => UpstreamError::Http3PostConnectFailure,
-            UpstreamError::BoxError(err) => UpstreamError::BoxError(BoxError::new(err.to_string())),
+            UpstreamError::Protocol(msg) => UpstreamError::Protocol(msg.clone()),
+            UpstreamError::Other(msg) => UpstreamError::Other(msg.clone()),
         }
     }
 }
@@ -298,6 +313,9 @@ impl Clone for DownstreamError {
                 DownstreamError::Io(new_io_err)
             },
             DownstreamError::Reset => DownstreamError::Reset,
+            DownstreamError::Protocol(msg) => DownstreamError::Protocol(msg.clone()),
+            DownstreamError::Timeout => DownstreamError::Timeout,
+            DownstreamError::Other(msg) => DownstreamError::Other(msg.clone()),
         }
     }
 }
@@ -313,7 +331,20 @@ impl From<UpstreamError> for ResponseFlags {
             UpstreamError::Reset | UpstreamError::RefusedStream | UpstreamError::Http3PostConnectFailure => {
                 ResponseFlags(FmtResponseFlags::UPSTREAM_REMOTE_RESET)
             },
-            UpstreamError::BoxError(_) => ResponseFlags(FmtResponseFlags::LOCAL_RESET),
+            UpstreamError::Protocol(_) => ResponseFlags(FmtResponseFlags::UPSTREAM_PROTOCOL_ERROR),
+            UpstreamError::Other(_) => ResponseFlags(FmtResponseFlags::LOCAL_RESET),
+        }
+    }
+}
+
+impl From<DownstreamError> for ResponseFlags {
+    fn from(err: DownstreamError) -> Self {
+        match err {
+            DownstreamError::Io(_) => ResponseFlags(FmtResponseFlags::DOWNSTREAM_CONNECTION_TERMINATION),
+            DownstreamError::Reset => ResponseFlags(FmtResponseFlags::DOWNSTREAM_REMOTE_RESET),
+            DownstreamError::Protocol(_) => ResponseFlags(FmtResponseFlags::DOWNSTREAM_PROTOCOL_ERROR),
+            DownstreamError::Timeout => ResponseFlags(FmtResponseFlags::STREAM_IDLE_TIMEOUT),
+            DownstreamError::Other(_) => ResponseFlags(FmtResponseFlags::LOCAL_RESET),
         }
     }
 }
@@ -323,95 +354,190 @@ pub fn elapsed() -> Elapsed {
     unsafe { std::mem::transmute(()) }
 }
 
-pub trait TryInferFrom<F>: Sized {
-    fn try_infer_from(source: F) -> Option<Self>;
-}
-
-impl<'a, B> TryInferFrom<&'a Result<Response<B>, BoxError>> for RetryCondition<'a, B> {
-    fn try_infer_from(source: &'a Result<Response<B>, BoxError>) -> Option<Self> {
-        match source {
-            Ok(ref resp) => {
-                // NOTE: exclude a priory the evaluation of the retry policy for 1xx, and 2xx.
-                if resp.status().is_informational() || resp.status().is_success() {
-                    return None;
+impl From<&h2::Error> for DownstreamError {
+    fn from(err: &h2::Error) -> Self {
+        if let Some(reason) = err.reason() {
+            match reason {
+                h2::Reason::NO_ERROR | h2::Reason::CANCEL | h2::Reason::REFUSED_STREAM => {
+                    DownstreamError::Reset
                 }
-                Some(RetryCondition::Response(resp))
-            },
-            Err(err) => {
-                let ev = UpstreamError::try_infer_from(err.as_ref())?;
-                Some(RetryCondition::Error(ev))
-            },
+                h2::Reason::PROTOCOL_ERROR
+                | h2::Reason::FRAME_SIZE_ERROR
+                | h2::Reason::FLOW_CONTROL_ERROR
+                | h2::Reason::SETTINGS_TIMEOUT
+                | h2::Reason::COMPRESSION_ERROR => {
+                    DownstreamError::Protocol(format!("h2 protocol error: {reason:?}"))
+                }
+                _ => DownstreamError::Reset,
+            }
+        } else {
+            DownstreamError::Reset
         }
     }
 }
 
-impl<'a> TryInferFrom<&'a (dyn std::error::Error + 'static)> for DownstreamError {
-    fn try_infer_from(source: &'a (dyn std::error::Error + 'static)) -> Option<Self> {
-        if let Some(io_err) = source.downcast_ref::<io::Error>() {
-            return Some(DownstreamError::Io(io::Error::new(io_err.kind(), io_err.to_string())));
+impl From<&hyper::Error> for DownstreamError {
+    fn from(err: &hyper::Error) -> Self {
+        if let Some(h2_err) = find_error_in_chain::<h2::Error>(err) {
+            return DownstreamError::from(h2_err);
         }
-
-        Some(DownstreamError::Reset)
+        if let Some(io_err) = find_error_in_chain::<io::Error>(err) {
+            return DownstreamError::Io(io::Error::new(io_err.kind(), io_err.to_string()));
+        }
+        if err.is_canceled() || err.is_closed() {
+            DownstreamError::Reset
+        } else if err.is_timeout() {
+            DownstreamError::Timeout
+        } else if err.is_parse() || err.is_parse_status() || err.is_parse_too_large() {
+            DownstreamError::Protocol(err.to_string())
+        } else {
+            DownstreamError::Other(err.to_string())
+        }
     }
 }
 
-impl<'a> TryInferFrom<&'a (dyn std::error::Error + 'static)> for UpstreamError {
-    fn try_infer_from(source: &'a (dyn std::error::Error + 'static)) -> Option<Self> {
-        if source.downcast_ref::<Elapsed>().is_some() {
-            // Note: This should never happen, as the user should remap the Tokio timeout
-            // to a suitable EventError (e.g., timeout(dur, fut).await.map_err(|_e| EventError::ConnectTimeout)).
-            // Just in case, the PerTryTimeout error is the closest one we can choose.
-            return Some(UpstreamError::PerTryTimeout);
-        }
+impl From<hyper::Error> for DownstreamError {
+    #[inline]
+    fn from(err: hyper::Error) -> Self {
+        DownstreamError::from(&err)
+    }
+}
 
-        if let Some(failure) = source.downcast_ref::<UpstreamError>() {
-            return Some(failure.clone());
-        }
+impl From<Box<dyn ErrorTrait + Send + Sync>> for DownstreamError {
+    #[inline]
+    fn from(err: Box<dyn ErrorTrait + Send + Sync>) -> Self {
+        DownstreamError::from_dyn_error(err.as_ref())
+    }
+}
 
-        if let Some(h2_reason) = source.downcast_ref::<h2::Error>().and_then(h2::Error::reason) {
-            match h2_reason {
-                h2::Reason::REFUSED_STREAM => return Some(UpstreamError::RefusedStream),
-                h2::Reason::CONNECT_ERROR => {
-                    return Some(UpstreamError::Io(io::Error::new(
-                        io::ErrorKind::ConnectionRefused,
-                        "H2 connection refused",
-                    )));
-                },
-                _ => return Some(UpstreamError::Reset),
+impl DownstreamError {
+    pub fn from_dyn_error(err: &(dyn ErrorTrait + 'static)) -> Self {
+        if let Some(downstream) = find_error_in_chain::<DownstreamError>(err) {
+            return downstream.clone();
+        }
+        if let Some(crate_err) = find_error_in_chain::<crate::Error>(err) {
+            if let Some(downstream) = crate_err.as_downstream_error() {
+                return downstream.clone();
             }
         }
-
-        if let Some(io_err) = source.downcast_ref::<io::Error>() {
-            return Some(UpstreamError::Io(io::Error::new(io_err.kind(), io_err.to_string())));
+        if let Some(h2_err) = find_error_in_chain::<h2::Error>(err) {
+            return DownstreamError::from(h2_err);
         }
-
-        if let Some(source_err) = source.source() {
-            return Self::try_infer_from(source_err);
+        if let Some(hyper_err) = find_error_in_chain::<hyper::Error>(err) {
+            return DownstreamError::from(hyper_err);
         }
+        if let Some(io_err) = find_error_in_chain::<io::Error>(err) {
+            return DownstreamError::Io(io::Error::new(io_err.kind(), io_err.to_string()));
+        }
+        if find_error_in_chain::<Elapsed>(err).is_some() {
+            return DownstreamError::Timeout;
+        }
+        DownstreamError::Other(err.to_string())
+    }
+}
 
-        // the rest of the errors are remapped to Reset
-        Some(UpstreamError::Reset)
+impl From<&h2::Error> for UpstreamError {
+    fn from(err: &h2::Error) -> Self {
+        if let Some(reason) = err.reason() {
+            match reason {
+                h2::Reason::REFUSED_STREAM => UpstreamError::RefusedStream,
+                h2::Reason::CONNECT_ERROR => UpstreamError::Io(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    "H2 connection refused",
+                )),
+                h2::Reason::PROTOCOL_ERROR
+                | h2::Reason::FRAME_SIZE_ERROR
+                | h2::Reason::FLOW_CONTROL_ERROR
+                | h2::Reason::SETTINGS_TIMEOUT
+                | h2::Reason::COMPRESSION_ERROR => {
+                    UpstreamError::Protocol(format!("h2 protocol error: {reason:?}"))
+                }
+                _ => UpstreamError::Reset,
+            }
+        } else {
+            UpstreamError::Reset
+        }
+    }
+}
+
+impl From<&hyper::Error> for UpstreamError {
+    fn from(err: &hyper::Error) -> Self {
+        if let Some(h2_err) = find_error_in_chain::<h2::Error>(err) {
+            return UpstreamError::from(h2_err);
+        }
+        if let Some(io_err) = find_error_in_chain::<io::Error>(err) {
+            return UpstreamError::Io(io::Error::new(io_err.kind(), io_err.to_string()));
+        }
+        if err.is_canceled() || err.is_closed() {
+            UpstreamError::Reset
+        } else if err.is_timeout() {
+            UpstreamError::PerTryTimeout
+        } else if err.is_parse() || err.is_parse_status() || err.is_parse_too_large() {
+            UpstreamError::Protocol(err.to_string())
+        } else {
+            UpstreamError::Other(err.to_string())
+        }
+    }
+}
+
+impl From<hyper::Error> for UpstreamError {
+    #[inline]
+    fn from(err: hyper::Error) -> Self {
+        UpstreamError::from(&err)
+    }
+}
+
+impl From<Box<dyn ErrorTrait + Send + Sync>> for UpstreamError {
+    #[inline]
+    fn from(err: Box<dyn ErrorTrait + Send + Sync>) -> Self {
+        UpstreamError::from_dyn_error(err.as_ref())
+    }
+}
+
+impl UpstreamError {
+    pub fn from_dyn_error(err: &(dyn ErrorTrait + 'static)) -> Self {
+        if let Some(upstream) = find_error_in_chain::<UpstreamError>(err) {
+            return upstream.clone();
+        }
+        if let Some(crate_err) = find_error_in_chain::<crate::Error>(err) {
+            if let Some(upstream) = crate_err.as_upstream_error() {
+                return upstream.clone();
+            }
+        }
+        if find_error_in_chain::<Elapsed>(err).is_some() {
+            return UpstreamError::PerTryTimeout;
+        }
+        if let Some(h2_err) = find_error_in_chain::<h2::Error>(err) {
+            return UpstreamError::from(h2_err);
+        }
+        if let Some(hyper_err) = find_error_in_chain::<hyper::Error>(err) {
+            return UpstreamError::from(hyper_err);
+        }
+        if let Some(io_err) = find_error_in_chain::<io::Error>(err) {
+            return UpstreamError::Io(io::Error::new(io_err.kind(), io_err.to_string()));
+        }
+        UpstreamError::Other(err.to_string())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::connector::{ConnectError, TcpErrorContext};
+    use crate::transport::connector::TcpErrorContext;
+    use crate::Error as BoxError;
 
     #[test]
     fn test_error_chain_debug() {
         let io_err = io::Error::new(io::ErrorKind::ConnectionRefused, "Connection refused");
         let upstream_err = UpstreamError::Io(io_err);
-        let connect_err = ConnectError::Event(upstream_err);
-        let err = BoxError::UpstreamConnection {
-            context: TcpErrorContext {
+        let err = BoxError::upstream_with_context(
+            TcpErrorContext {
                 upstream_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 8080)),
                 response_flags: arion_format::types::ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
                 cluster_name: "test_cluster",
             },
-            source: Box::new(connect_err),
-        };
+            upstream_err,
+        );
 
         println!("DEBUG TEST: err = {err:?}");
         println!("DEBUG TEST: err display = {err}");
@@ -431,23 +557,35 @@ mod tests {
 
     #[test]
     fn test_error_classification_through_wrappers() {
-        // `try_infer_from` must see through `Boxed`/`WithSource` layers:
-        // this is what timeout metrics and MCP timeout detection rely on.
-        let err = BoxError::from(UpstreamError::RouteTimeout);
-        let inferred = UpstreamError::try_infer_from(err.as_ref());
-        assert!(matches!(inferred, Some(UpstreamError::RouteTimeout)), "boxed: got {inferred:?}");
+        let err = BoxError::upstream(UpstreamError::RouteTimeout);
+        let upstream = err.as_upstream_error();
+        assert!(matches!(upstream, Some(UpstreamError::RouteTimeout)), "boxed: got {upstream:?}");
 
-        let err = BoxError::with_source(
-            "TCP connection failed",
-            BoxError::from(UpstreamError::ConnectTimeout(elapsed())),
+        let err = BoxError::upstream_with_context(
+            TcpErrorContext {
+                cluster_name: "test_cluster",
+                upstream_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 8080)),
+                response_flags: arion_format::types::ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
+            },
+            UpstreamError::ConnectTimeout(elapsed()),
         );
-        let inferred = UpstreamError::try_infer_from(err.as_ref());
-        assert!(
-            matches!(inferred, Some(UpstreamError::ConnectTimeout(_))),
-            "wrapped: got {inferred:?}"
-        );
+        let upstream = err.as_upstream_error();
+        assert!(matches!(upstream, Some(UpstreamError::ConnectTimeout(_))), "wrapped: got {upstream:?}");
 
         let err = BoxError::from(io::Error::new(io::ErrorKind::ConnectionRefused, "nope"));
         assert!(err.find_source::<io::Error>().is_some(), "io::Error not found through Io variant");
+    }
+
+    #[test]
+    fn test_downstream_h2_error_mapping() {
+        // Test that h2 error reason CANCEL maps to Reset
+        let h2_err = h2::Error::from(h2::Reason::CANCEL);
+        let downstream = DownstreamError::from(&h2_err);
+        assert!(matches!(downstream, DownstreamError::Reset));
+
+        // Test that h2 error reason PROTOCOL_ERROR maps to Protocol
+        let h2_err = h2::Error::from(h2::Reason::PROTOCOL_ERROR);
+        let downstream = DownstreamError::from(&h2_err);
+        assert!(matches!(downstream, DownstreamError::Protocol(_)));
     }
 }

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{error::Error, net::SocketAddr};
+use std::{net::SocketAddr};
 
 use arion_configuration::config::{
     cluster::ClusterSpecifier, network_filters::http_connection_manager::route::HashPolicy,
@@ -87,7 +87,7 @@ pub enum AcquireHttpUpstreamError {
     #[error("failed to build routing context for cluster '{cluster_id}': {source}")]
     RoutingContext { cluster_id: &'static str, source: RoutingContextError },
     #[error("failed to acquire an HTTP connection for cluster '{cluster_id}': {source}")]
-    Connection { cluster_id: &'static str, source: Box<dyn Error + Send + Sync> },
+    Connection { cluster_id: &'static str, source: crate::Error },
 }
 
 impl AcquireHttpUpstreamError {
@@ -137,7 +137,7 @@ pub fn acquire_http_upstream(
     let routing_context = RoutingContext::try_from((&routing_requirement, request, hash_state))
         .map_err(|source| AcquireHttpUpstreamError::RoutingContext { cluster_id, source })?;
     let channels = clusters_manager::get_http_connection(cluster_id, routing_context)
-        .map_err(|source| AcquireHttpUpstreamError::Connection { cluster_id, source: Box::new(source) })?;
+        .map_err(|source| AcquireHttpUpstreamError::Connection { cluster_id, source })?;
 
     Ok(AcquiredHttpUpstream { channels, cluster_id, _permit: permit })
 }

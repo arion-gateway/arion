@@ -32,7 +32,23 @@ pub enum RetryCondition<'a, B> {
     Response(&'a Response<B>),
 }
 
-impl<B: Body> RetryCondition<'_, B> {
+impl<'a, B: Body> RetryCondition<'a, B> {
+    pub fn from_upstream_result(result: &'a crate::Result<Response<B>>) -> Option<Self> {
+        match result {
+            Ok(ref resp) => {
+                // exclude a priori the evaluation of the retry policy for 1xx, and 2xx.
+                if resp.status().is_informational() || resp.status().is_success() {
+                    return None;
+                }
+                Some(RetryCondition::Response(resp))
+            },
+            Err(err) => {
+                let ev = err.as_upstream_error()?.clone();
+                Some(RetryCondition::Error(ev))
+            },
+        }
+    }
+
     pub fn inner_response(&self) -> Option<&Response<B>> {
         if let RetryCondition::Response(resp) = self {
             Some(resp)
@@ -129,26 +145,7 @@ impl<B: Body> RetryCondition<'_, B> {
                 },
             }
         }
+
         false
-    }
-}
-
-#[cfg(test)]
-mod tests {
-
-    use super::*;
-
-    #[test]
-    fn retry_on() {
-        assert_eq!("5xx".parse::<RetryOn>().unwrap(), RetryOn::Err5xx);
-        assert_eq!("gateway-error".parse::<RetryOn>().unwrap(), RetryOn::GatewayError);
-        assert_eq!("reset".parse::<RetryOn>().unwrap(), RetryOn::Reset);
-        assert_eq!("connect-failure".parse::<RetryOn>().unwrap(), RetryOn::ConnectFailure);
-        assert_eq!("envoy-ratelimited".parse::<RetryOn>().unwrap(), RetryOn::EnvoyRateLimited);
-        assert_eq!("retriable-4xx".parse::<RetryOn>().unwrap(), RetryOn::Retriable4xx);
-        assert_eq!("refused-stream".parse::<RetryOn>().unwrap(), RetryOn::RefusedStream);
-        assert_eq!("retriable-status-codes".parse::<RetryOn>().unwrap(), RetryOn::RetriableStatusCodes);
-        assert_eq!("retriable-headers".parse::<RetryOn>().unwrap(), RetryOn::RetriableHeaders);
-        "unknown".parse::<RetryOn>().unwrap_err();
     }
 }

@@ -22,6 +22,7 @@ use crate::{
         poly_body::PolyBody,
         timeout_body::TimeoutBody,
     },
+    event_error::UpstreamError,
     thread_local::{LocalBuilder, ThreadLocalObject},
     ArionRequestBody, ArionResponseBody, Error, Result,
 };
@@ -242,7 +243,7 @@ impl std::fmt::Debug for Http1Pool {
 impl Http1Pool {
     pub async fn send(&self, req: Request<ArionRequestBody>) -> Result<Response<ArionResponseBody>> {
         let mut tx = self.checkout().await?;
-        let response = tx.send_request(req).await.map_err(Error::from)?;
+        let response = tx.send_request(req).await.map_err(UpstreamError::from)?;
         Ok(attach_permit(&self.inner, tx, response))
     }
 
@@ -279,7 +280,18 @@ impl Http1Pool {
             },
             Http1Connect::Tls(connector) => {
                 let mut connector = connector.clone();
-                let io = connector.call(self.dst.clone()).await.map_err(Error::from)?;
+                let io = connector.call(self.dst.clone()).await.map_err(|e| {
+                    match e.downcast::<crate::Error>() {
+                        Ok(err) => *err,
+                        Err(e) => match e.downcast::<std::io::Error>() {
+                            Ok(io_err) => Error::upstream(UpstreamError::Io(*io_err)),
+                            Err(e) => match e.downcast::<rustls::Error>() {
+                                Ok(tls_err) => Error::Tls(crate::TlsError::Rustls(*tls_err)),
+                                Err(other) => Error::Tls(crate::TlsError::Certificate(other.to_string())),
+                            },
+                        },
+                    }
+                })?;
                 handshake(io).await
             },
         }
@@ -313,13 +325,13 @@ async fn handshake<T>(io: T) -> Result<SendRequest<ArionRequestBody>>
 where
     T: Read + Write + Unpin + Send + 'static,
 {
-    let (mut sender, conn) = Http1Builder::new().writev(false).handshake(io).await.map_err(Error::from)?;
+    let (mut sender, conn) = Http1Builder::new().writev(false).handshake(io).await.map_err(|e| Error::upstream(UpstreamError::from(e)))?;
     tokio::spawn(async move {
         if let Err(err) = conn.with_upgrades().await {
             debug!("upstream http1 connection closed: {err}");
         }
     });
-    sender.ready().await.map_err(Error::from)?;
+    sender.ready().await.map_err(|e| Error::upstream(UpstreamError::from(e)))?;
     Ok(sender)
 }
 

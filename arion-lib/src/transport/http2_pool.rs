@@ -23,6 +23,7 @@ use crate::{
         poly_body::PolyBody,
         timeout_body::TimeoutBody,
     },
+    event_error::UpstreamError,
     thread_local::{LocalBuilder, ThreadLocalObject},
     ArionRequestBody, ArionResponseBody, Error, Result,
 };
@@ -250,7 +251,7 @@ impl Http2Pool {
             Ok(response) => Ok(attach_stream_permit(in_flight, response)),
             Err(err) => {
                 in_flight.fetch_sub(1, Ordering::Relaxed);
-                Err(Error::from(err))
+                Err(Error::from(UpstreamError::from(err)))
             },
         }
     }
@@ -274,7 +275,18 @@ impl Http2Pool {
             },
             Http2Connect::Tls(connector) => {
                 let mut connector = connector.clone();
-                let io = connector.call(self.dst.clone()).await.map_err(Error::from)?;
+                let io = connector.call(self.dst.clone()).await.map_err(|e| {
+                    match e.downcast::<crate::Error>() {
+                        Ok(err) => *err,
+                        Err(e) => match e.downcast::<std::io::Error>() {
+                            Ok(io_err) => Error::upstream(UpstreamError::Io(*io_err)),
+                            Err(e) => match e.downcast::<rustls::Error>() {
+                                Ok(tls_err) => Error::Tls(crate::TlsError::Rustls(*tls_err)),
+                                Err(other) => Error::Tls(crate::TlsError::Certificate(other.to_string())),
+                            },
+                        },
+                    }
+                })?;
                 handshake(io, &self.http2_options).await
             },
         }
@@ -326,13 +338,16 @@ where
         }
     }
 
-    let (mut sender, conn) = builder.handshake(io).await.map_err(Error::from)?;
+    let (mut sender, conn) = builder
+        .handshake(io)
+        .await
+        .map_err(|e| Error::upstream(UpstreamError::from(e)))?;
     tokio::spawn(async move {
         if let Err(err) = conn.await {
             debug!("upstream http2 connection closed: {err}");
         }
     });
-    sender.ready().await.map_err(Error::from)?;
+    sender.ready().await.map_err(|e| Error::upstream(UpstreamError::from(e)))?;
     Ok(sender)
 }
 

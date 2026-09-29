@@ -24,7 +24,7 @@ use crate::{
     clusters::{
         decrement_retries, retry_policy::RetryCondition, try_increment_retries, CircuitBreakerDenial, RoutingPriority,
     },
-    event_error::{EventKind, TryInferFrom, UpstreamError},
+    event_error::{EventKind, UpstreamError},
     instrument_block, instrument_function,
     listeners::{
         http_connection_manager::{http_modifiers::strip_trailers_headers, RequestCtx, RequestHandler},
@@ -273,8 +273,10 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
                 let on_complete = Clone::clone(&body.on_complete);
 
                 let body_timeout = body.inner.timeout;
-                let collected =
-                    body.collect().await.map_err(|e| Error::with_source("Failed to collect request body", e))?;
+                let collected = body
+                    .collect()
+                    .await
+                    .map_err(|e| Error::Downstream(Box::new(crate::event_error::DownstreamError::from_dyn_error(&e))))?;
                 let replay_body = http_body_util::Full::new(collected.to_bytes());
 
                 let mut last_error: Option<Error> = None;
@@ -431,7 +433,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
         }
 
         if let Err(ref err) = result {
-            if let Some(UpstreamError::RouteTimeout) = UpstreamError::try_infer_from(err.as_ref()) {
+            if let Some(UpstreamError::RouteTimeout) = err.as_upstream_error() {
                 with_metric!(
                     clusters::UPSTREAM_RQ_TIMEOUT,
                     add,
@@ -616,7 +618,10 @@ impl HttpChannel {
         let collected_bytes = if http_body::Body::size_hint(&body).exact() == Some(0) {
             bytes::Bytes::new()
         } else {
-            body.collect().await.map_err(|e| Error::with_source("Failed to collect request body", e))?.to_bytes()
+            body.collect()
+                .await
+                .map_err(|e| Error::Downstream(Box::new(crate::event_error::DownstreamError::from_dyn_error(&e))))?
+                .to_bytes()
         };
 
         let body = http_body_util::Full::new(collected_bytes);
@@ -655,7 +660,7 @@ impl HttpChannel {
             };
 
             // generate a possible retry condition...
-            let Some((is_per_try_timeout, should_retry)) = RetryCondition::try_infer_from(&result)
+            let Some((is_per_try_timeout, should_retry)) = RetryCondition::from_upstream_result(&result)
                 .map(|condition| (condition.is_per_try_timeout(), condition.should_retry(retry_policy)))
             else {
                 return result;
@@ -740,7 +745,7 @@ impl HttpChannel {
                 Ok(Response::from_parts(parts, body))
             },
             (Err(err), dur) => {
-                if let Some(event_error) = UpstreamError::try_infer_from(err.as_ref()) {
+                if let Some(event_error) = err.as_upstream_error().cloned() {
                     let response_flags: ResponseFlags = event_error.clone().into();
                     debug!(
                         "Event ({event_error}) occurred after {:?}: {} ({})",
@@ -761,16 +766,13 @@ impl HttpChannel {
                             Ok(SyntheticHttpResponse::gateway_timeout(EventKind::Upstream(event_error), response_flags)
                                 .into_response(version))
                         },
-                        UpstreamError::Reset | UpstreamError::Http3PostConnectFailure => {
+                        UpstreamError::Reset
+                        | UpstreamError::Http3PostConnectFailure
+                        | UpstreamError::Protocol(_)
+                        | UpstreamError::Other(_) => {
                             Ok(SyntheticHttpResponse::bad_gateway(EventKind::Upstream(event_error), response_flags)
                                 .into_response(version))
                         },
-                        UpstreamError::BoxError(_) => Ok(SyntheticHttpResponse::internal_server_error(
-                            EventKind::Upstream(event_error),
-                            response_flags,
-                        )
-                        .with_body("internal server error")
-                        .into_response(version)),
                     }
                 } else {
                     debug!("Route: error occurred after {:?}: {err}", pretty_duration(&dur, None));

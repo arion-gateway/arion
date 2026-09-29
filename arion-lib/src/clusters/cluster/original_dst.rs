@@ -253,10 +253,8 @@ impl OriginalDstCluster {
             Some(port_override) => {
                 let host = authority.host();
                 let upd_auth = format!("{host}:{port_override}").parse::<Authority>().map_err(|e| {
-                    crate::Error::with_source(
-                        format!("Failed to apply port override {port_override} for cluster {}", self.global.name),
-                        e,
-                    )
+                    tracing::error!(cluster = self.global.name, port_override, %e, "Failed to apply port override");
+                    crate::Error::from(e)
                 })?;
 
                 Ok(Cow::Owned(upd_auth))

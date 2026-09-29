@@ -45,7 +45,7 @@ use crate::{
         http_upstream::{acquire_http_upstream, AcquireHttpUpstreamError, AcquireHttpUpstreamErrorKind},
         RoutingPriority,
     },
-    event_error::{TryInferFrom, UpstreamError},
+    event_error::UpstreamError,
     listeners::http_connection_manager::{http_modifiers, RequestCtx, RequestHandler},
     ArionRequestBody, ArionResponseBody, UpstreamCallOpts,
 };
@@ -242,7 +242,7 @@ async fn dispatch_rest_tool(
             response_to_outcome(tool, response, upstream_limits.max_response_bytes).await
         },
         Err(error) => {
-            let inferred = UpstreamError::try_infer_from(error.as_ref());
+            let inferred = error.as_upstream_error();
             if matches!(inferred, Some(UpstreamError::RouteTimeout | UpstreamError::PerTryTimeout)) {
                 ToolInvocationOutcome::Failure(ToolInvocationFailure::upstream_timeout())
             } else {

@@ -105,7 +105,8 @@ impl TryFrom<&TlsCertificate> for CertificateSecret {
         let mut key_reader = certificate.private_key().into_buf_read()?;
         let key = pkcs8_private_keys(&mut key_reader)
             .map(|f| f.map_err(|e| format!("Can't parse private key: {e}")))
-            .verify_single()??;
+            .verify_single()
+            .map_err(|e| crate::TlsError::Certificate(e.to_string()))??;
 
         let certificates = certs(&mut cert_reader)
             .map(|f| f.map_err(|e| format!("Can't parse certificate {e:?}").into()))

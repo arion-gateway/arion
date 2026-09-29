@@ -18,7 +18,7 @@
 //
 //
 use super::{http_modifiers, upgrades as upgrade_utils, RequestCtx, RequestHandler};
-use crate::event_error::{EventFailure, EventKind, TryInferFrom, UpstreamError};
+use crate::event_error::{EventFailure, EventKind};
 use crate::{
     body::response_flags::ResponseFlags,
     clusters::http_upstream::{acquire_http_upstream, AcquireHttpUpstreamError},
@@ -140,7 +140,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
                     let path_and_query_replacement = if let Some(rewrite) = &self.rewrite {
                         rewrite
                             .apply(parts.uri.path_and_query(), route_match)
-                            .map_err(|e| crate::Error::with_source("invalid path after rewrite", e))?
+                            .map_err(crate::Error::from)?
                     } else {
                         None
                     };
@@ -151,8 +151,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
                             new_parts.scheme = scheme;
                             new_parts.authority = authority;
                             new_parts.path_and_query = path_and_query_replacement;
-                            Uri::from_parts(new_parts)
-                                .map_err(|e| crate::Error::with_source("failed to replace request path_and_query", e))?
+                            Uri::from_parts(new_parts).map_err(crate::Error::from)?
                         }
                     }
                     parts.version = svc_channel.http_version().into();
@@ -258,7 +257,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
                 drop(acquired);
                 match resp {
                     Err(err) => {
-                        let event_error = UpstreamError::try_infer_from(err.as_ref());
+                        let event_error = err.as_upstream_error().cloned();
                         let flags = event_error.clone().map(ResponseFlags::from).unwrap_or_default();
                         let event_kind = event_error.map_or(EventFailure::ViaUpstream.into(), EventKind::Upstream);
                         debug!(
@@ -292,7 +291,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
             Err(AcquireHttpUpstreamError::RoutingContext { source, .. }) => Err(source.into()),
             // http connection not available from cluster...
             Err(AcquireHttpUpstreamError::Connection { source, .. }) => {
-                let event_error = UpstreamError::try_infer_from(source.as_ref());
+                let event_error = source.as_upstream_error().cloned();
                 let flags = event_error.clone().map(ResponseFlags::from).unwrap_or_default();
                 let event_kind = event_error.map_or(EventFailure::ViaUpstream.into(), EventKind::Upstream);
                 debug!(

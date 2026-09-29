@@ -31,7 +31,7 @@ mod metrics_enabled {
     #[allow(clippy::wildcard_imports)]
     use super::*;
     use crate::{
-        event_error::{DownstreamError, EventKind, TryInferFrom, UpstreamError},
+        event_error::{DownstreamError, EventKind, UpstreamError},
         utils::StreamMetrics,
     };
     use bytes::Buf;
@@ -42,7 +42,7 @@ mod metrics_enabled {
     /// Trait that enables call-once semantics through `Arc` without an extra `Box` layer.
     ///
     /// Implementors store the real closure in an `Option` and `take()` it on call,
-    /// so the closure is invoked exactly once even though the method takes `&mut self`.
+    /// so the closure is invoked exactly once even though the method takes `&mut self` .
     /// This eliminates the previous `Arc<Box<dyn FnOnce(...)>>` double indirection,
     /// saving one heap allocation per `InstrumentedBody` construction.
     pub(crate) trait MetricsCallbackFn: Send + Sync + 'static {
@@ -182,8 +182,8 @@ mod metrics_enabled {
                         if let Some(closure) = StdArc::get_mut(&mut arc_closure) {
                             if let Some(metrics) = this.stream_metrics.as_ref() {
                                 let event_error: Option<EventKind> = match *this.body_kind {
-                                    BodyKind::Request => DownstreamError::try_infer_from(err).map(Into::into),
-                                    BodyKind::Response => UpstreamError::try_infer_from(err).map(Into::into),
+                                    BodyKind::Request => Some(DownstreamError::from_dyn_error(err).into()),
+                                    BodyKind::Response => Some(UpstreamError::from_dyn_error(err).into()),
                                 };
 
                                 let flags = ResponseFlags::from((err, *this.body_kind));
