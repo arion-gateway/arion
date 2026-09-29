@@ -723,7 +723,7 @@ impl HttpChannel {
         match last_result {
             Some(result) => result,
             None => {
-                Err(io::Error::new(io::ErrorKind::InvalidData, "retry loop completed without producing a result")
+                Err(UpstreamError::Io(io::Error::new(io::ErrorKind::InvalidData, "retry loop completed without producing a result"))
                     .into())
             },
         }

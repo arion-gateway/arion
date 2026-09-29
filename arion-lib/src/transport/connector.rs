@@ -297,10 +297,10 @@ impl InternalConnector {
         debug!("Connecting to internal listener '{}' from cluster '{}'", self.listener_name, self.cluster_name);
 
         let sender = internal_registry::get_connection_sender_for_listener(self.listener_name).ok_or_else(|| {
-            crate::Error::from(io::Error::new(
+            crate::Error::from(UpstreamError::Io(io::Error::new(
                 io::ErrorKind::ConnectionRefused,
                 format!("Internal listener '{}' not found or not ready", self.listener_name),
-            ))
+            )))
         })?;
         let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
         let downstream_metadata = downstream_metadata.unwrap_or_else(|| {
@@ -315,10 +315,10 @@ impl InternalConnector {
             start_instant: Instant::now(),
         };
         if let Err(e) = sender.send(internal_conn).await {
-            return Err(crate::Error::from(io::Error::new(
+            return Err(crate::Error::from(UpstreamError::Io(io::Error::new(
                 io::ErrorKind::ConnectionRefused,
                 format!("Failed to send connection to internal listener '{}': {}", self.listener_name, e),
-            )));
+            ))));
         }
         debug!("Successfully connected to internal listener '{}'", self.listener_name);
 
@@ -383,10 +383,10 @@ impl Service<Uri> for UnifiedConnector {
                     crate::clusters::try_increment_connections(cluster_name, crate::clusters::RoutingPriority::Default)
                 {
                     return Box::pin(async move {
-                        Err(crate::Error::from(io::Error::new(
+                        Err(crate::Error::from(UpstreamError::Io(io::Error::new(
                             io::ErrorKind::ConnectionRefused,
                             format!("Circuit breaker max_connections exceeded for cluster {cluster_name}"),
-                        )))
+                        ))))
                     });
                 }
 
