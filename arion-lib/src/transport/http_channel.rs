@@ -767,11 +767,16 @@ impl HttpChannel {
                         },
                         UpstreamError::Reset
                         | UpstreamError::Http3PostConnectFailure
-                        | UpstreamError::Protocol(_)
-                        | UpstreamError::Other(_) => {
+                        | UpstreamError::Protocol(_) => {
                             Ok(SyntheticHttpResponse::bad_gateway(EventKind::Upstream(event_error), response_flags)
                                 .into_response(version))
                         },
+                        UpstreamError::Other(_) => Ok(SyntheticHttpResponse::internal_server_error(
+                            EventKind::Upstream(event_error),
+                            response_flags,
+                        )
+                        .with_body("internal server error")
+                        .into_response(version)),
                     }
                 } else {
                     debug!("Route: error occurred after {:?}: {err}", pretty_duration(&dur, None));
