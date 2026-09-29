@@ -46,18 +46,18 @@ impl UpstreamTransportSocketConfigurator {
         }
     }
 
-    pub fn update_secret(&mut self, secret_id: &str, secret: &TransportSecret) -> Result<()> {
+    pub fn update_secret(&mut self, secret_id: &str, secret: &TransportSecret) -> Result<bool> {
         match self {
-            UpstreamTransportSocketConfigurator::Tls(tls_conf) => {
+            UpstreamTransportSocketConfigurator::Tls(tls_conf) if tls_conf.uses_secret(secret_id) => {
                 let updated_tls =
                     TlsConfigurator::<ClientConfig, WantsToBuildClient>::update(tls_conf.clone(), secret_id, secret)?;
                 *tls_conf = updated_tls;
-                Ok(())
+                Ok(true)
             },
             UpstreamTransportSocketConfigurator::ProxyProtocol(proxy_conf) => {
                 proxy_conf.update_secret(secret_id, secret)
             },
-            UpstreamTransportSocketConfigurator::None => Ok(()),
+            _ => Ok(false),
         }
     }
 }

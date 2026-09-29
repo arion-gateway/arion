@@ -168,7 +168,7 @@ pub trait ClusterOps {
     fn all_http_channels(&mut self) -> Vec<(Authority, HttpChannel)>;
     fn all_tcp_channels(&mut self) -> Vec<(Authority, TcpChannelConnector)>;
     fn all_grpc_channels(&mut self) -> Vec<Result<(Authority, GrpcService)>>;
-    fn change_tls_context(&mut self, secret_id: &str, secret: TransportSecret) -> Result<()>;
+    fn change_tls_context(&mut self, secret_id: &str, secret: TransportSecret) -> Result<bool>;
     fn update_health(&mut self, endpoint: &http::uri::Authority, health: HealthStatus);
     fn get_http_connection(&mut self, context: RoutingContext) -> Result<HttpChannels>;
     fn get_tcp_connection(&mut self, context: RoutingContext) -> Result<TcpChannelConnector>;

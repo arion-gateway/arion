@@ -360,16 +360,19 @@ pub struct ProxyProtocolConfigurator {
 }
 
 impl ProxyProtocolConfigurator {
-    pub fn update_secret(&mut self, secret_id: &str, secret: &crate::secrets::TransportSecret) -> Result<()> {
-        if let Some(inner_tls_configurator) = &self.inner_tls_configurator {
-            let updated_tls = TlsConfigurator::<ClientConfig, WantsToBuildClient>::update(
-                inner_tls_configurator.clone(),
-                secret_id,
-                secret,
-            )?;
-            self.inner_tls_configurator = Some(updated_tls);
+    pub fn update_secret(&mut self, secret_id: &str, secret: &crate::secrets::TransportSecret) -> Result<bool> {
+        match &self.inner_tls_configurator {
+            Some(inner_tls_configurator) if inner_tls_configurator.uses_secret(secret_id) => {
+                let updated_tls = TlsConfigurator::<ClientConfig, WantsToBuildClient>::update(
+                    inner_tls_configurator.clone(),
+                    secret_id,
+                    secret,
+                )?;
+                self.inner_tls_configurator = Some(updated_tls);
+                Ok(true)
+            },
+            _ => Ok(false),
         }
-        Ok(())
     }
 
     pub async fn write_proxy_header<S>(

@@ -193,13 +193,19 @@ impl ClusterOps for OriginalDstCluster {
             .collect()
     }
 
-    fn change_tls_context(&mut self, secret_id: &str, secret: TransportSecret) -> Result<()> {
-        if let Some(tls_configurator) = self.http_config.tls_configurator.clone() {
-            let tls_configurator =
-                TlsConfigurator::<ClientConfig, WantsToBuildClient>::update(tls_configurator, secret_id, &secret)?;
-            self.http_config.tls_configurator = Some(tls_configurator);
+    fn change_tls_context(&mut self, secret_id: &str, secret: TransportSecret) -> Result<bool> {
+        match &self.http_config.tls_configurator {
+            Some(tls_configurator) if tls_configurator.uses_secret(secret_id) => {
+                let tls_configurator = TlsConfigurator::<ClientConfig, WantsToBuildClient>::update(
+                    tls_configurator.clone(),
+                    secret_id,
+                    &secret,
+                )?;
+                self.http_config.tls_configurator = Some(tls_configurator);
+                Ok(true)
+            },
+            _ => Ok(false),
         }
-        Ok(())
     }
 
     fn update_health(&mut self, _endpoint: &http::uri::Authority, _health: HealthStatus) {

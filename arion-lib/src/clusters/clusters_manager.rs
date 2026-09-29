@@ -272,10 +272,11 @@ pub fn update_endpoint_health(cluster: &str, endpoint: &Authority, health: Healt
 
 pub fn update_tls_context(secret_id: &str, secret: &TransportSecret) -> Result<Vec<ClusterType>> {
     CLUSTERS_MAP.update(|current| {
-        let mut cluster_configs = Vec::with_capacity(current.len());
+        let mut cluster_configs = Vec::new();
         for cluster in current.values_mut() {
-            cluster.change_tls_context(secret_id, secret.clone())?;
-            cluster_configs.push(cluster.clone());
+            if cluster.change_tls_context(secret_id, secret.clone())? {
+                cluster_configs.push(cluster.clone());
+            }
         }
         Ok(cluster_configs)
     })

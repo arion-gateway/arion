@@ -202,6 +202,12 @@ pub struct TlsConfigurator<S: Clone, CtxType> {
 }
 
 impl TlsConfigurator<ClientConfig, WantsToBuildClient> {
+    pub fn uses_secret(&self, secret_id: &str) -> bool {
+        let WantsToBuildClient { certificate_secret_id, validation_context_secret_id, .. } =
+            &self.context_builder.state;
+        [certificate_secret_id, validation_context_secret_id].into_iter().any(|id| id.as_deref() == Some(secret_id))
+    }
+
     pub fn update(self, secret_id: &str, secret: &TransportSecret) -> Result<Self> {
         let TlsContextBuilder { state } = self.context_builder;
         let WantsToBuildClient {
