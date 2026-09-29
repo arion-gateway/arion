@@ -399,7 +399,6 @@ impl From<hyper::Error> for DownstreamError {
     }
 }
 
-
 impl DownstreamError {
     pub fn from_dyn_error(err: &(dyn ErrorTrait + 'static)) -> Self {
         if let Some(downstream) = find_error_in_chain::<DownstreamError>(err) {
@@ -473,7 +472,6 @@ impl From<hyper::Error> for UpstreamError {
         UpstreamError::from(&err)
     }
 }
-
 
 impl UpstreamError {
     pub fn from_dyn_error(err: &(dyn ErrorTrait + 'static)) -> Self {

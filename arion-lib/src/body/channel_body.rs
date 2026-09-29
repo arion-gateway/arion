@@ -243,11 +243,7 @@ impl Drop for FrameBridge {
 }
 
 impl FrameBridge {
-    fn new<B>(
-        body: B,
-        body_type: Option<BodyType>,
-        injector: mpsc::Sender<FrameResult>,
-    ) -> Self
+    fn new<B>(body: B, body_type: Option<BodyType>, injector: mpsc::Sender<FrameResult>) -> Self
     where
         B: Body<Data = Bytes> + Send + 'static,
         B::Error: Into<ChannelBodyError>,
@@ -302,9 +298,7 @@ impl FrameBridge {
 
     /// Consumes the DATA frame of the entire original body, injecting each frame into the `ChannelBody`,
     /// and returns when a non-DATA frame is encountered.
-    pub async fn complete_data(
-        &mut self,
-    ) -> Option<FrameResult> {
+    pub async fn complete_data(&mut self) -> Option<FrameResult> {
         let Some(injector) = &mut self.injector else {
             return None;
         };
@@ -354,10 +348,7 @@ impl FrameBridge {
     ///
     /// Returns an error if the receiver has been dropped (i.e., the `ChannelBody`
     /// has been consumed or dropped).
-    pub async fn inject_frame(
-        &mut self,
-        frame: FrameResult,
-    ) -> Result<(), mpsc::error::SendError<FrameResult>> {
+    pub async fn inject_frame(&mut self, frame: FrameResult) -> Result<(), mpsc::error::SendError<FrameResult>> {
         let Some(injector) = &mut self.injector else {
             return Err(mpsc::error::SendError(frame));
         };
@@ -371,9 +362,7 @@ impl FrameBridge {
     /// Observes the next frame and automatically injects it into the `ChannelBody`.
     ///
     /// Returns a copy of the frame to allow observation, None when the body is completely consumed.
-    pub async fn observe_and_inject(
-        &mut self,
-    ) -> Option<FrameResult> {
+    pub async fn observe_and_inject(&mut self) -> Option<FrameResult> {
         let frame = self.body_stream.as_mut().next().await?;
 
         // Clone the frame to be able to return it

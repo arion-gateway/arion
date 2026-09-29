@@ -1435,10 +1435,7 @@ impl<S> TransactionLifecycleSvc<S> {
 }
 
 impl TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
-    pub async fn handle_request(
-        self,
-        incoming_request: Request<Incoming>,
-    ) -> crate::Result<Response<ArionClientBody>> {
+    pub async fn handle_request(self, incoming_request: Request<Incoming>) -> crate::Result<Response<ArionClientBody>> {
         let Self { conn, manager, inner } = self;
         let incoming_request_id = RequestId::from_request(&incoming_request);
         let incoming_version = incoming_request.version();

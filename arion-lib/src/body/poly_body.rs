@@ -148,31 +148,33 @@ impl Body for PolyBody {
             PolyBodyProj::Full(f) => f.poll_frame(cx).map_err(Into::into),
             PolyBodyProj::Incoming(i) => i.poll_frame(cx).map_err(Into::into),
             PolyBodyProj::Grpc(g) => g.poll_frame(cx).map_err(|e| Into::into(Box::new(e))),
-            PolyBodyProj::Stream(s) => {
-                s.poll_frame(cx).map_err(|e| PolyBodyError::Crate(Box::new(e)))
-            },
-            PolyBodyProj::ChannelBody(m) => {
-                match m.poll_frame(cx) {
-                    std::task::Poll::Ready(Some(Ok(f))) => std::task::Poll::Ready(Some(Ok(f))),
-                    std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
-                    std::task::Poll::Pending => std::task::Poll::Pending,
-                    std::task::Poll::Ready(Some(Err(err))) => match err {
-                        crate::body::channel_body::ChannelBodyError::Poly(p) => std::task::Poll::Ready(Some(Err(*p))),
-                        crate::body::channel_body::ChannelBodyError::ExtProc(e) => std::task::Poll::Ready(Some(Err(PolyBodyError::ExtProc(e)))),
-                        crate::body::channel_body::ChannelBodyError::Hyper(h) => std::task::Poll::Ready(Some(Err(PolyBodyError::Hyper(h)))),
-                        crate::body::channel_body::ChannelBodyError::Io(io_err) => std::task::Poll::Ready(Some(Err(PolyBodyError::Io(io_err)))),
-                        crate::body::channel_body::ChannelBodyError::Infallible(inf) => match inf {},
-                        crate::body::channel_body::ChannelBodyError::Other(s) => std::task::Poll::Ready(Some(Err(PolyBodyError::Trailers(s)))),
+            PolyBodyProj::Stream(s) => s.poll_frame(cx).map_err(|e| PolyBodyError::Crate(Box::new(e))),
+            PolyBodyProj::ChannelBody(m) => match m.poll_frame(cx) {
+                std::task::Poll::Ready(Some(Ok(f))) => std::task::Poll::Ready(Some(Ok(f))),
+                std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+                std::task::Poll::Pending => std::task::Poll::Pending,
+                std::task::Poll::Ready(Some(Err(err))) => match err {
+                    crate::body::channel_body::ChannelBodyError::Poly(p) => std::task::Poll::Ready(Some(Err(*p))),
+                    crate::body::channel_body::ChannelBodyError::ExtProc(e) => {
+                        std::task::Poll::Ready(Some(Err(PolyBodyError::ExtProc(e))))
                     },
-                }
+                    crate::body::channel_body::ChannelBodyError::Hyper(h) => {
+                        std::task::Poll::Ready(Some(Err(PolyBodyError::Hyper(h))))
+                    },
+                    crate::body::channel_body::ChannelBodyError::Io(io_err) => {
+                        std::task::Poll::Ready(Some(Err(PolyBodyError::Io(io_err))))
+                    },
+                    crate::body::channel_body::ChannelBodyError::Infallible(inf) => match inf {},
+                    crate::body::channel_body::ChannelBodyError::Other(s) => {
+                        std::task::Poll::Ready(Some(Err(PolyBodyError::Trailers(s))))
+                    },
+                },
             },
-            PolyBodyProj::Collected(s) => {
-                match s.poll_frame(cx) {
-                    std::task::Poll::Ready(Some(Ok(f))) => std::task::Poll::Ready(Some(Ok(f))),
-                    std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
-                    std::task::Poll::Pending => std::task::Poll::Pending,
-                    std::task::Poll::Ready(Some(Err(inf))) => match inf {},
-                }
+            PolyBodyProj::Collected(s) => match s.poll_frame(cx) {
+                std::task::Poll::Ready(Some(Ok(f))) => std::task::Poll::Ready(Some(Ok(f))),
+                std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+                std::task::Poll::Pending => std::task::Poll::Pending,
+                std::task::Poll::Ready(Some(Err(inf))) => match inf {},
             },
             PolyBodyProj::FullWithTrailers(w) => w.poll_frame(cx).map_err(Into::into),
             PolyBodyProj::EmptyWithTrailers(w) => w.poll_frame(cx).map_err(Into::into),

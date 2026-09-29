@@ -282,8 +282,7 @@ pub(crate) mod protected {
             &mut self,
             frame: crate::body::channel_body::FrameResult,
             _proof: ReturnStatusProof,
-        ) -> Result<(), mpsc::error::SendError<crate::body::channel_body::FrameResult>>
-        {
+        ) -> Result<(), mpsc::error::SendError<crate::body::channel_body::FrameResult>> {
             // to inject a frame a single frame the proof return is not be required...
             self.inner.inject_frame(frame).await
         }

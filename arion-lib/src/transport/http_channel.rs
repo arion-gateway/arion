@@ -722,10 +722,11 @@ impl HttpChannel {
 
         match last_result {
             Some(result) => result,
-            None => {
-                Err(UpstreamError::Io(io::Error::new(io::ErrorKind::InvalidData, "retry loop completed without producing a result"))
-                    .into())
-            },
+            None => Err(UpstreamError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "retry loop completed without producing a result",
+            ))
+            .into()),
         }
     }
 
@@ -765,9 +766,7 @@ impl HttpChannel {
                             Ok(SyntheticHttpResponse::gateway_timeout(EventKind::Upstream(event_error), response_flags)
                                 .into_response(version))
                         },
-                        UpstreamError::Reset
-                        | UpstreamError::Http3PostConnectFailure
-                        | UpstreamError::Protocol(_) => {
+                        UpstreamError::Reset | UpstreamError::Http3PostConnectFailure | UpstreamError::Protocol(_) => {
                             Ok(SyntheticHttpResponse::bad_gateway(EventKind::Upstream(event_error), response_flags)
                                 .into_response(version))
                         },
