@@ -178,7 +178,7 @@ impl Write for LengthCounter {
 // | 1. TransactionLifecycleSvc  (unboxed async fn, via `service_fn`)                           |
 // |   Input:  Request<Incoming>                                                                   |
 // |   Action: Attach ConnMeta, request ID, span, TransactionContext → RequestCtx.                 |
-// |           Map crate::Error → Box<dyn Error> for Hyper.                                        |
+// |           Return crate::Result directly for Hyper.                                             |
 // |   Output: HttpRequest<Incoming>                                                               |
 // +-----------------------------------------------------------------------------------------------+
 //                                |
@@ -1438,7 +1438,7 @@ impl TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
     pub async fn handle_request(
         self,
         incoming_request: Request<Incoming>,
-    ) -> StdResult<Response<ArionClientBody>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> crate::Result<Response<ArionClientBody>> {
         let Self { conn, manager, inner } = self;
         let incoming_request_id = RequestId::from_request(&incoming_request);
         let incoming_version = incoming_request.version();
@@ -1539,7 +1539,7 @@ impl TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
         } else {
             response
         };
-        response.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        response
     }
 }
 

@@ -239,7 +239,7 @@ pub(crate) mod protected {
     }
 
     impl Stream for FrameBridge {
-        type Item = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>;
+        type Item = crate::body::channel_body::FrameResult;
 
         fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
             Pin::new(&mut self.inner).poll_next(cx)
@@ -280,9 +280,9 @@ pub(crate) mod protected {
         #[inline]
         pub async fn inject_frame(
             &mut self,
-            frame: Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>,
+            frame: crate::body::channel_body::FrameResult,
             _proof: ReturnStatusProof,
-        ) -> Result<(), mpsc::error::SendError<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>>
+        ) -> Result<(), mpsc::error::SendError<crate::body::channel_body::FrameResult>>
         {
             // to inject a frame a single frame the proof return is not be required...
             self.inner.inject_frame(frame).await

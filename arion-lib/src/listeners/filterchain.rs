@@ -337,7 +337,7 @@ impl FilterchainType {
                     .serve_connection_with_upgrades(stream, svc)
                     .await
                     .inspect_err(|err| debug!("{listener_name} : HTTP connection error: {err}"))
-                    .map_err(|e| Error::from(DownstreamError::from(e)))
+                    .map_err(|e| Error::from(DownstreamError::from_dyn_error(e.as_ref())))
             },
             ConnectionHandler::Tcp(tcp_proxy) => {
                 with_metric!(

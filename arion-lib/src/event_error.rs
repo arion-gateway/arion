@@ -399,12 +399,6 @@ impl From<hyper::Error> for DownstreamError {
     }
 }
 
-impl From<Box<dyn ErrorTrait + Send + Sync>> for DownstreamError {
-    #[inline]
-    fn from(err: Box<dyn ErrorTrait + Send + Sync>) -> Self {
-        DownstreamError::from_dyn_error(err.as_ref())
-    }
-}
 
 impl DownstreamError {
     pub fn from_dyn_error(err: &(dyn ErrorTrait + 'static)) -> Self {
@@ -480,12 +474,6 @@ impl From<hyper::Error> for UpstreamError {
     }
 }
 
-impl From<Box<dyn ErrorTrait + Send + Sync>> for UpstreamError {
-    #[inline]
-    fn from(err: Box<dyn ErrorTrait + Send + Sync>) -> Self {
-        UpstreamError::from_dyn_error(err.as_ref())
-    }
-}
 
 impl UpstreamError {
     pub fn from_dyn_error(err: &(dyn ErrorTrait + 'static)) -> Self {
@@ -517,13 +505,13 @@ impl UpstreamError {
 mod tests {
     use super::*;
     use crate::transport::connector::TcpErrorContext;
-    use crate::Error as BoxError;
+    use crate::Error;
 
     #[test]
     fn test_error_chain_debug() {
         let io_err = io::Error::new(io::ErrorKind::ConnectionRefused, "Connection refused");
         let upstream_err = UpstreamError::Io(io_err);
-        let err = BoxError::upstream_with_context(
+        let err = Error::upstream_with_context(
             TcpErrorContext {
                 upstream_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 8080)),
                 response_flags: arion_format::types::ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
@@ -550,11 +538,11 @@ mod tests {
 
     #[test]
     fn test_error_classification_through_wrappers() {
-        let err = BoxError::upstream(UpstreamError::RouteTimeout);
+        let err = Error::upstream(UpstreamError::RouteTimeout);
         let upstream = err.as_upstream_error();
         assert!(matches!(upstream, Some(UpstreamError::RouteTimeout)), "boxed: got {upstream:?}");
 
-        let err = BoxError::upstream_with_context(
+        let err = Error::upstream_with_context(
             TcpErrorContext {
                 cluster_name: "test_cluster",
                 upstream_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 8080)),
@@ -565,7 +553,7 @@ mod tests {
         let upstream = err.as_upstream_error();
         assert!(matches!(upstream, Some(UpstreamError::ConnectTimeout(_))), "wrapped: got {upstream:?}");
 
-        let err = BoxError::from(io::Error::new(io::ErrorKind::ConnectionRefused, "nope"));
+        let err = Error::from(io::Error::new(io::ErrorKind::ConnectionRefused, "nope"));
         assert!(err.find_source::<io::Error>().is_some(), "io::Error not found through Io variant");
     }
 

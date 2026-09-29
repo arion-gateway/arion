@@ -22,7 +22,29 @@ use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-type FrameResult = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>;
+#[derive(Debug, thiserror::Error)]
+pub enum ChannelBodyError {
+    #[error(transparent)]
+    Poly(#[from] Box<crate::body::poly_body::PolyBodyError>),
+    #[error(transparent)]
+    ExtProc(#[from] crate::listeners::http_connection_manager::ext_proc::ExtProcError),
+    #[error(transparent)]
+    Hyper(#[from] hyper::Error),
+    #[error(transparent)]
+    Infallible(#[from] std::convert::Infallible),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error("{0}")]
+    Other(String),
+}
+
+impl From<crate::body::poly_body::PolyBodyError> for ChannelBodyError {
+    fn from(err: crate::body::poly_body::PolyBodyError) -> Self {
+        Self::Poly(Box::new(err))
+    }
+}
+
+pub type FrameResult = Result<Frame<Bytes>, ChannelBodyError>;
 
 /// A wrapper for any Body that allows observing and modifying frames in real-time.
 pub struct ChannelBody {
@@ -61,7 +83,7 @@ impl ChannelBody {
     pub fn new<B>(body: B, body_type: Option<BodyType>, prefetch_num_frames: NonZeroUsize) -> (Self, FrameBridge)
     where
         B: Body<Data = Bytes> + Send + 'static,
-        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+        B::Error: Into<ChannelBodyError>,
     {
         // Create a channel for injecting frames
         let capacity = std::cmp::max(8, prefetch_num_frames.get());
@@ -114,7 +136,7 @@ impl ChannelBody {
 
 impl Body for ChannelBody {
     type Data = Bytes;
-    type Error = Box<dyn std::error::Error + Send + Sync>;
+    type Error = ChannelBodyError;
 
     fn poll_frame(
         mut self: Pin<&mut Self>,
@@ -224,11 +246,11 @@ impl FrameBridge {
     fn new<B>(
         body: B,
         body_type: Option<BodyType>,
-        injector: mpsc::Sender<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>,
+        injector: mpsc::Sender<FrameResult>,
     ) -> Self
     where
         B: Body<Data = Bytes> + Send + 'static,
-        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+        B::Error: Into<ChannelBodyError>,
     {
         let end_of_stream = body.is_end_stream();
 
@@ -282,7 +304,7 @@ impl FrameBridge {
     /// and returns when a non-DATA frame is encountered.
     pub async fn complete_data(
         &mut self,
-    ) -> Option<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync + 'static>>> {
+    ) -> Option<FrameResult> {
         let Some(injector) = &mut self.injector else {
             return None;
         };
@@ -324,7 +346,7 @@ impl FrameBridge {
     /// Gets the next frame from the original body stream.
     ///
     /// Returns None when the body is completely consumed.
-    pub async fn next_frame(&mut self) -> Option<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>> {
+    pub async fn next_frame(&mut self) -> Option<FrameResult> {
         self.body_stream.as_mut().next().await
     }
 
@@ -334,8 +356,8 @@ impl FrameBridge {
     /// has been consumed or dropped).
     pub async fn inject_frame(
         &mut self,
-        frame: Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>,
-    ) -> Result<(), mpsc::error::SendError<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>> {
+        frame: FrameResult,
+    ) -> Result<(), mpsc::error::SendError<FrameResult>> {
         let Some(injector) = &mut self.injector else {
             return Err(mpsc::error::SendError(frame));
         };
@@ -351,7 +373,7 @@ impl FrameBridge {
     /// Returns a copy of the frame to allow observation, None when the body is completely consumed.
     pub async fn observe_and_inject(
         &mut self,
-    ) -> Option<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>> {
+    ) -> Option<FrameResult> {
         let frame = self.body_stream.as_mut().next().await?;
 
         // Clone the frame to be able to return it
@@ -367,7 +389,7 @@ impl FrameBridge {
                 };
                 Ok(cloned_frame)
             },
-            Err(e) => Err(e.to_string().into()),
+            Err(e) => Err(ChannelBodyError::Other(e.to_string())),
         };
 
         // Inject the original frame
@@ -402,7 +424,7 @@ impl FrameBridge {
 }
 
 impl Stream for FrameBridge {
-    type Item = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>;
+    type Item = FrameResult;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.body_stream.as_mut().poll_next(cx)

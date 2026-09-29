@@ -135,7 +135,7 @@ pub enum FilterError {
     #[error("cedar policy error: {0}")]
     Cedar(#[from] crate::cedar::error::Error),
     #[error("mcp tool builder error: {0}")]
-    McpToolBuilder(#[from] crate::listeners::http_connection_manager::mcp_gateway::tools::ToolBuilderError),
+    McpToolBuilder(#[from] Box<crate::listeners::http_connection_manager::mcp_gateway::tools::ToolBuilderError>),
     #[cfg(feature = "wasm")]
     #[error("wasm filter error: {0}")]
     Wasm(#[from] crate::listeners::http_connection_manager::wasm::WasmError),
@@ -369,7 +369,7 @@ impl From<crate::cedar::error::Error> for Error {
 
 impl From<crate::listeners::http_connection_manager::mcp_gateway::tools::ToolBuilderError> for Error {
     fn from(err: crate::listeners::http_connection_manager::mcp_gateway::tools::ToolBuilderError) -> Self {
-        Self::Filter(FilterError::McpToolBuilder(err))
+        Self::Filter(FilterError::McpToolBuilder(Box::new(err)))
     }
 }
 

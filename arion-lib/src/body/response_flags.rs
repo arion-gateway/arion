@@ -99,7 +99,9 @@ impl From<(&'_ PolyBodyError, BodyKind)> for ResponseFlags {
             PolyBodyError::Hyper(error) => (error, kind).into(),
             PolyBodyError::Infallible(_)
             | PolyBodyError::Grpc(_)
-            | PolyBodyError::Boxed(_)
+            | PolyBodyError::ExtProc(_)
+            | PolyBodyError::Io(_)
+            | PolyBodyError::Crate(_)
             | PolyBodyError::BadVariant
             | PolyBodyError::Trailers(_) => ResponseFlags(FmtResponseFlags::empty()),
             PolyBodyError::TimedOut => match kind {

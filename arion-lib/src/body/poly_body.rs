@@ -112,7 +112,11 @@ pub enum PolyBodyError {
     #[error(transparent)]
     Grpc(#[from] Box<GrpcError>),
     #[error(transparent)]
-    Boxed(#[from] Box<dyn std::error::Error + std::marker::Send + std::marker::Sync>),
+    ExtProc(#[from] crate::listeners::http_connection_manager::ext_proc::ExtProcError),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Crate(#[from] Box<crate::Error>),
     #[error("data was not received within the designated timeout")]
     TimedOut,
     #[error("could not build trailers for {0} body type")]
@@ -145,13 +149,30 @@ impl Body for PolyBody {
             PolyBodyProj::Incoming(i) => i.poll_frame(cx).map_err(Into::into),
             PolyBodyProj::Grpc(g) => g.poll_frame(cx).map_err(|e| Into::into(Box::new(e))),
             PolyBodyProj::Stream(s) => {
-                s.poll_frame(cx).map_err(|e| PolyBodyError::Boxed(Box::new(std::io::Error::other(e.to_string()))))
+                s.poll_frame(cx).map_err(|e| PolyBodyError::Crate(Box::new(e)))
             },
             PolyBodyProj::ChannelBody(m) => {
-                m.poll_frame(cx).map_err(|e| PolyBodyError::Boxed(Box::new(std::io::Error::other(e.to_string()))))
+                match m.poll_frame(cx) {
+                    std::task::Poll::Ready(Some(Ok(f))) => std::task::Poll::Ready(Some(Ok(f))),
+                    std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+                    std::task::Poll::Pending => std::task::Poll::Pending,
+                    std::task::Poll::Ready(Some(Err(err))) => match err {
+                        crate::body::channel_body::ChannelBodyError::Poly(p) => std::task::Poll::Ready(Some(Err(*p))),
+                        crate::body::channel_body::ChannelBodyError::ExtProc(e) => std::task::Poll::Ready(Some(Err(PolyBodyError::ExtProc(e)))),
+                        crate::body::channel_body::ChannelBodyError::Hyper(h) => std::task::Poll::Ready(Some(Err(PolyBodyError::Hyper(h)))),
+                        crate::body::channel_body::ChannelBodyError::Io(io_err) => std::task::Poll::Ready(Some(Err(PolyBodyError::Io(io_err)))),
+                        crate::body::channel_body::ChannelBodyError::Infallible(inf) => match inf {},
+                        crate::body::channel_body::ChannelBodyError::Other(s) => std::task::Poll::Ready(Some(Err(PolyBodyError::Trailers(s)))),
+                    },
+                }
             },
             PolyBodyProj::Collected(s) => {
-                s.poll_frame(cx).map_err(|e| PolyBodyError::Boxed(Box::new(std::io::Error::other(e.to_string()))))
+                match s.poll_frame(cx) {
+                    std::task::Poll::Ready(Some(Ok(f))) => std::task::Poll::Ready(Some(Ok(f))),
+                    std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+                    std::task::Poll::Pending => std::task::Poll::Pending,
+                    std::task::Poll::Ready(Some(Err(inf))) => match inf {},
+                }
             },
             PolyBodyProj::FullWithTrailers(w) => w.poll_frame(cx).map_err(Into::into),
             PolyBodyProj::EmptyWithTrailers(w) => w.poll_frame(cx).map_err(Into::into),
