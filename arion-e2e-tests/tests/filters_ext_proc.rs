@@ -17,13 +17,19 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::ext_proc::v3::processing_mode::{
-    BodySendMode, HeaderSendMode,
+use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::ext_proc::v3::{
+    ext_proc_per_route::Override,
+    processing_mode::{BodySendMode, HeaderSendMode},
+    ExtProcOverrides, ExtProcPerRoute,
+};
+use arion_data_plane_api::envoy_data_plane_api::{
+    google::protobuf::{Any, BoolValue},
+    prost::Message,
 };
 use arion_e2e_tests::config_builder::presets;
 use arion_e2e_tests::config_builder::{
-    BootstrapBuilder, ClusterBuilder, ExtProcBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, RouteBuilder,
-    RouteConfigBuilder, VirtualHostBuilder,
+    BootstrapBuilder, ClusterBuilder, ExtProcBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, Route,
+    RouteBuilder, RouteConfigBuilder, VirtualHostBuilder,
 };
 use arion_e2e_tests::{
     ext_proc_responses, ArionInstance, ExtProcTestServer, ExtProcTestServerBuilder, PreConfiguredResponse,
@@ -657,4 +663,93 @@ async fn test_ext_proc_observability_mode() {
 
     let captured = backend.await_request().await.expect("backend request");
     assert_eq!(captured.header("x-original"), Some("keep"));
+}
+
+fn ext_proc_per_route(per_route: Override) -> impl FnOnce(&mut Route) {
+    move |route| {
+        let any = Any {
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute".into(),
+            value: ExtProcPerRoute { r#override: Some(per_route) }.encode_to_vec(),
+        };
+        route.typed_per_filter_config.insert("envoy.filters.http.ext_proc".into(), any);
+    }
+}
+
+fn ext_proc_overrides(cluster_name: &str, failure_mode_allow: bool) -> Override {
+    let processor = ExtProcBuilder::new(cluster_name).request_only().build();
+    Override::Overrides(ExtProcOverrides {
+        grpc_service: processor.grpc_service,
+        processing_mode: processor.processing_mode,
+        failure_mode_allow: Some(BoolValue { value: failure_mode_allow }),
+        ..Default::default()
+    })
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_ext_proc_per_route_disabled_and_overrides() {
+    let mut backend = TestBackend::start().await.expect("backend start");
+    backend.set_default_response(PreConfiguredResponse::with_body("backend ok")).await;
+    let base_ext_proc = ExtProcTestServerBuilder::new()
+        .with_response(ext_proc_responses::immediate_response(403, "base ext_proc"))
+        .start()
+        .await
+        .expect("ext_proc start");
+    let route_ext_proc = ExtProcTestServerBuilder::new()
+        .with_response(ext_proc_responses::mutate_request_headers(&[("x-ext-proc", "route")], &[]))
+        .start()
+        .await
+        .expect("ext_proc start");
+
+    let bootstrap = BootstrapBuilder::new()
+        .listener(
+            ListenerBuilder::new("http").port(0).filter_chain(
+                FilterChainBuilder::new("main").hcm(
+                    HcmBuilder::new()
+                        .http1()
+                        .ext_proc(ExtProcBuilder::new("ext-proc-base").request_only())
+                        .route_config(
+                            RouteConfigBuilder::new("routes").virtual_host(
+                                VirtualHostBuilder::new("default")
+                                    .route(
+                                        RouteBuilder::new().match_prefix("/pool").cluster("backend").with_proto(
+                                            ext_proc_per_route(ext_proc_overrides("ext-proc-route", false)),
+                                        ),
+                                    )
+                                    .route(
+                                        RouteBuilder::new()
+                                            .match_prefix("/fail-open")
+                                            .cluster("backend")
+                                            .with_proto(ext_proc_per_route(ext_proc_overrides("ext-proc-down", true))),
+                                    )
+                                    .route(
+                                        RouteBuilder::new()
+                                            .match_prefix("/")
+                                            .cluster("backend")
+                                            .with_proto(ext_proc_per_route(Override::Disabled(true))),
+                                    ),
+                            ),
+                        ),
+                ),
+            ),
+        )
+        .cluster(ClusterBuilder::with_endpoint("backend", backend.addr()))
+        .cluster(presets::ext_proc_cluster("ext-proc-base", base_ext_proc.addr()))
+        .cluster(presets::ext_proc_cluster("ext-proc-route", route_ext_proc.addr()))
+        .cluster(presets::ext_proc_cluster("ext-proc-down", "127.0.0.1:1".parse().unwrap()));
+
+    let config_path = bootstrap.build_to_temp().expect("build config");
+    let arion =
+        ArionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.expect("spawn arion");
+    let client = TestClient::new(arion.listener_addr().unwrap());
+
+    client.get("/plain").await.expect("request").assert_status(StatusCode::OK);
+    assert_eq!(backend.await_request().await.expect("backend request").header("x-ext-proc"), None);
+
+    client.get("/pool").await.expect("request").assert_status(StatusCode::OK);
+    assert_eq!(backend.await_request().await.expect("backend request").header("x-ext-proc"), Some("route"));
+
+    client.get("/fail-open").await.expect("request").assert_status(StatusCode::OK);
+
+    assert!(base_ext_proc.captured_requests().await.is_empty());
 }

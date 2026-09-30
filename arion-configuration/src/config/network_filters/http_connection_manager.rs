@@ -783,7 +783,8 @@ mod envoy_conversions {
                     None => Ok(()),
                     Some(x) => match (x, &matching_filter.filter) {
                         (FilterConfigOverride::LocalRateLimit(_), HttpFilterType::RateLimit(_))
-                        | (FilterConfigOverride::Rbac(_), HttpFilterType::Rbac(_)) => Ok(()),
+                        | (FilterConfigOverride::Rbac(_), HttpFilterType::Rbac(_))
+                        | (FilterConfigOverride::ExternalProcessor(_), HttpFilterType::ExternalProcessor(_)) => Ok(()),
                         (_, _) => Err(GenericError::from_msg(format!(
                             "can't override http filter \"{name}\" with a different filter type"
                         ))),
@@ -1450,6 +1451,74 @@ mod envoy_conversions {
                 },
                 EnvoyConfigSourceSpecifier::Self_(_) => Err(GenericError::unsupported_variant("Self_")),
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::config::network_filters::http_connection_manager::http_filters::ExtProcPerRoute;
+
+        #[test]
+        fn test_ext_proc_per_route_config() {
+            let envoy: EnvoyHttpConnectionManager = arion_data_plane_api::decode::from_yaml(
+                r#"
+http_filters:
+- name: envoy.filters.http.ext_proc
+  typed_config:
+    "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+    grpc_service: { envoy_grpc: { cluster_name: epp-a } }
+    processing_mode: { request_header_mode: SEND }
+- name: envoy.filters.http.router
+  typed_config:
+    "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+route_config:
+  name: routes
+  virtual_hosts:
+  - name: default
+    domains: ["*"]
+    routes:
+    - match: { prefix: /pool }
+      route: { cluster: pool }
+      typed_per_filter_config:
+        envoy.filters.http.ext_proc:
+          "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+          overrides:
+            grpc_service: { envoy_grpc: { cluster_name: epp-b } }
+            processing_mode: { request_header_mode: SEND }
+            failure_mode_allow: true
+    - match: { prefix: / }
+      route: { cluster: app }
+      typed_per_filter_config:
+        envoy.filters.http.ext_proc:
+          "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+          disabled: true
+"#,
+            )
+            .unwrap();
+
+            let hcm = HttpConnectionManager::try_from(envoy).unwrap();
+            let RouteSpecifier::RouteConfig(route_config) = hcm.route_specifier else {
+                panic!("expected an inline route config");
+            };
+            let per_route: Vec<_> = route_config
+                .virtual_hosts
+                .iter()
+                .flat_map(|vh| &vh.routes)
+                .map(|route| route.typed_per_filter_config.get("envoy.filters.http.ext_proc").cloned())
+                .collect();
+            let [Some(pool), Some(plain)] = per_route.as_slice() else {
+                panic!("expected an ext_proc override on both routes, got {per_route:?}");
+            };
+            assert!(matches!(
+                &pool.filter_settings,
+                Some(FilterConfigOverride::ExternalProcessor(ExtProcPerRoute { disabled: false, overrides: Some(o) }))
+                    if o.failure_mode_allow == Some(true) && o.grpc_service.is_some() && o.processing_mode.is_some()
+            ));
+            assert_eq!(
+                plain.filter_settings,
+                Some(FilterConfigOverride::ExternalProcessor(ExtProcPerRoute { disabled: true, overrides: None }))
+            );
         }
     }
 }
