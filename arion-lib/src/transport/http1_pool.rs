@@ -15,7 +15,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::connector::UnifiedConnector;
+use super::connector::{map_tls_connect_error, UnifiedConnector};
 use crate::{
     body::{
         on_end_body::{BodyEndPermit, OnEndBody},
@@ -280,16 +280,7 @@ impl Http1Pool {
             },
             Http1Connect::Tls(connector) => {
                 let mut connector = connector.clone();
-                let io = connector.call(self.dst.clone()).await.map_err(|e| match e.downcast::<crate::Error>() {
-                    Ok(err) => *err,
-                    Err(e) => match e.downcast::<std::io::Error>() {
-                        Ok(io_err) => Error::upstream(UpstreamError::Io(*io_err)),
-                        Err(e) => match e.downcast::<rustls::Error>() {
-                            Ok(tls_err) => Error::Tls(crate::TlsError::Rustls(*tls_err)),
-                            Err(other) => Error::Tls(crate::TlsError::Certificate(other.to_string())),
-                        },
-                    },
-                })?;
+                let io = connector.call(self.dst.clone()).await.map_err(map_tls_connect_error)?;
                 handshake(io).await
             },
         }

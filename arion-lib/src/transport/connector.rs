@@ -526,3 +526,22 @@ impl Service<Uri> for UnifiedConnector {
         }
     }
 }
+
+pub(crate) fn map_tls_connect_error(err: Box<dyn std::error::Error + Send + Sync>) -> crate::Error {
+    match err.downcast::<crate::Error>() {
+        Ok(crate_err) => *crate_err,
+        Err(err) => match err.downcast::<io::Error>() {
+            Ok(io_err) => {
+                if let Some(tls_err) = io_err.get_ref().and_then(|e| e.downcast_ref::<rustls::Error>()) {
+                    crate::Error::Tls(crate::TlsError::Rustls(tls_err.clone()))
+                } else {
+                    crate::Error::upstream(crate::event_error::UpstreamError::Io(*io_err))
+                }
+            },
+            Err(err) => match err.downcast::<rustls::Error>() {
+                Ok(tls_err) => crate::Error::Tls(crate::TlsError::Rustls(*tls_err)),
+                Err(err) => crate::Error::upstream(crate::event_error::UpstreamError::Other(err.to_string())),
+            },
+        },
+    }
+}
