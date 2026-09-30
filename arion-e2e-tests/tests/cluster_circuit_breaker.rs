@@ -418,7 +418,7 @@ async fn test_circuit_breaker_max_connections_static_cluster() {
         .collect();
 
     let ok_count = results.iter().filter(|r| r.status == StatusCode::OK).count();
-    let denied_count = results.iter().filter(|r| r.status == StatusCode::BAD_GATEWAY).count();
+    let denied_count = results.iter().filter(|r| r.status == StatusCode::SERVICE_UNAVAILABLE).count();
 
     assert_eq!(ok_count, 1, "Expected exactly 1 request to succeed, got {ok_count}");
     assert_eq!(denied_count, 2, "Expected 2 connection-denied responses, got {denied_count}");
@@ -460,7 +460,7 @@ async fn test_circuit_breaker_max_connections_original_dst_cluster() {
         .collect();
 
     let ok_count = results.iter().filter(|r| r.status == StatusCode::OK).count();
-    let denied_count = results.iter().filter(|r| r.status == StatusCode::BAD_GATEWAY).count();
+    let denied_count = results.iter().filter(|r| r.status == StatusCode::SERVICE_UNAVAILABLE).count();
 
     assert_eq!(ok_count, 1, "Expected exactly 1 request to succeed, got {ok_count}");
     assert_eq!(denied_count, 2, "Expected 2 connection-denied responses, got {denied_count}");

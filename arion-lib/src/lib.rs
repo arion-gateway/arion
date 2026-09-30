@@ -161,12 +161,8 @@ pub enum Error {
     TonicStatus(#[from] tonic::Status),
     #[error("{0}")]
     Regex(#[from] regex::Error),
-    #[error("{error}")]
-    Upstream {
-        context: Option<crate::transport::connector::TcpErrorContext>,
-        #[source]
-        error: Box<crate::event_error::UpstreamError>,
-    },
+    #[error("{0}")]
+    Upstream(#[source] Box<crate::event_error::UpstreamError>),
     #[error("{0}")]
     Downstream(#[source] Box<crate::event_error::DownstreamError>),
 }
@@ -177,14 +173,7 @@ impl Error {
     }
 
     pub fn upstream(error: impl Into<crate::event_error::UpstreamError>) -> Self {
-        Self::Upstream { context: None, error: Box::new(error.into()) }
-    }
-
-    pub fn upstream_with_context(
-        context: crate::transport::connector::TcpErrorContext,
-        error: impl Into<crate::event_error::UpstreamError>,
-    ) -> Self {
-        Self::Upstream { context: Some(context), error: Box::new(error.into()) }
+        Self::Upstream(Box::new(error.into()))
     }
 
     pub fn find_source<T: StdError + 'static>(&self) -> Option<&T> {
@@ -199,16 +188,16 @@ impl Error {
     }
 
     pub fn as_upstream_error(&self) -> Option<&crate::event_error::UpstreamError> {
-        if let Self::Upstream { error, .. } = self {
-            return Some(error.as_ref());
+        if let Self::Upstream(err) = self {
+            return Some(err.as_ref());
         }
         let mut curr: Option<&(dyn StdError + 'static)> = Some(self);
         while let Some(e) = curr {
             if let Some(err) = e.downcast_ref::<crate::event_error::UpstreamError>() {
                 return Some(err);
             }
-            if let Some(Self::Upstream { error, .. }) = e.downcast_ref::<Self>() {
-                return Some(error.as_ref());
+            if let Some(Self::Upstream(err)) = e.downcast_ref::<Self>() {
+                return Some(err.as_ref());
             }
             curr = e.source();
         }
@@ -232,15 +221,15 @@ impl Error {
         None
     }
 
-    /// Returns the [`TcpErrorContext`] carried by an [`Error::Upstream`], if present.
+    /// Returns the [`TcpErrorContext`] carried by an upstream connection error, if present.
     pub fn upstream_context(&self) -> Option<&crate::transport::connector::TcpErrorContext> {
-        if let Self::Upstream { context: Some(ctx), .. } = self {
-            return Some(ctx);
+        if let Some(crate::event_error::UpstreamError::Connect(c)) = self.as_upstream_error() {
+            return Some(&c.context);
         }
         let mut curr: Option<&(dyn StdError + 'static)> = Some(self);
         while let Some(e) = curr {
-            if let Some(Self::Upstream { context: Some(ctx), .. }) = e.downcast_ref::<Self>() {
-                return Some(ctx);
+            if let Some(crate::event_error::UpstreamError::Connect(c)) = e.downcast_ref::<crate::event_error::UpstreamError>() {
+                return Some(&c.context);
             }
             curr = e.source();
         }

@@ -68,7 +68,11 @@ impl<'a, B: Body> RetryCondition<'a, B> {
 
     #[allow(dead_code)]
     pub fn is_timeout(&self) -> bool {
-        matches!(self, RetryCondition::Error(UpstreamError::ConnectTimeout(_) | UpstreamError::RouteTimeout))
+        match self {
+            RetryCondition::Error(UpstreamError::Connect(conn_err)) => conn_err.is_timeout(),
+            RetryCondition::Error(UpstreamError::RouteTimeout) => true,
+            _ => false,
+        }
     }
 
     pub fn should_retry(&self, retry_policy: &RetryPolicy) -> bool {
@@ -129,8 +133,16 @@ impl<'a, B: Body> RetryCondition<'a, B> {
                     }
                 },
                 RetryOn::ConnectFailure => {
-                    if matches!(self, RetryCondition::Error(UpstreamError::Io(_) | UpstreamError::ConnectTimeout(_))) {
-                        return true;
+                    match self {
+                        RetryCondition::Error(UpstreamError::Connect(conn_err)) => {
+                            if conn_err.is_retriable() {
+                                return true;
+                            }
+                        },
+                        RetryCondition::Error(UpstreamError::Io(_)) => {
+                            return true;
+                        },
+                        _ => {},
                     }
                 },
                 RetryOn::RefusedStream => {

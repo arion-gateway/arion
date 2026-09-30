@@ -20,17 +20,18 @@ use std::io;
 use tokio::time::error::Elapsed;
 
 use crate::body::response_flags::ResponseFlags;
+use crate::transport::connector::{ConnectError, ConnectErrorKind};
 
 #[derive(Debug, thiserror::Error)]
 pub enum UpstreamError {
+    #[error("{0}")]
+    Connect(#[from] ConnectError),
     #[error("I/O Error: {0:?}")]
     Io(
         #[source]
         #[from]
         io::Error,
     ),
-    #[error("ConnectTimeout")]
-    ConnectTimeout(#[from] Elapsed),
     #[error("PerTryTimeout")]
     PerTryTimeout,
     #[error("RouteTimeout")]
@@ -123,8 +124,14 @@ impl EventKind {
     pub fn code_details(&self) -> Option<ResponseCodeDetails> {
         match self {
             EventKind::Upstream(err) => match err {
+                UpstreamError::Connect(conn_err) => match &conn_err.kind {
+                    ConnectErrorKind::Timeout(_) => Some(ResponseCodeDetails("connect_timeout")),
+                    ConnectErrorKind::Dns(_) => Some(ResponseCodeDetails("dns_resolution_failed")),
+                    ConnectErrorKind::CircuitBreaker => Some(ResponseCodeDetails("circuit_breaker_overflow")),
+                    ConnectErrorKind::Io(err) => Some(ResponseCodeDetails::from(err)),
+                    _ => Some(ResponseCodeDetails("upstream_connect_failure")),
+                },
                 UpstreamError::Io(err) => Some(ResponseCodeDetails::from(err)),
-                UpstreamError::ConnectTimeout(_) => Some(ResponseCodeDetails("connect_timeout")),
                 UpstreamError::PerTryTimeout => Some(ResponseCodeDetails("upstream_per_try_timeout")),
                 UpstreamError::RouteTimeout => Some(ResponseCodeDetails("upstream_response_timeout")),
                 UpstreamError::Reset => Some(ResponseCodeDetails("upstream_reset_after_response_started{TCP_RESET}")),
@@ -249,11 +256,15 @@ impl TryFrom<&UpstreamError> for UpstreamTransportEventError {
 
     fn try_from(value: &UpstreamError) -> Result<Self, Self::Error> {
         match value {
+            UpstreamError::Connect(conn_err) => match &conn_err.kind {
+                ConnectErrorKind::Timeout(_) => Ok(UpstreamTransportEventError("upstream_connect_timeout")),
+                ConnectErrorKind::Dns(_) => Ok(UpstreamTransportEventError("dns_resolution_failed")),
+                ConnectErrorKind::Io(io_err) => Ok(UpstreamTransportEventError::from(io_err)),
+                _ => Ok(UpstreamTransportEventError("upstream_connect_failure")),
+            },
             // Map standard I/O errors using the previously defined From trait
             UpstreamError::Io(io_err) => Ok(UpstreamTransportEventError::from(io_err)),
 
-            // Connection phase timeout
-            UpstreamError::ConnectTimeout(_) => Ok(UpstreamTransportEventError("upstream_connect_timeout")),
 
             // Timeout for a single retry attempt
             UpstreamError::PerTryTimeout => Ok(UpstreamTransportEventError("upstream_per_try_timeout")),
@@ -289,11 +300,11 @@ impl TryFrom<&UpstreamError> for UpstreamTransportEventError {
 impl Clone for UpstreamError {
     fn clone(&self) -> Self {
         match self {
+            UpstreamError::Connect(conn_err) => UpstreamError::Connect(conn_err.clone()),
             UpstreamError::Io(io_err) => {
                 let new_io_err = io::Error::new(io_err.kind(), io_err.to_string());
                 UpstreamError::Io(new_io_err)
             },
-            UpstreamError::ConnectTimeout(_) => UpstreamError::ConnectTimeout(elapsed()),
             UpstreamError::PerTryTimeout => UpstreamError::PerTryTimeout,
             UpstreamError::RouteTimeout => UpstreamError::RouteTimeout,
             UpstreamError::Reset => UpstreamError::Reset,
@@ -323,7 +334,8 @@ impl Clone for DownstreamError {
 impl From<UpstreamError> for ResponseFlags {
     fn from(err: UpstreamError) -> Self {
         match err {
-            UpstreamError::Io(_) | UpstreamError::ConnectTimeout(_) => {
+            UpstreamError::Connect(conn_err) => ResponseFlags(conn_err.context.response_flags),
+            UpstreamError::Io(_) => {
                 ResponseFlags(FmtResponseFlags::UPSTREAM_CONNECTION_FAILURE)
             },
             UpstreamError::PerTryTimeout => ResponseFlags(FmtResponseFlags::UPSTREAM_REQUEST_TIMEOUT),
@@ -506,17 +518,62 @@ mod tests {
     use crate::Error;
 
     #[test]
+    fn test_upstream_connect_error() {
+        use crate::transport::connector::{ConnectError, ConnectErrorKind, TcpErrorContext};
+        use arion_format::types::ResponseFlags as FmtFlags;
+
+        let io_err = io::Error::new(io::ErrorKind::ConnectionRefused, "connection refused");
+        let conn_err = ConnectError {
+            context: TcpErrorContext {
+                upstream_addr: std::net::SocketAddr::from(([10, 0, 0, 1], 9000)),
+                response_flags: FmtFlags::UPSTREAM_CONNECTION_FAILURE,
+                cluster_name: "backend_cluster",
+            },
+            kind: ConnectErrorKind::Io(io_err),
+        };
+
+        assert!(conn_err.is_retriable());
+        assert!(!conn_err.is_timeout());
+
+        let upstream_err = UpstreamError::from(conn_err);
+        let flags: ResponseFlags = upstream_err.clone().into();
+        assert_eq!(flags.0, FmtFlags::UPSTREAM_CONNECTION_FAILURE);
+
+        let err = Error::upstream(upstream_err);
+        let ctx = err.upstream_context().expect("Should extract context from UpstreamError::Connect");
+        assert_eq!(ctx.cluster_name, "backend_cluster");
+        assert_eq!(ctx.upstream_addr, std::net::SocketAddr::from(([10, 0, 0, 1], 9000)));
+
+        assert!(err.find_source::<io::Error>().is_some(), "Should find inner io::Error");
+
+        let timeout_conn_err = ConnectError {
+            context: TcpErrorContext {
+                upstream_addr: std::net::SocketAddr::from(([10, 0, 0, 1], 9000)),
+                response_flags: FmtFlags::UPSTREAM_CONNECTION_FAILURE,
+                cluster_name: "backend_cluster",
+            },
+            kind: ConnectErrorKind::Timeout(elapsed()),
+        };
+        assert!(timeout_conn_err.is_timeout());
+        assert!(timeout_conn_err.is_retriable());
+        assert!(timeout_conn_err.elapsed().is_some());
+
+        let timeout_err = Error::upstream(timeout_conn_err);
+        assert!(timeout_err.find_source::<tokio::time::error::Elapsed>().is_some(), "Elapsed must be preserved in source chain");
+
+    }
+
+    #[test]
     fn test_error_chain_debug() {
-        let io_err = io::Error::new(io::ErrorKind::ConnectionRefused, "Connection refused");
-        let upstream_err = UpstreamError::Io(io_err);
-        let err = Error::upstream_with_context(
-            TcpErrorContext {
+        let conn_err = ConnectError {
+            context: TcpErrorContext {
                 upstream_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 8080)),
                 response_flags: arion_format::types::ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
                 cluster_name: "test_cluster",
             },
-            upstream_err,
-        );
+            kind: ConnectErrorKind::Io(io::Error::new(io::ErrorKind::ConnectionRefused, "Connection refused")),
+        };
+        let err = Error::upstream(conn_err);
 
         println!("DEBUG TEST: err = {err:?}");
         println!("DEBUG TEST: err display = {err}");
@@ -540,16 +597,18 @@ mod tests {
         let upstream = err.as_upstream_error();
         assert!(matches!(upstream, Some(UpstreamError::RouteTimeout)), "boxed: got {upstream:?}");
 
-        let err = Error::upstream_with_context(
-            TcpErrorContext {
+        let conn_err = ConnectError {
+            context: TcpErrorContext {
                 cluster_name: "test_cluster",
                 upstream_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 8080)),
                 response_flags: arion_format::types::ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
             },
-            UpstreamError::ConnectTimeout(elapsed()),
-        );
+            kind: ConnectErrorKind::Timeout(elapsed()),
+        };
+        let err = Error::upstream(conn_err);
         let upstream = err.as_upstream_error();
-        assert!(matches!(upstream, Some(UpstreamError::ConnectTimeout(_))), "wrapped: got {upstream:?}");
+        assert!(matches!(upstream, Some(UpstreamError::Connect(c)) if c.is_timeout()), "wrapped: got {upstream:?}");
+        assert!(err.upstream_context().is_some());
 
         let err = Error::from(io::Error::new(io::ErrorKind::ConnectionRefused, "nope"));
         assert!(err.find_source::<io::Error>().is_some(), "io::Error not found through Io variant");

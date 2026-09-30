@@ -755,7 +755,7 @@ impl HttpChannel {
                     );
 
                     match event_error {
-                        UpstreamError::RefusedStream | UpstreamError::Io(_) | UpstreamError::ConnectTimeout(_) => {
+                        UpstreamError::Connect(_) | UpstreamError::RefusedStream | UpstreamError::Io(_) => {
                             Ok(SyntheticHttpResponse::service_unavailable(
                                 EventKind::Upstream(event_error),
                                 response_flags,
