@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::body::error::BodyError;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use http_body::{Body, Frame, SizeHint};
@@ -22,29 +23,7 @@ use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-#[derive(Debug, thiserror::Error)]
-pub enum ChannelBodyError {
-    #[error(transparent)]
-    Poly(#[from] Box<crate::body::poly_body::PolyBodyError>),
-    #[error(transparent)]
-    ExtProc(#[from] crate::listeners::http_connection_manager::ext_proc::ExtProcError),
-    #[error(transparent)]
-    Hyper(#[from] hyper::Error),
-    #[error(transparent)]
-    Infallible(#[from] std::convert::Infallible),
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error("{0}")]
-    Other(String),
-}
-
-impl From<crate::body::poly_body::PolyBodyError> for ChannelBodyError {
-    fn from(err: crate::body::poly_body::PolyBodyError) -> Self {
-        Self::Poly(Box::new(err))
-    }
-}
-
-pub type FrameResult = Result<Frame<Bytes>, ChannelBodyError>;
+pub type FrameResult = Result<Frame<Bytes>, BodyError>;
 
 /// A wrapper for any Body that allows observing and modifying frames in real-time.
 pub struct ChannelBody {
@@ -83,7 +62,7 @@ impl ChannelBody {
     pub fn new<B>(body: B, body_type: Option<BodyType>, prefetch_num_frames: NonZeroUsize) -> (Self, FrameBridge)
     where
         B: Body<Data = Bytes> + Send + 'static,
-        B::Error: Into<ChannelBodyError>,
+        B::Error: Into<BodyError>,
     {
         // Create a channel for injecting frames
         let capacity = std::cmp::max(8, prefetch_num_frames.get());
@@ -136,7 +115,7 @@ impl ChannelBody {
 
 impl Body for ChannelBody {
     type Data = Bytes;
-    type Error = ChannelBodyError;
+    type Error = BodyError;
 
     fn poll_frame(
         mut self: Pin<&mut Self>,
@@ -246,7 +225,7 @@ impl FrameBridge {
     fn new<B>(body: B, body_type: Option<BodyType>, injector: mpsc::Sender<FrameResult>) -> Self
     where
         B: Body<Data = Bytes> + Send + 'static,
-        B::Error: Into<ChannelBodyError>,
+        B::Error: Into<BodyError>,
     {
         let end_of_stream = body.is_end_stream();
 
@@ -378,7 +357,7 @@ impl FrameBridge {
                 };
                 Ok(cloned_frame)
             },
-            Err(e) => Err(ChannelBodyError::Other(e.to_string())),
+            Err(e) => Err(e.clone()),
         };
 
         // Inject the original frame

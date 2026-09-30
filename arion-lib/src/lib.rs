@@ -415,6 +415,7 @@ pub use crate::transport::connector::TcpErrorContext;
 pub type Result<T> = ::core::result::Result<T, Error>;
 
 pub use crate::body::poly_body::PolyBody;
+pub use crate::body::BodyError;
 
 use arion_configuration::config::network_filters::http_connection_manager::RetryPolicy;
 use std::time::Duration;

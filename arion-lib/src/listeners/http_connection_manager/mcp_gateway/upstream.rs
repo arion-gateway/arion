@@ -509,9 +509,6 @@ pub(crate) async fn collect_response_body(
 mod tests {
     use super::*;
     use crate::{body::timeout_body::TimeoutBody, PolyBody};
-    use http_body::Frame;
-    use http_body_util::StreamBody;
-    use tokio_stream::wrappers::ReceiverStream;
 
     #[test]
     fn counting_writer_matches_compact_json() {
@@ -540,8 +537,11 @@ mod tests {
 
     #[tokio::test]
     async fn response_body_timeout_is_reported_as_upstream_timeout() {
-        let (_sender, receiver) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, crate::Error>>(1);
-        let body = StreamBody::new(ReceiverStream::new(receiver));
+        let (body, _bridge) = crate::body::channel_body::ChannelBody::new(
+            http_body_util::Empty::<Bytes>::new(),
+            None,
+            std::num::NonZeroUsize::new(1).unwrap(),
+        );
         let response = Response::builder()
             .status(StatusCode::OK)
             .body(TimeoutBody::new(Some(std::time::Duration::from_millis(1)), PolyBody::from(body)).into())

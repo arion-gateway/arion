@@ -20,7 +20,7 @@
 
 use std::ops::BitOr;
 
-use crate::body::{poly_body::PolyBodyError, timeout_body::TimeoutBodyError};
+use crate::body::{error::BodyError, timeout_body::TimeoutBodyError};
 use arion_format::types::ResponseFlags as FmtResponseFlags;
 
 #[derive(Clone, Copy, Debug)]
@@ -93,27 +93,23 @@ impl From<(&'_ hyper::Error, BodyKind)> for ResponseFlags {
     }
 }
 
-impl From<(&'_ PolyBodyError, BodyKind)> for ResponseFlags {
-    fn from((err, kind): (&PolyBodyError, BodyKind)) -> Self {
+impl From<(&'_ BodyError, BodyKind)> for ResponseFlags {
+    fn from((err, kind): (&BodyError, BodyKind)) -> Self {
         match err {
-            PolyBodyError::Hyper(error) => (error, kind).into(),
-            PolyBodyError::Infallible(_)
-            | PolyBodyError::Grpc(_)
-            | PolyBodyError::ExtProc(_)
-            | PolyBodyError::Io(_)
-            | PolyBodyError::Crate(_)
-            | PolyBodyError::BadVariant
-            | PolyBodyError::Trailers(_) => ResponseFlags(FmtResponseFlags::empty()),
-            PolyBodyError::TimedOut => match kind {
+            BodyError::Hyper(error) => (error.as_ref(), kind).into(),
+            BodyError::TimedOut => match kind {
                 BodyKind::Request => ResponseFlags(FmtResponseFlags::UPSTREAM_REQUEST_TIMEOUT),
                 BodyKind::Response => ResponseFlags(FmtResponseFlags::STREAM_IDLE_TIMEOUT),
+            },
+            BodyError::Grpc(_) | BodyError::ExtProc(_) | BodyError::Io(_) | BodyError::TrailersNotSupported(_) => {
+                ResponseFlags(FmtResponseFlags::empty())
             },
         }
     }
 }
 
-impl From<(&'_ TimeoutBodyError<PolyBodyError>, BodyKind)> for ResponseFlags {
-    fn from((err, kind): (&TimeoutBodyError<PolyBodyError>, BodyKind)) -> Self {
+impl From<(&'_ TimeoutBodyError<BodyError>, BodyKind)> for ResponseFlags {
+    fn from((err, kind): (&TimeoutBodyError<BodyError>, BodyKind)) -> Self {
         match err {
             TimeoutBodyError::TimedOut => match kind {
                 BodyKind::Request => ResponseFlags(FmtResponseFlags::UPSTREAM_REQUEST_TIMEOUT),
