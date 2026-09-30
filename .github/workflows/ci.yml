@@ -72,13 +72,14 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
+          target: wasm32-unknown-unknown # for the Wasm test filters
           profile: minimal
 
       - name: Build (release)
-        run: cargo build --workspace --release --locked
+        run: cargo build --all-features --workspace --release --locked
 
       - name: Run tests
-        run: cargo test --workspace --release --locked
+        run: cargo test --all-features --workspace --release --locked
 
   # E2E tests spawn the arion binary, so build it (release, all features) first
   e2e-test:
