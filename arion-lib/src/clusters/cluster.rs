@@ -351,6 +351,59 @@ upstream_bind_config:
     }
 
     #[test]
+    fn eds_endpoints_use_cluster_protocol_options_and_timeouts() {
+        use crate::clusters::clusters_manager::{add_cluster, change_cluster_load_assignment, remove_cluster};
+        use crate::transport::connector::ConnectUsing;
+        use arion_configuration::config::cluster::http_protocol_options::Codec;
+        use arion_data_plane_api::envoy_data_plane_api::envoy::config::endpoint::v3::ClusterLoadAssignment as EnvoyCla;
+        use std::time::Duration;
+
+        const NAME: &str = "eds-h2-cluster";
+        const CLUSTER: &str = r#"
+name: eds-h2-cluster
+type: EDS
+connect_timeout: 3s
+typed_extension_protocol_options:
+  envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+    "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+    common_http_protocol_options:
+      idle_timeout: 7s
+    explicit_http_config:
+      http2_protocol_options: {}
+"#;
+        const CLA: &str = r#"
+cluster_name: eds-h2-cluster
+endpoints:
+  - lb_endpoints:
+      - endpoint:
+          address:
+            socket_address:
+              address: 10.0.0.1
+              port_value: 50051
+"#;
+
+        let secrets_man = SecretManager::new();
+        let cluster = ClusterConfig::try_from(from_yaml::<EnvoyCluster>(CLUSTER).unwrap()).unwrap();
+        add_cluster(PartialClusterType::try_from((Box::new(cluster), &secrets_man)).unwrap()).unwrap();
+
+        let cla = ClusterLoadAssignmentConfig::try_from(from_yaml::<EnvoyCla>(CLA).unwrap()).unwrap();
+        let cla = PartialClusterLoadAssignment::try_from(cla).unwrap();
+        let updated = change_cluster_load_assignment(NAME, &cla);
+        remove_cluster(NAME).unwrap();
+
+        let ClusterType::Dynamic(cluster) = updated.unwrap() else { panic!("expected an EDS cluster") };
+        let load_assignment = cluster.load_assignment.expect("load assignment");
+        let endpoints: Vec<_> = load_assignment.endpoints.iter().flat_map(|l| l.endpoints.iter()).collect();
+        let [endpoint] = endpoints.as_slice() else { panic!("expected exactly one endpoint") };
+        assert_eq!(endpoint.http_channel().http_version(), Codec::Http2);
+        let ConnectUsing::Socket { connect_timeout, idle_timeout, .. } = &endpoint.connect_using else {
+            panic!("expected a socket endpoint")
+        };
+        assert_eq!(*connect_timeout, Some(Duration::from_secs(3)));
+        assert_eq!(*idle_timeout, Some(Duration::from_secs(7)));
+    }
+
+    #[test]
     fn cluster_2_health_check_not_supported() {
         const CLUSTER: &str = r#"
 name: cluster1
