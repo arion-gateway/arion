@@ -665,7 +665,7 @@ mod tests {
         let io_err = io::Error::new(io::ErrorKind::ConnectionRefused, "connection refused");
         let conn_err = ConnectError {
             context: TcpErrorContext {
-                upstream_addr: std::net::SocketAddr::from(([10, 0, 0, 1], 9000)),
+                upstream_addr: Some(std::net::SocketAddr::from(([10, 0, 0, 1], 9000))),
                 response_flags: FmtFlags::UPSTREAM_CONNECTION_FAILURE,
                 cluster_name: "backend_cluster",
             },
@@ -682,13 +682,13 @@ mod tests {
         let err = Error::upstream(upstream_err);
         let ctx = err.upstream_context().expect("Should extract context from UpstreamError::Connect");
         assert_eq!(ctx.cluster_name, "backend_cluster");
-        assert_eq!(ctx.upstream_addr, std::net::SocketAddr::from(([10, 0, 0, 1], 9000)));
+        assert_eq!(ctx.upstream_addr, Some(std::net::SocketAddr::from(([10, 0, 0, 1], 9000))));
 
         assert!(err.find_source::<io::Error>().is_some(), "Should find inner io::Error");
 
         let timeout_conn_err = ConnectError {
             context: TcpErrorContext {
-                upstream_addr: std::net::SocketAddr::from(([10, 0, 0, 1], 9000)),
+                upstream_addr: Some(std::net::SocketAddr::from(([10, 0, 0, 1], 9000))),
                 response_flags: FmtFlags::UPSTREAM_CONNECTION_FAILURE,
                 cluster_name: "backend_cluster",
             },
@@ -709,7 +709,7 @@ mod tests {
     fn test_error_chain_debug() {
         let conn_err = ConnectError {
             context: TcpErrorContext {
-                upstream_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 8080)),
+                upstream_addr: Some(std::net::SocketAddr::from(([127, 0, 0, 1], 8080))),
                 response_flags: arion_format::types::ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
                 cluster_name: "test_cluster",
             },
@@ -742,7 +742,7 @@ mod tests {
         let conn_err = ConnectError {
             context: TcpErrorContext {
                 cluster_name: "test_cluster",
-                upstream_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 8080)),
+                upstream_addr: Some(std::net::SocketAddr::from(([127, 0, 0, 1], 8080))),
                 response_flags: arion_format::types::ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
             },
             kind: ConnectErrorKind::Timeout(elapsed()),

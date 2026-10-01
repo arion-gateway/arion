@@ -262,7 +262,7 @@ impl TcpProxy {
                             response_flags.insert(ResponseFlags::UPSTREAM_CONNECTION_FAILURE);
 
                             if let Some(tcp_error) = e.upstream_context() {
-                                maybe_upstream_peer_addr = Some(tcp_error.upstream_addr);
+                                maybe_upstream_peer_addr = tcp_error.upstream_addr;
                                 response_flags = tcp_error.response_flags;
                                 cluster_name = tcp_error.cluster_name;
                             } else {

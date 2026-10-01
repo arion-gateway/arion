@@ -129,7 +129,7 @@ impl ConnectUsing {
 
 #[derive(Debug, Clone)]
 pub struct TcpErrorContext {
-    pub upstream_addr: SocketAddr,
+    pub upstream_addr: Option<SocketAddr>,
     pub response_flags: ResponseFlags,
     pub cluster_name: &'static str,
 }
@@ -170,7 +170,7 @@ impl Clone for ConnectErrorKind {
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("connection failed to upstream '{}' ({}): {kind}", context.cluster_name, context.upstream_addr)]
+#[error("connection failed to upstream '{}' ({:?}): {kind}", context.cluster_name, context.upstream_addr)]
 pub struct ConnectError {
     pub context: TcpErrorContext,
     #[source]
@@ -206,7 +206,7 @@ struct ContextBuilder {
 
 impl ContextBuilder {
     #[inline]
-    fn error(&self, addr: SocketAddr, flags: ResponseFlags, kind: impl Into<ConnectErrorKind>) -> crate::Error {
+    fn error(&self, addr: Option<SocketAddr>, flags: ResponseFlags, kind: impl Into<ConnectErrorKind>) -> crate::Error {
         crate::Error::upstream(UpstreamError::Connect(ConnectError {
             context: TcpErrorContext { upstream_addr: addr, response_flags: flags, cluster_name: self.cluster_name },
             kind: kind.into(),
@@ -236,7 +236,7 @@ impl LocalConnectorWithDNSResolver {
             let host = addr.host();
             let port = addr.port_u16().ok_or_else(|| {
                 ctx.error(
-                    SocketAddr::from(([0, 0, 0, 0], 0)),
+                    None,
                     ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
                     ConnectErrorKind::MissingPort(format!("{addr:?}")),
                 )
@@ -244,7 +244,7 @@ impl LocalConnectorWithDNSResolver {
 
             let addr = resolve(host, port).await.map_err(|e| {
                 ctx.error(
-                    SocketAddr::from(([0, 0, 0, 0], port)),
+                    Some(SocketAddr::from(([0, 0, 0, 0], port))),
                     ResponseFlags::DNS_RESOLUTION_FAILED,
                     ConnectErrorKind::Dns(e),
                 )
@@ -253,14 +253,14 @@ impl LocalConnectorWithDNSResolver {
             let sock = match addr {
                 SocketAddr::V4(_) => TcpSocket::new_v4().map_err(|e| {
                     ctx.error(
-                        addr,
+                        Some(addr),
                         ResponseFlags::NO_HEALTHY_UPSTREAM | ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
                         ConnectErrorKind::Socket(e),
                     )
                 })?,
                 SocketAddr::V6(_) => TcpSocket::new_v6().map_err(|e| {
                     ctx.error(
-                        addr,
+                        Some(addr),
                         ResponseFlags::NO_HEALTHY_UPSTREAM | ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
                         ConnectErrorKind::Socket(e),
                     )
@@ -270,7 +270,7 @@ impl LocalConnectorWithDNSResolver {
             if let Some(device) = device {
                 debug!("Binding socket to: {:?}", device);
                 super::bind_device::bind_device(&sock, &device).map_err(|e| {
-                    ctx.error(addr, ResponseFlags::UPSTREAM_CONNECTION_FAILURE, ConnectErrorKind::BindDevice(e))
+                    ctx.error(Some(addr), ResponseFlags::UPSTREAM_CONNECTION_FAILURE, ConnectErrorKind::BindDevice(e))
                 })?;
             }
 
@@ -279,17 +279,17 @@ impl LocalConnectorWithDNSResolver {
                     .await
                     .map_err(|_e| {
                         ctx.error(
-                            addr,
+                            Some(addr),
                             ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
                             ConnectErrorKind::Timeout(elapsed()),
                         )
                     })?
                     .map_err(|orig| {
-                        ctx.error(addr, ResponseFlags::UPSTREAM_CONNECTION_FAILURE, ConnectErrorKind::Io(orig))
+                        ctx.error(Some(addr), ResponseFlags::UPSTREAM_CONNECTION_FAILURE, ConnectErrorKind::Io(orig))
                     })?
             } else {
                 sock.connect(addr).await.map_err(|orig| {
-                    ctx.error(addr, ResponseFlags::UPSTREAM_CONNECTION_FAILURE, ConnectErrorKind::Io(orig))
+                    ctx.error(Some(addr), ResponseFlags::UPSTREAM_CONNECTION_FAILURE, ConnectErrorKind::Io(orig))
                 })?
             };
 
@@ -337,7 +337,7 @@ impl InternalConnector {
         let ctx = ContextBuilder { cluster_name: self.cluster_name };
         let sender = internal_registry::get_connection_sender_for_listener(self.listener_name).ok_or_else(|| {
             ctx.error(
-                SocketAddr::from(([0, 0, 0, 0], 0)),
+                None,
                 ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
                 ConnectErrorKind::InternalListener(format!(
                     "Internal listener '{}' not found or not ready",
@@ -359,7 +359,7 @@ impl InternalConnector {
         };
         if let Err(e) = sender.send(internal_conn).await {
             return Err(ctx.error(
-                SocketAddr::from(([0, 0, 0, 0], 0)),
+                None,
                 ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
                 ConnectErrorKind::InternalListener(format!(
                     "Failed to send connection to internal listener '{}': {}",
@@ -432,7 +432,7 @@ impl Service<Uri> for UnifiedConnector {
                     return Box::pin(async move {
                         Err(crate::Error::upstream(UpstreamError::Connect(ConnectError {
                             context: TcpErrorContext {
-                                upstream_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
+                                upstream_addr: None,
                                 response_flags: ResponseFlags::UPSTREAM_OVERFLOW,
                                 cluster_name,
                             },
