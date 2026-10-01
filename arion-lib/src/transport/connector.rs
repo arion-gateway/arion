@@ -193,7 +193,10 @@ impl ConnectError {
 
     #[inline]
     pub fn is_retriable(&self) -> bool {
-        matches!(self.kind, ConnectErrorKind::Timeout(_) | ConnectErrorKind::Io(_))
+        matches!(
+            self.kind,
+            ConnectErrorKind::Timeout(_) | ConnectErrorKind::Io(_) | ConnectErrorKind::InternalListener(_)
+        )
     }
 }
 
