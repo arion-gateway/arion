@@ -112,9 +112,21 @@ impl PathRewriteSpecifier {
 
             PathRewriteSpecifier::Prefix(prefix) => {
                 if let Some(matched_range) = route_match_result.matched_range() {
+                    let mut boundary = matched_range.end;
+                    if boundary > 0 && old_path.as_bytes().get(boundary - 1) == Some(&b'/') {
+                        boundary -= 1;
+                    }
                     // Use get() to safely handle range bounds and avoid panics on non-char boundaries
-                    let orig_without_prefix = old_path.get(matched_range.end..).unwrap_or("");
-                    format!("{prefix}{orig_without_prefix}").into()
+                    let remainder = old_path.get(boundary..).unwrap_or("");
+                    let replacement = if remainder.starts_with('/') {
+                        prefix.as_str().strip_suffix('/').unwrap_or(prefix.as_str())
+                    } else {
+                        prefix.as_str()
+                    };
+                    match format!("{replacement}{remainder}") {
+                        rewritten if rewritten.is_empty() => Cow::Borrowed("/"),
+                        rewritten => rewritten.into(),
+                    }
                 } else {
                     return Ok(None);
                 }
@@ -556,6 +568,32 @@ mod tests {
             )
             .unwrap();
         assert_eq!(result, expected);
+    }
+
+    fn prefix_rewrite(path: &str, matched: usize, prefix: &str) -> PathAndQuery {
+        let uri = PathAndQuery::from_str(path).unwrap();
+        PathRewriteSpecifier::Prefix(prefix.into())
+            .apply(
+                Some(&uri),
+                &RouteMatchResult {
+                    path_match: Some(PathMatcherResult { inner: Some(matched) }),
+                    headers_matched: true,
+                    query_parameters_matched: true,
+                },
+            )
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_prefix_rewrite_keeps_path_separator() {
+        // A path-separated prefix "/api" matches "/api/" (5 bytes) of "/api/foo".
+        assert_eq!(prefix_rewrite("/api/foo", 5, "/v2"), "/v2/foo");
+        assert_eq!(prefix_rewrite("/prefix/three", 8, "/"), "/three");
+        assert_eq!(prefix_rewrite("/prefix", 7, "/one"), "/one");
+        assert_eq!(prefix_rewrite("/prefix", 7, "/"), "/");
+        assert_eq!(prefix_rewrite("/api", 4, "/v1/"), "/v1/");
+        assert_eq!(prefix_rewrite("/api/foo?q=1", 5, "/v2"), "/v2/foo?q=1");
     }
 
     #[test]
