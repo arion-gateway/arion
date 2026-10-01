@@ -433,7 +433,7 @@ impl Service<Uri> for UnifiedConnector {
                         Err(crate::Error::upstream(UpstreamError::Connect(ConnectError {
                             context: TcpErrorContext {
                                 upstream_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
-                                response_flags: ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
+                                response_flags: ResponseFlags::UPSTREAM_OVERFLOW,
                                 cluster_name,
                             },
                             kind: ConnectErrorKind::CircuitBreaker,
