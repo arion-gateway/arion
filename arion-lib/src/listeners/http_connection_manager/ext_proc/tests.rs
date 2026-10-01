@@ -6724,3 +6724,149 @@ async fn test_immediate_response_with_grpc_status() {
         // but typically in testing it works or we just check status.
     });
 }
+
+/// Answers every message with a plain CONTINUE and records what it received. With
+/// `hold_until_request_end` it mimics grpc-go servers such as the GIE endpoint picker, which
+/// read the whole request before sending anything — including the gRPC response headers.
+#[derive(Clone)]
+struct RecordingProcessor {
+    hold_until_request_end: bool,
+    received: mpsc::UnboundedSender<ProcessingRequest>,
+}
+
+impl RecordingProcessor {
+    fn answer(&self, request: ProcessingRequest) -> ProcessingResponse {
+        let common = Some(CommonResponse::default());
+        let response = match &request.request {
+            Some(ProcessingRequestType::RequestHeaders(_)) => {
+                ProcessingResponseType::RequestHeaders(HeadersResponse { response: common })
+            },
+            Some(ProcessingRequestType::RequestBody(_)) => {
+                ProcessingResponseType::RequestBody(BodyResponse { response: common })
+            },
+            Some(ProcessingRequestType::RequestTrailers(_)) => {
+                ProcessingResponseType::RequestTrailers(TrailersResponse::default())
+            },
+            Some(ProcessingRequestType::ResponseHeaders(_)) => {
+                ProcessingResponseType::ResponseHeaders(HeadersResponse { response: common })
+            },
+            Some(ProcessingRequestType::ResponseBody(_)) => {
+                ProcessingResponseType::ResponseBody(BodyResponse { response: common })
+            },
+            Some(ProcessingRequestType::ResponseTrailers(_)) | None => {
+                ProcessingResponseType::ResponseTrailers(TrailersResponse::default())
+            },
+        };
+        _ = self.received.send(request);
+        ProcessingResponse { response: Some(response), ..Default::default() }
+    }
+}
+
+fn ends_stream(request: &ProcessingRequest) -> bool {
+    match &request.request {
+        Some(ProcessingRequestType::RequestHeaders(headers) | ProcessingRequestType::ResponseHeaders(headers)) => {
+            headers.end_of_stream
+        },
+        Some(ProcessingRequestType::RequestBody(body) | ProcessingRequestType::ResponseBody(body)) => {
+            body.end_of_stream
+        },
+        Some(ProcessingRequestType::RequestTrailers(_) | ProcessingRequestType::ResponseTrailers(_)) => true,
+        None => false,
+    }
+}
+
+#[async_trait]
+impl ExternalProcessorService for RecordingProcessor {
+    type ProcessStream = ReceiverStream<Result<ProcessingResponse, Status>>;
+
+    async fn process(
+        &self,
+        request: TonicRequest<Streaming<ProcessingRequest>>,
+    ) -> Result<TonicResponse<Self::ProcessStream>, Status> {
+        let mut inbound = request.into_inner();
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        if self.hold_until_request_end {
+            while let Some(request) = inbound.message().await? {
+                let request_end = ends_stream(&request);
+                _ = tx.send(Ok(self.answer(request))).await;
+                if request_end {
+                    break;
+                }
+            }
+        }
+        let processor = self.clone();
+        tokio::spawn(async move {
+            while let Ok(Some(request)) = inbound.message().await {
+                if tx.send(Ok(processor.answer(request))).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(TonicResponse::new(ReceiverStream::new(rx)))
+    }
+}
+
+async fn start_recording_server(
+    hold_until_request_end: bool,
+) -> (SocketAddr, mpsc::UnboundedReceiver<ProcessingRequest>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server_addr = listener.local_addr().unwrap();
+    let (received, receiver) = mpsc::unbounded_channel();
+    let processor = RecordingProcessor { hold_until_request_end, received };
+    tokio::spawn(
+        Server::builder()
+            .add_service(ExternalProcessorServer::new(processor))
+            .serve_with_incoming(TcpListenerStream::new(listener)),
+    );
+    (server_addr, receiver)
+}
+
+/// The `end_of_stream` flags of the request and of the response body messages received so far.
+fn body_end_of_stream_flags(received: &mut mpsc::UnboundedReceiver<ProcessingRequest>) -> (Vec<bool>, Vec<bool>) {
+    let (mut request, mut response) = (vec![], vec![]);
+    while let Ok(message) = received.try_recv() {
+        match message.request {
+            Some(ProcessingRequestType::RequestBody(body)) => request.push(body.end_of_stream),
+            Some(ProcessingRequestType::ResponseBody(body)) => response.push(body.end_of_stream),
+            _ => {},
+        }
+    }
+    (request, response)
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_processor_answering_after_the_whole_request() {
+    // Merged by pairs, 13 frames make 7 body messages: more than the request channel holds.
+    const FRAMES: [&str; 13] =
+        ["f00", "f01", "f02", "f03", "f04", "f05", "f06", "f07", "f08", "f09", "f10", "f11", "f12"];
+    const DEADLINE: Duration = Duration::from_secs(3);
+
+    let (server_addr, mut received) = start_recording_server(true).await;
+    let processing_mode = ProcessingMode {
+        request_header_mode: HeaderProcessingMode::Send,
+        request_body_mode: BodyProcessingMode::FullDuplexStreamed,
+        request_trailer_mode: TrailerProcessingMode::Send,
+        response_header_mode: HeaderProcessingMode::Skip,
+        response_body_mode: BodyProcessingMode::None,
+        response_trailer_mode: TrailerProcessingMode::Skip,
+    };
+    let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+    config.send_body_without_waiting_for_header_response = true;
+    let ext_config = ExternalProcessorConfigExt { frame_merge_limit: 2, frame_merge_window: Duration::from_secs(3600) };
+
+    let mut post = build_request_from_mock(&MockMessage::<RequestMsg>::new(vec![], FRAMES.to_vec(), vec![])).await;
+    *post.method_mut() = Method::POST;
+    let mut ext_proc = ExternalProcessor::from((config.clone(), None, Some(ext_config.clone())));
+    let result = fast_timeout(DEADLINE, ext_proc.apply_request(&mut post, &RequestCtx::default())).await;
+    assert_matches!(result, Ok(FilterDecision::Continue));
+    let body = fast_timeout(DEADLINE, std::mem::take(&mut post.body_mut().inner.inner).collect()).await;
+    assert_eq!(body.unwrap().unwrap().to_bytes(), FRAMES.concat());
+    let (request_body_messages, _) = body_end_of_stream_flags(&mut received);
+    assert_eq!(request_body_messages, [false, false, false, false, false, false, true]);
+
+    let mut get = build_request_from_mock(&MockMessage::<RequestMsg>::new(vec![], vec![], vec![])).await;
+    let mut ext_proc = ExternalProcessor::from((config, None, Some(ext_config)));
+    let result = fast_timeout(DEADLINE, ext_proc.apply_request(&mut get, &RequestCtx::default())).await;
+    assert_matches!(result, Ok(FilterDecision::Continue));
+}

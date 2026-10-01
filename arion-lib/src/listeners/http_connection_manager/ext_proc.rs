@@ -67,12 +67,15 @@ use arion_data_plane_api::envoy_data_plane_api::{
         },
     },
     google,
-    tonic::{codec::Streaming, Status},
+    tonic::{codec::Streaming, Response as TonicResponse, Status},
 };
 use arion_format::types::ResponseFlags as FmtResponseFlags;
 use bytes::Bytes;
 use const_str::parse;
-use futures::{future::Either, StreamExt};
+use futures::{
+    future::{BoxFuture, Either},
+    FutureExt, StreamExt,
+};
 use http::header::CONTENT_LENGTH;
 use http::{Request, Response, StatusCode};
 use http_body::{Body, Frame};
@@ -920,7 +923,62 @@ pub enum ProcessingData {
 
 struct BidiStream {
     external_sender: mpsc::Sender<ProcessingRequest>,
-    inbound_responses: Streaming<ProcessingResponse>,
+    inbound: Inbound,
+}
+
+/// The `process()` call resolves only when the response headers arrive, which grpc-go servers
+/// may withhold until they have read the whole request — so the call is polled alongside
+/// outbound sends instead of being awaited up front.
+#[allow(clippy::large_enum_variant)]
+enum Inbound {
+    Pending(BoxFuture<'static, Result<Streaming<ProcessingResponse>, Status>>),
+    Ready(Streaming<ProcessingResponse>),
+    Failed(Status),
+}
+
+impl From<Result<Streaming<ProcessingResponse>, Status>> for Inbound {
+    fn from(call: Result<Streaming<ProcessingResponse>, Status>) -> Self {
+        match call {
+            Ok(inbound_responses) => Self::Ready(inbound_responses),
+            Err(status) => Self::Failed(status),
+        }
+    }
+}
+
+impl BidiStream {
+    fn is_pending(&self) -> bool {
+        matches!(self.inbound, Inbound::Pending(_))
+    }
+
+    async fn resolve(&mut self) {
+        if let Inbound::Pending(call) = &mut self.inbound {
+            self.inbound = Inbound::from(call.await);
+        }
+    }
+
+    async fn message(&mut self) -> Result<Option<ProcessingResponse>, Status> {
+        loop {
+            match &mut self.inbound {
+                Inbound::Pending(_) => self.resolve().await,
+                Inbound::Ready(inbound_responses) => return inbound_responses.message().await,
+                Inbound::Failed(status) => return Err(status.clone()),
+            }
+        }
+    }
+
+    #[allow(clippy::result_large_err)]
+    async fn send(&mut self, request: ProcessingRequest) -> Result<(), SendError<ProcessingRequest>> {
+        let send = self.external_sender.send(request);
+        tokio::pin!(send);
+        // While the call is pending, it must be polled to drive the request stream.
+        if let Inbound::Pending(call) = &mut self.inbound {
+            tokio::select! {
+                outcome = &mut send => return outcome,
+                resolved = call => self.inbound = Inbound::from(resolved),
+            }
+        }
+        send.await
+    }
 }
 
 struct TimeoutState {
@@ -1078,7 +1136,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                 },
 
                 inbound_processing_response = if let Some(stream) = self.bidi_stream.as_mut() {
-                        Either::Left(stream.inbound_responses.message())
+                        Either::Left(stream.message())
                     } else {
                         Either::Right(std::future::pending::<Result<Option<ProcessingResponse>, Status>>())
                     } => {
@@ -1535,6 +1593,12 @@ impl ExternalProcessingWorker<kind::Observability> {
                     }
                 },
 
+                () = if let Some(stream) = self.bidi_stream.as_mut() {
+                        Either::Left(stream.resolve())
+                    } else {
+                        Either::Right(std::future::pending())
+                    }, if self.bidi_stream.as_ref().is_some_and(BidiStream::is_pending) => {},
+
                 outbound_request_body_frame = self.request_processing.frame_bridge.next(), if outbound_req_enabled => {
                     debug!(target: "ext_proc", "outbound request body frame: {:?}", TruncatedDebug::<_,1024>(&outbound_request_body_frame));
                     match outbound_request_body_frame {
@@ -1712,7 +1776,7 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
                 yield message
             }
         };
-        let response_stream = match grpc_service_specifier {
+        let call = match grpc_service_specifier {
             GrpcServiceSpecifier::Cluster(cluster_grpc) => {
                 let cluster_spec = ClusterSpecifier::Cluster(cluster_grpc.cluster_name.clone());
                 let cluster_id = clusters_manager::resolve_cluster(&cluster_spec, None).ok_or_else(|| {
@@ -1725,11 +1789,7 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
                 let mut client =
                     ExternalProcessorClient::new(grpc_service).max_decoding_message_size(max_receive_message_length);
 
-                client
-                    .process(request_stream)
-                    .await
-                    .map_err(|e| Error::from(format!("Failed to establish external processor stream: {e}")))?
-                    .into_inner()
+                async move { client.process(request_stream).await.map(TonicResponse::into_inner) }.boxed()
             },
             GrpcServiceSpecifier::GoogleGrpc(google_grpc) => {
                 let mut client = ExternalProcessorClient::connect(google_grpc.target_uri.clone())
@@ -1739,19 +1799,18 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
                     })?
                     .max_decoding_message_size(max_receive_message_length);
 
-                client
-                    .process(request_stream)
-                    .await
-                    .map_err(|e| Error::from(format!("Failed to establish external processor stream: {e}")))?
-                    .into_inner()
+                async move { client.process(request_stream).await.map(TonicResponse::into_inner) }.boxed()
             },
         };
 
-        Ok::<_, Error>(BidiStream { external_sender: request_sender, inbound_responses: response_stream })
+        Ok::<_, Error>(BidiStream { external_sender: request_sender, inbound: Inbound::Pending(call) })
     }
 
-    async fn get_bidi_stream(&mut self, pending_request: &mut Option<ProcessingRequest>) -> Result<&BidiStream, Error> {
-        if let Some(ref stream) = self.bidi_stream {
+    async fn get_bidi_stream(
+        &mut self,
+        pending_request: &mut Option<ProcessingRequest>,
+    ) -> Result<&mut BidiStream, Error> {
+        if let Some(ref mut stream) = self.bidi_stream {
             Ok(stream)
         } else {
             let first_request = pending_request.take().ok_or_else(|| {
@@ -1786,7 +1845,7 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
             Ok(stream) => stream,
         };
         let send_outcome = match request_opt {
-            Some(request) => Some(stream.external_sender.send(request).await),
+            Some(request) => Some(stream.send(request).await),
             None => None,
         };
 
