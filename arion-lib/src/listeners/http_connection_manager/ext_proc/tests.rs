@@ -25,8 +25,8 @@ use crate::{
     },
 };
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
-    BodyProcessingMode, ExternalProcessor as ExternalProcessorConfig, GoogleGrpc, GrpcService, HeaderProcessingMode,
-    RouteCacheAction, TrailerProcessingMode,
+    BodyProcessingMode, ExtProcOverrides, ExternalProcessor as ExternalProcessorConfig, GoogleGrpc, GrpcService,
+    HeaderProcessingMode, MetadataNamespaces, MetadataOptions, RouteCacheAction, TrailerProcessingMode,
 };
 use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::ext_proc::v3::{
     processing_mode, ProcessingMode as EnvoyProcessingMode,
@@ -34,7 +34,7 @@ use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::core::v3::{
-            header_value_option::HeaderAppendAction, HeaderValue as EnvoyHeaderValue, HeaderValueOption,
+            header_value_option::HeaderAppendAction, HeaderValue as EnvoyHeaderValue, HeaderValueOption, Metadata,
         },
         r#type::v3::HttpStatus as EnvoyHttpStatus,
         service::ext_proc::v3::{
@@ -47,17 +47,18 @@ use arion_data_plane_api::envoy_data_plane_api::{
             TrailersResponse,
         },
     },
+    google::protobuf::{value::Kind, Struct, Value},
     tonic::{
         async_trait,
         transport::{Error as TonicError, Server},
         Request as TonicRequest, Response as TonicResponse,
     },
 };
-use http::{Method, Version};
+use http::{uri::Authority, Method, Version};
 use http_body_util::{Empty, StreamBody};
 use pingora::prelude::fast_timeout::fast_timeout;
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     net::SocketAddr,
     ops::{Deref, DerefMut},
     str::FromStr,
@@ -481,6 +482,7 @@ fn create_default_config_for_ext_proc_filter(
         route_cache_action: RouteCacheAction::Default,
         send_body_without_waiting_for_header_response: false,
         deferred_close_timeout: None,
+        metadata_options: None,
     }
 }
 
@@ -6959,4 +6961,91 @@ async fn test_body_end_of_stream_after_the_merge_window() {
     let body = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
     assert!(body.is_empty());
     assert_eq!(body_end_of_stream_flags(&mut received), (vec![true], vec![]));
+}
+
+/// Runs a request and a response through `ext_proc`, then returns the `metadata_context` of the
+/// response headers message after checking that no other message carried one.
+async fn response_headers_metadata(
+    mut ext_proc: ExternalProcessor,
+    served_endpoint: Option<&'static str>,
+    received: &mut mpsc::UnboundedReceiver<ProcessingRequest>,
+) -> Option<Metadata> {
+    let mut request = build_request_from_mock(&MockMessage::<RequestMsg>::new(vec![], vec![], vec![])).await;
+    assert_matches!(ext_proc.apply_request(&mut request, &RequestCtx::default()).await, FilterDecision::Continue);
+
+    let mut response = build_response_from_mock(&MockMessage::<ResponseMsg>::new(
+        vec![Some(("content-type", "application/json"))],
+        vec![],
+        vec![],
+    ))
+    .await;
+    if let Some(endpoint) = served_endpoint {
+        response.extensions_mut().insert(ServedEndpoint(Authority::from_static(endpoint)));
+    }
+    assert_matches!(ext_proc.apply_response(&mut response, &RequestCtx::default()).await, FilterDecision::Continue);
+
+    let mut response_headers = None;
+    while let Ok(message) = received.try_recv() {
+        if matches!(message.request, Some(ProcessingRequestType::ResponseHeaders(_))) {
+            response_headers = Some(message.metadata_context);
+        } else {
+            assert_eq!(message.metadata_context, None, "{message:?}");
+        }
+    }
+    response_headers.expect("the processor got no response headers")
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_served_endpoint_metadata_on_response_headers() {
+    let (server_addr, mut received) = start_recording_server(false).await;
+    let processing_mode = ProcessingMode {
+        request_header_mode: HeaderProcessingMode::Send,
+        request_trailer_mode: TrailerProcessingMode::Skip,
+        response_header_mode: HeaderProcessingMode::Send,
+        response_trailer_mode: TrailerProcessingMode::Skip,
+        ..ProcessingMode::default()
+    };
+    let config = |namespaces: Option<&[&str]>| ExternalProcessorConfig {
+        metadata_options: namespaces.map(|namespaces| MetadataOptions {
+            forwarding_namespaces: MetadataNamespaces { untyped: namespaces.iter().map(ToString::to_string).collect() },
+        }),
+        ..create_default_config_for_ext_proc_filter(server_addr, processing_mode.clone())
+    };
+    let served = |endpoint: &str| Metadata {
+        filter_metadata: HashMap::from([(
+            "envoy.lb".to_owned(),
+            Struct {
+                fields: HashMap::from([(
+                    "x-gateway-destination-endpoint-served".to_owned(),
+                    Value { kind: Some(Kind::StringValue(endpoint.to_owned())) },
+                )]),
+            },
+        )]),
+        ..Default::default()
+    };
+
+    let forwarding = ExternalProcessor::from(config(Some(&["other", "envoy.lb"])));
+    let metadata = response_headers_metadata(forwarding, Some("10.0.0.7:3000"), &mut received).await;
+    assert_eq!(metadata, Some(served("10.0.0.7:3000")));
+
+    // Per-route overrides, as the controller sets them, keep the listener's forwarding.
+    let overrides = ExtProcOverrides {
+        processing_mode: Some(processing_mode.clone()),
+        grpc_service: Some(config(None).grpc_service),
+        failure_mode_allow: Some(false),
+    };
+    let per_route = ExtProcPerRoute { disabled: false, overrides: Some(overrides) };
+    let overridden = ExternalProcessor::from((config(Some(&["envoy.lb"])), Some(per_route), None));
+    let metadata = response_headers_metadata(overridden, Some("[fd00::7]:3000"), &mut received).await;
+    assert_eq!(metadata, Some(served("[fd00::7]:3000")));
+
+    // Not asked for, or not a host override cluster: nothing to report.
+    for (namespaces, served_endpoint) in
+        [(None, Some("10.0.0.7:3000")), (Some(&["other"][..]), Some("10.0.0.7:3000")), (Some(&["envoy.lb"][..]), None)]
+    {
+        let ext_proc = ExternalProcessor::from(config(namespaces));
+        let metadata = response_headers_metadata(ext_proc, served_endpoint, &mut received).await;
+        assert_eq!(metadata, None, "{namespaces:?} {served_endpoint:?}");
+    }
 }

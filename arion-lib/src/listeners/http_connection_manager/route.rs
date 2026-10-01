@@ -23,6 +23,7 @@ use crate::{
     body::response_flags::ResponseFlags,
     clusters::http_upstream::{acquire_http_upstream, AcquireHttpUpstreamError},
     listeners::{http_connection_manager::HttpConnectionManager, synthetic_http_response::SyntheticHttpResponse},
+    transport::{HttpChannels, ServedEndpoint},
     Result,
 };
 
@@ -243,13 +244,19 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
                 }
 
                 // send the request to the upstream service channel and wait for the response...
-                let resp = svc_channel
+                let mut resp = svc_channel
                     .to_response(
                         ctx,
                         upstream_request,
                         UpstreamCallOpts { route_timeout: self.timeout, retry_policy, priority: self.priority },
                     )
                     .await;
+                // Failover answers already carry the endpoint of the attempt that produced them.
+                if acquired.overrides_host() {
+                    if let (HttpChannels::Single(channel), Ok(response)) = (svc_channel, &mut resp) {
+                        response.extensions_mut().insert(ServedEndpoint(channel.upstream_authority.clone()));
+                    }
+                }
                 // Match the existing route accounting lifetime: release the
                 // request permit once response headers (or an error) arrive.
                 drop(acquired);

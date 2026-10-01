@@ -117,6 +117,10 @@ impl HttpChannels {
     }
 }
 
+/// Response extension naming the upstream endpoint that answered, set for host override clusters.
+#[derive(Clone, Debug)]
+pub struct ServedEndpoint(pub Authority);
+
 #[derive(Clone, Debug)]
 pub struct HttpChannel {
     pub channel_client: HttpChannelClient,
@@ -294,7 +298,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
                     let attempt_ctx = UpstreamCallOpts { route_timeout, retry_policy: None, priority };
 
                     match channel.to_response(ctx, rebuilt_req, attempt_ctx).await {
-                        Ok(response) => {
+                        Ok(mut response) => {
                             if response.status().is_server_error() && (attempt + 1) < total_attempts {
                                 debug!(
                                     attempt,
@@ -305,6 +309,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
                                 );
                                 continue;
                             }
+                            response.extensions_mut().insert(ServedEndpoint(channel.upstream_authority.clone()));
                             return Ok(response);
                         },
                         Err(err) => {

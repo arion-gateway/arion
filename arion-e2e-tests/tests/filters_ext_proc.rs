@@ -14,6 +14,7 @@
 
 #![allow(clippy::expect_used, reason = "test infrastructure — panicking on setup failure is intentional")]
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -23,17 +24,17 @@ use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http
     ExtProcOverrides, ExtProcPerRoute,
 };
 use arion_data_plane_api::envoy_data_plane_api::{
-    google::protobuf::{Any, BoolValue},
+    google::protobuf::{value::Kind, Any, BoolValue},
     prost::Message,
 };
 use arion_e2e_tests::config_builder::presets;
 use arion_e2e_tests::config_builder::{
-    BootstrapBuilder, ClusterBuilder, ExtProcBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, Route,
-    RouteBuilder, RouteConfigBuilder, VirtualHostBuilder,
+    BootstrapBuilder, ClusterBuilder, EndpointBuilder, ExtProcBuilder, FilterChainBuilder, HcmBuilder, LbPolicy,
+    ListenerBuilder, Route, RouteBuilder, RouteConfigBuilder, VirtualHostBuilder,
 };
 use arion_e2e_tests::{
-    ext_proc_responses, ArionInstance, ExtProcTestServer, ExtProcTestServerBuilder, PreConfiguredResponse,
-    RequestBuilder, SpawnOptions, TestBackend, TestClient,
+    ext_proc_responses, ArionInstance, CapturedProcessingRequest, ExtProcTestServer, ExtProcTestServerBuilder,
+    PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient,
 };
 use http::StatusCode;
 
@@ -752,4 +753,98 @@ async fn test_ext_proc_per_route_disabled_and_overrides() {
     client.get("/fail-open").await.expect("request").assert_status(StatusCode::OK);
 
     assert!(base_ext_proc.captured_requests().await.is_empty());
+}
+
+const DESTINATION_HEADER: &str = "x-gateway-destination-endpoint";
+
+/// The served endpoint reported on each response headers message, in arrival order.
+async fn served_endpoints(ext_proc: &ExtProcTestServer) -> Vec<Option<String>> {
+    let served = |request: &CapturedProcessingRequest| {
+        let lb = request.metadata_context()?.filter_metadata.get("envoy.lb")?;
+        match &lb.fields.get("x-gateway-destination-endpoint-served")?.kind {
+            Some(Kind::StringValue(endpoint)) => Some(endpoint.clone()),
+            _ => None,
+        }
+    };
+    ext_proc.captured_requests().await.iter().filter(|request| request.is_response_headers()).map(served).collect()
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_ext_proc_served_endpoint_metadata() {
+    let b1 = TestBackend::start().await.expect("backend start");
+    let b2 = TestBackend::start().await.expect("backend start");
+    b1.set_default_response(PreConfiguredResponse::with_body("b1")).await;
+    b2.set_default_response(PreConfiguredResponse::with_body("b2")).await;
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").and_then(|l| l.local_addr()).expect("free port");
+    let (b1_addr, b2_addr) = (b1.addr().to_string(), b2.addr().to_string());
+    let override_host = |name: &str, endpoints: [SocketAddr; 2]| {
+        ClusterBuilder::new(name)
+            .override_host(DESTINATION_HEADER, LbPolicy::RoundRobin)
+            .endpoints(endpoints.map(EndpointBuilder::from_socket_addr))
+    };
+
+    for forward in [true, false] {
+        let ext_proc_server = ExtProcTestServerBuilder::new()
+            .with_responses(std::iter::repeat_with(ext_proc_responses::continue_response_headers).take(8))
+            .start()
+            .await
+            .expect("ext_proc start");
+        let mut ext_proc = ExtProcBuilder::new("ext-proc-cluster").response_only();
+        if forward {
+            ext_proc = ext_proc.forward_metadata_namespaces(&["envoy.lb"]);
+        }
+        let bootstrap = BootstrapBuilder::new()
+            .listener(
+                ListenerBuilder::new("http").port(0).filter_chain(
+                    FilterChainBuilder::new("main").hcm(
+                        HcmBuilder::new().http1().ext_proc(ext_proc).route_config(
+                            RouteConfigBuilder::new("routes").virtual_host(
+                                VirtualHostBuilder::new("default")
+                                    .route(RouteBuilder::new().match_prefix("/pool").cluster("pool"))
+                                    .route(RouteBuilder::new().match_prefix("/failover").cluster("failover"))
+                                    .route(RouteBuilder::new().match_prefix("/").cluster("plain")),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            .cluster(override_host("pool", [b1.addr(), b2.addr()]))
+            .cluster(override_host("failover", [closed, b2.addr()]))
+            .cluster(ClusterBuilder::with_endpoint("plain", b1.addr()))
+            .cluster(presets::ext_proc_cluster("ext-proc-cluster", ext_proc_server.addr()));
+        let config_path = bootstrap.build_to_temp().expect("build config");
+        let arion =
+            ArionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.expect("spawn arion");
+        let client = TestClient::new(arion.listener_addr().expect("listener address"));
+
+        // Picked, fallback (no or unknown pick) and failover answers name the endpoint that answered;
+        // the plain cluster reports nothing, and neither does a filter that does not forward envoy.lb.
+        let mut expected = vec![];
+        for (path, destination, answering, reported) in [
+            ("/pool", Some(b2_addr.clone()), Some(&b2_addr), true),
+            ("/pool", Some(b1_addr.clone()), Some(&b1_addr), true),
+            ("/pool", None, None, true),
+            ("/pool", Some("127.0.0.1:1".to_owned()), None, true),
+            ("/failover", Some(format!("{closed},{b2_addr}")), Some(&b2_addr), true),
+            ("/plain", None, Some(&b1_addr), false),
+        ] {
+            let request = destination.iter().fold(RequestBuilder::get(path), |request, destination| {
+                request.header(DESTINATION_HEADER, destination)
+            });
+            let response = client.send(request).await.expect("request");
+            response.assert_status(StatusCode::OK);
+            let answered = match response.body_str() {
+                Some("b1") => &b1_addr,
+                Some("b2") => &b2_addr,
+                other => panic!("unexpected body {other:?}"),
+            };
+            if let Some(answering) = answering {
+                assert_eq!(answered, answering, "{path} {destination:?}");
+            }
+            expected.push((forward && reported).then(|| answered.clone()));
+        }
+        assert_eq!(served_endpoints(&ext_proc_server).await, expected, "forward: {forward}");
+        arion.shutdown();
+    }
 }

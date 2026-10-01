@@ -48,6 +48,20 @@ pub struct ExternalProcessor {
     pub disable_immediate_response: bool,
     #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none", default)]
     pub deferred_close_timeout: Option<Duration>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub metadata_options: Option<MetadataOptions>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct MetadataOptions {
+    #[serde(default)]
+    pub forwarding_namespaces: MetadataNamespaces,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct MetadataNamespaces {
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub untyped: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -255,10 +269,11 @@ mod envoy_conversions {
             },
         },
         extensions::filters::http::ext_proc::v3::{
+            metadata_options::MetadataNamespaces as EnvoyMetadataNamespaces,
             processing_mode::{BodySendMode as EnvoyBodySendMode, HeaderSendMode as EnvoyHeaderSendMode},
             ExtProcOverrides as EnvoyExtProcOverrides, ExtProcPerRoute as EnvoyExtProcPerRoute,
             ExternalProcessor as EnvoyExternalProcessor, HeaderForwardingRules as EnvoyHeaderForwardingRules,
-            ProcessingMode as EnvoyProcessingMode,
+            MetadataOptions as EnvoyMetadataOptions, ProcessingMode as EnvoyProcessingMode,
         },
     };
 
@@ -306,7 +321,7 @@ mod envoy_conversions {
                 disable_clear_route_cache,
                 filter_metadata,
                 // disable_immediate_response,
-                metadata_options,
+                // metadata_options,
                 // observability_mode,
                 // route_cache_action,
                 // deferred_close_timeout,
@@ -339,6 +354,7 @@ mod envoy_conversions {
                 .with_node("deferred_close_timeout")?
                 .map(RustType::into_inner);
             let allowed_override_modes = convert_vec!(allowed_override_modes)?;
+            let metadata_options = metadata_options.map(TryInto::try_into).transpose().with_node("metadata_options")?;
 
             let route_cache_action = RouteCacheAction::try_from(route_cache_action).with_node("route_cache_action")?;
 
@@ -357,7 +373,41 @@ mod envoy_conversions {
                 observability_mode,
                 disable_immediate_response,
                 deferred_close_timeout,
+                metadata_options,
             })
+        }
+    }
+
+    impl TryFrom<EnvoyMetadataOptions> for MetadataOptions {
+        type Error = GenericError;
+        fn try_from(value: EnvoyMetadataOptions) -> Result<Self, Self::Error> {
+            let EnvoyMetadataOptions {
+                forwarding_namespaces,
+                receiving_namespaces,
+                cluster_metadata_forwarding_namespaces,
+            } = value;
+
+            let is_set =
+                |namespaces: &EnvoyMetadataNamespaces| !namespaces.untyped.is_empty() || !namespaces.typed.is_empty();
+            let receiving_namespaces = receiving_namespaces.filter(is_set);
+            let cluster_metadata_forwarding_namespaces = cluster_metadata_forwarding_namespaces.filter(is_set);
+            unsupported_field!(receiving_namespaces, cluster_metadata_forwarding_namespaces)?;
+
+            let forwarding_namespaces = forwarding_namespaces
+                .map(TryInto::try_into)
+                .transpose()
+                .with_node("forwarding_namespaces")?
+                .unwrap_or_default();
+            Ok(Self { forwarding_namespaces })
+        }
+    }
+
+    impl TryFrom<EnvoyMetadataNamespaces> for MetadataNamespaces {
+        type Error = GenericError;
+        fn try_from(value: EnvoyMetadataNamespaces) -> Result<Self, Self::Error> {
+            let EnvoyMetadataNamespaces { untyped, typed } = value;
+            unsupported_field!(typed)?;
+            Ok(Self { untyped })
         }
     }
 
@@ -627,6 +677,57 @@ mod envoy_conversions {
             let grpc_service = grpc_service.map(TryInto::try_into).transpose().with_node("grpc_service")?;
 
             Ok(Self { processing_mode, grpc_service, failure_mode_allow: failure_mode_allow.map(|v| v.value) })
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn decode(metadata_options: &str) -> EnvoyExternalProcessor {
+            let yaml = format!(
+                "grpc_service: {{ envoy_grpc: {{ cluster_name: epp }} }}\nmetadata_options: {metadata_options}"
+            );
+            arion_data_plane_api::decode::from_yaml(&yaml).unwrap()
+        }
+
+        #[test]
+        fn test_metadata_options_forwarding_namespaces() {
+            let envoy = decode("{ forwarding_namespaces: { untyped: [envoy.lb] }, receiving_namespaces: {} }");
+            let ext_proc = ExternalProcessor::try_from(envoy).unwrap();
+            assert_eq!(
+                ext_proc.metadata_options,
+                Some(MetadataOptions {
+                    forwarding_namespaces: MetadataNamespaces { untyped: vec!["envoy.lb".to_owned()] }
+                })
+            );
+        }
+
+        #[test]
+        fn test_metadata_options_unsupported_parts() {
+            for (options, error) in [
+                (
+                    "{ forwarding_namespaces: { typed: [envoy.lb] } }",
+                    r#"TracedError(metadata_options / forwarding_namespaces, UnsupportedField("typed"))"#,
+                ),
+                (
+                    "{ receiving_namespaces: { untyped: [envoy.lb] } }",
+                    r#"TracedError(metadata_options, UnsupportedField("receiving_namespaces"))"#,
+                ),
+                (
+                    "{ cluster_metadata_forwarding_namespaces: { untyped: [envoy.lb] } }",
+                    r#"TracedError(metadata_options, UnsupportedField("cluster_metadata_forwarding_namespaces"))"#,
+                ),
+            ] {
+                assert_eq!(format!("{:?}", ExternalProcessor::try_from(decode(options)).unwrap_err()), error);
+            }
+
+            let overrides = arion_data_plane_api::decode::from_yaml::<EnvoyExtProcOverrides>(
+                "metadata_options: { forwarding_namespaces: { untyped: [envoy.lb] } }",
+            )
+            .unwrap();
+            let error = ExtProcOverrides::try_from(overrides).unwrap_err();
+            assert_eq!(format!("{error:?}"), r#"UnsupportedField("metadata_options")"#);
         }
     }
 }

@@ -40,7 +40,7 @@ pub mod transport_socket;
 
 pub use self::{
     grpc_channel::{GrpcService, SimpleRoundRobinGrpcServiceLB},
-    http_channel::{HttpChannel, HttpChannelBuilder, HttpChannels},
+    http_channel::{HttpChannel, HttpChannelBuilder, HttpChannels, ServedEndpoint},
     io::AsyncInstrumentedStream,
     proxy_protocol::ProxyProtocolReader,
     tcp_channel::TcpChannelConnector,

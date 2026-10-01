@@ -35,8 +35,9 @@ use http_body_util::{BodyExt, Collected, LengthLimitError, Limited};
 use crate::listeners::http_connection_manager::ext_proc::mutation::{
     apply_request_header_mutations, apply_response_header_mutations,
 };
-use crate::listeners::http_connection_manager::ext_proc::processing::RequestProcessing;
-use crate::listeners::http_connection_manager::ext_proc::processing::ResponseProcessing;
+use crate::listeners::http_connection_manager::ext_proc::processing::{
+    RequestProcessing, ResponseProcessing, LB_NAMESPACE,
+};
 use crate::listeners::http_connection_manager::ext_proc::r#override::{OverridableBodyMode, OverridableGlobalModes};
 use crate::listeners::http_connection_manager::ext_proc::status::ProcessingStatus;
 use crate::listeners::http_connection_manager::ext_proc::status::ReadyStatus;
@@ -46,6 +47,7 @@ use crate::{
     body::response_flags::ResponseFlags,
     clusters::clusters_manager::{self, RoutingContext},
     listeners::{http_filters::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
+    transport::ServedEndpoint,
     Error, PolyBody,
 };
 use arion_configuration::config::{
@@ -256,6 +258,9 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>, Option<ExternalProc
             allow_mode_override: config.allow_mode_override,
             route_cache_action: config.route_cache_action,
             send_body_without_waiting_for_header_response: config.send_body_without_waiting_for_header_response,
+            forward_served_endpoint: config
+                .metadata_options
+                .is_some_and(|options| options.forwarding_namespaces.untyped.iter().any(|ns| ns == LB_NAMESPACE)),
             frame_merge_limit: ext_proc_config_ext
                 .as_ref()
                 .map(|e| e.frame_merge_limit)
@@ -563,6 +568,7 @@ impl ExternalProcessor {
         }
 
         let mut ext_proc_headers = None;
+        let mut served_endpoint = None;
 
         if process_headers {
             debug!(target: "ext_proc", "response processing headers");
@@ -591,6 +597,9 @@ impl ExternalProcessor {
             }
 
             ext_proc_headers = Some(EnvoyHeaderMap(ProstHeaderMap { headers: headers_vec }));
+            if self.inner.worker_config.forward_served_endpoint {
+                served_endpoint = response.extensions().get::<ServedEndpoint>().cloned();
+            }
         }
 
         let body: PolyBody = std::mem::take(&mut response.body_mut().inner);
@@ -659,7 +668,7 @@ impl ExternalProcessor {
         debug!(target: "ext_proc", "response headers: {ext_proc_headers:?}");
         debug!(target: "ext_proc", "response body: {ext_proc_frame_bridge:?}");
 
-        Ok(ProcessingData::Response(ext_proc_headers, ext_proc_frame_bridge))
+        Ok(ProcessingData::Response(ext_proc_headers, ext_proc_frame_bridge, served_endpoint))
     }
 
     fn apply_modification_on_response(
@@ -918,7 +927,7 @@ pub struct ProcessingTask {
 #[derive(Debug)]
 pub enum ProcessingData {
     Request(Option<EnvoyHeaderMap>, FrameBridge),
-    Response(Option<EnvoyHeaderMap>, FrameBridge),
+    Response(Option<EnvoyHeaderMap>, FrameBridge, Option<ServedEndpoint>),
 }
 
 struct BidiStream {
@@ -1121,8 +1130,9 @@ impl ExternalProcessingWorker<kind::Processing> {
                                 self.forward_to_external_processor(proc_req).await;
                             }
                         }
-                        Some(ProcessingTask{ data: ProcessingData::Response(headers, frame_bridge), reply_channel, http_version}) => {
+                        Some(ProcessingTask{ data: ProcessingData::Response(headers, frame_bridge, served_endpoint), reply_channel, http_version}) => {
                             debug!(target: "ext_proc", "-> starting processing response...");
+                            self.response_processing.set_served_endpoint(served_endpoint);
                             if let Some(proc_req) = self.response_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes).await {
                                 debug!(target: "ext_proc", "processing_response -> forward {outbound:?}", outbound = TruncatedDebug::<_,1024>(&proc_req));
                                 self.forward_to_external_processor(proc_req).await;
@@ -1582,7 +1592,8 @@ impl ExternalProcessingWorker<kind::Observability> {
                                self.forward_to_external_processor(proc_req).await;
                             }
                         }
-                        Some(ProcessingTask{ data: ProcessingData::Response(headers, frame_bridge), reply_channel, http_version}) => {
+                        Some(ProcessingTask{ data: ProcessingData::Response(headers, frame_bridge, served_endpoint), reply_channel, http_version}) => {
+                            self.response_processing.set_served_endpoint(served_endpoint);
                             if let Some(proc_req) = self.response_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes).await {
                                 debug!(target: "ext_proc", "processing_response -> forward {outbound:?}", outbound = TruncatedDebug::<_,1024>(&proc_req));
                                 self.forward_to_external_processor(proc_req).await;
