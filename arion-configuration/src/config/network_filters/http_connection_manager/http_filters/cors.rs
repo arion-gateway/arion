@@ -103,10 +103,21 @@ mod envoy_conversions {
                 allow_methods: allow_methods
                     .split(',')
                     .map(str::trim)
+                    .filter(|method| !method.is_empty())
                     .map(http::Method::from_str)
                     .collect::<Result<Vec<_>, _>>()?,
-                allow_headers: allow_headers.split(',').map(str::trim).map(Into::into).collect(),
-                expose_headers: expose_headers.split(',').map(str::trim).map(Into::into).collect(),
+                allow_headers: allow_headers
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|header| !header.is_empty())
+                    .map(Into::into)
+                    .collect(),
+                expose_headers: expose_headers
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|header| !header.is_empty())
+                    .map(Into::into)
+                    .collect(),
                 allow_credentials: allow_credentials.unwrap_or_default().value,
                 max_age: (!max_age.is_empty()).then(|| max_age.parse::<u64>()).transpose()?,
             })

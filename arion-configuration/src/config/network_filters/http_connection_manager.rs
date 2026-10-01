@@ -784,7 +784,11 @@ mod envoy_conversions {
                     Some(x) => match (x, &matching_filter.filter) {
                         (FilterConfigOverride::LocalRateLimit(_), HttpFilterType::RateLimit(_))
                         | (FilterConfigOverride::Rbac(_), HttpFilterType::Rbac(_))
-                        | (FilterConfigOverride::ExternalProcessor(_), HttpFilterType::ExternalProcessor(_)) => Ok(()),
+                        | (FilterConfigOverride::ExternalProcessor(_), HttpFilterType::ExternalProcessor(_))
+                        | (
+                            FilterConfigOverride::CorsPolicy(_),
+                            HttpFilterType::Cors(_) | HttpFilterType::CorsPolicy(_),
+                        ) => Ok(()),
                         (_, _) => Err(GenericError::from_msg(format!(
                             "can't override http filter \"{name}\" with a different filter type"
                         ))),
@@ -1519,6 +1523,57 @@ route_config:
                 plain.filter_settings,
                 Some(FilterConfigOverride::ExternalProcessor(ExtProcPerRoute { disabled: true, overrides: None }))
             );
+        }
+
+        #[test]
+        fn test_cors_policy_per_route_config() {
+            let envoy: EnvoyHttpConnectionManager = arion_data_plane_api::decode::from_yaml(
+                r#"
+http_filters:
+- name: envoy.filters.http.cors
+  typed_config:
+    "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors
+- name: envoy.filters.http.router
+  typed_config:
+    "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+route_config:
+  name: routes
+  virtual_hosts:
+  - name: default
+    domains: ["*"]
+    routes:
+    - match: { prefix: /cors }
+      route: { cluster: app }
+      typed_per_filter_config:
+        envoy.filters.http.cors:
+          "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
+          allow_origin_string_match:
+          - exact: https://allowed.example
+          allow_methods: GET,OPTIONS
+          allow_headers: x-test-header
+          max_age: "3600"
+    - match: { prefix: / }
+      route: { cluster: app }
+"#,
+            )
+            .unwrap();
+
+            let hcm = HttpConnectionManager::try_from(envoy).unwrap();
+            let RouteSpecifier::RouteConfig(route_config) = hcm.route_specifier else {
+                panic!("expected an inline route config");
+            };
+            let routes: Vec<_> = route_config.virtual_hosts.iter().flat_map(|vh| &vh.routes).collect();
+            let override_config = routes[0]
+                .typed_per_filter_config
+                .get("envoy.filters.http.cors")
+                .expect("expected a cors override on the first route");
+            let Some(FilterConfigOverride::CorsPolicy(policy)) = &override_config.filter_settings else {
+                panic!("expected a CorsPolicy override, got {override_config:?}");
+            };
+            assert_eq!(policy.allow_methods, vec![http::Method::GET, http::Method::OPTIONS]);
+            assert_eq!(policy.allow_headers, vec!["x-test-header"]);
+            assert_eq!(policy.max_age, Some(3600));
+            assert!(routes[1].typed_per_filter_config.is_empty());
         }
     }
 }

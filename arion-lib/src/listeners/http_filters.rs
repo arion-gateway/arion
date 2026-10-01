@@ -289,6 +289,7 @@ impl HttpFilterValue {
                         None
                     }
                 },
+                FilterConfigOverride::CorsPolicy(cors) => Some(HttpFilterValue::Cors(cors.clone().into())),
             },
             None => None,
         }

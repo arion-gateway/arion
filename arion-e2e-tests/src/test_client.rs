@@ -251,6 +251,11 @@ impl RequestBuilder {
     }
 
     #[must_use]
+    pub fn options(path: impl Into<String>) -> Self {
+        Self { method: Method::OPTIONS, path: path.into(), headers: vec![], body: Bytes::new() }
+    }
+
+    #[must_use]
     pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.push((name.into(), value.into()));
         self
