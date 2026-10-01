@@ -132,18 +132,16 @@ impl<'a, B: Body> RetryCondition<'a, B> {
                         return true;
                     }
                 },
-                RetryOn::ConnectFailure => {
-                    match self {
-                        RetryCondition::Error(UpstreamError::Connect(conn_err)) => {
-                            if conn_err.is_retriable() {
-                                return true;
-                            }
-                        },
-                        RetryCondition::Error(UpstreamError::Io(_)) => {
+                RetryOn::ConnectFailure => match self {
+                    RetryCondition::Error(UpstreamError::Connect(conn_err)) => {
+                        if conn_err.is_retriable() {
                             return true;
-                        },
-                        _ => {},
-                    }
+                        }
+                    },
+                    RetryCondition::Error(UpstreamError::Io(_)) => {
+                        return true;
+                    },
+                    _ => {},
                 },
                 RetryOn::RefusedStream => {
                     if matches!(self, RetryCondition::Error(UpstreamError::RefusedStream)) {

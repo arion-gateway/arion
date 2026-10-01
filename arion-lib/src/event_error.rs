@@ -800,9 +800,9 @@ mod tests {
         assert!(matches!(upstream, UpstreamError::PerTryTimeout));
 
         // Non-timeout TimeoutBodyError should not map to Timeout
-        let body_io_err: TimeoutBodyError<PolyBodyError> = TimeoutBodyError::BodyError(PolyBodyError::Io(std::sync::Arc::new(
-            io::Error::new(io::ErrorKind::ConnectionReset, "connection reset"),
-        )));
+        let body_io_err: TimeoutBodyError<PolyBodyError> = TimeoutBodyError::BodyError(PolyBodyError::Io(
+            std::sync::Arc::new(io::Error::new(io::ErrorKind::ConnectionReset, "connection reset")),
+        ));
         let downstream = DownstreamError::from_dyn_error(&body_io_err);
         assert!(!matches!(downstream, DownstreamError::Timeout));
         let upstream = UpstreamError::from_dyn_error(&body_io_err);

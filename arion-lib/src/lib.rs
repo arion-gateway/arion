@@ -228,7 +228,9 @@ impl Error {
         }
         let mut curr: Option<&(dyn StdError + 'static)> = Some(self);
         while let Some(e) = curr {
-            if let Some(crate::event_error::UpstreamError::Connect(c)) = e.downcast_ref::<crate::event_error::UpstreamError>() {
+            if let Some(crate::event_error::UpstreamError::Connect(c)) =
+                e.downcast_ref::<crate::event_error::UpstreamError>()
+            {
                 return Some(&c.context);
             }
             curr = e.source();

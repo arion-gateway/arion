@@ -208,11 +208,7 @@ impl ContextBuilder {
     #[inline]
     fn error(&self, addr: SocketAddr, flags: ResponseFlags, kind: impl Into<ConnectErrorKind>) -> crate::Error {
         crate::Error::upstream(UpstreamError::Connect(ConnectError {
-            context: TcpErrorContext {
-                upstream_addr: addr,
-                response_flags: flags,
-                cluster_name: self.cluster_name,
-            },
+            context: TcpErrorContext { upstream_addr: addr, response_flags: flags, cluster_name: self.cluster_name },
             kind: kind.into(),
         }))
     }
@@ -282,7 +278,11 @@ impl LocalConnectorWithDNSResolver {
                 fast_timeout(connection_timeout, sock.connect(addr))
                     .await
                     .map_err(|_e| {
-                        ctx.error(addr, ResponseFlags::UPSTREAM_CONNECTION_FAILURE, ConnectErrorKind::Timeout(elapsed()))
+                        ctx.error(
+                            addr,
+                            ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
+                            ConnectErrorKind::Timeout(elapsed()),
+                        )
                     })?
                     .map_err(|orig| {
                         ctx.error(addr, ResponseFlags::UPSTREAM_CONNECTION_FAILURE, ConnectErrorKind::Io(orig))
@@ -339,7 +339,10 @@ impl InternalConnector {
             ctx.error(
                 SocketAddr::from(([0, 0, 0, 0], 0)),
                 ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
-                ConnectErrorKind::InternalListener(format!("Internal listener '{}' not found or not ready", self.listener_name)),
+                ConnectErrorKind::InternalListener(format!(
+                    "Internal listener '{}' not found or not ready",
+                    self.listener_name
+                )),
             )
         })?;
         let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
@@ -358,7 +361,10 @@ impl InternalConnector {
             return Err(ctx.error(
                 SocketAddr::from(([0, 0, 0, 0], 0)),
                 ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
-                ConnectErrorKind::InternalListener(format!("Failed to send connection to internal listener '{}': {}", self.listener_name, e)),
+                ConnectErrorKind::InternalListener(format!(
+                    "Failed to send connection to internal listener '{}': {}",
+                    self.listener_name, e
+                )),
             ));
         }
         debug!("Successfully connected to internal listener '{}'", self.listener_name);
