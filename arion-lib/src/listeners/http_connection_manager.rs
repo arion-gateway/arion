@@ -205,6 +205,7 @@ impl Write for LengthCounter {
 pub struct HttpConnectionManagerBuilder {
     listener_name: Option<&'static str>,
     filterchain_id: Option<u64>,
+    downstream_tls: bool,
     connection_manager: PartialHttpConnectionManager,
 }
 
@@ -212,7 +213,7 @@ impl TryFrom<ConversionContext<'_, HttpConnectionManagerConfig>> for HttpConnect
     type Error = crate::Error;
     fn try_from(ctx: ConversionContext<HttpConnectionManagerConfig>) -> Result<Self> {
         let partial = PartialHttpConnectionManager::try_from(ctx)?;
-        Ok(Self { listener_name: None, filterchain_id: None, connection_manager: partial })
+        Ok(Self { listener_name: None, filterchain_id: None, downstream_tls: false, connection_manager: partial })
     }
 }
 
@@ -228,6 +229,7 @@ impl HttpConnectionManagerBuilder {
         Ok(HttpConnectionManager {
             listener_name,
             filterchain_id,
+            downstream_tls: self.downstream_tls,
             routing_state: ArcSwapOption::new(initial_routing_state),
             codec_type: partial.codec_type,
             dynamic_route_name: partial.dynamic_route_name,
@@ -258,6 +260,11 @@ impl HttpConnectionManagerBuilder {
     #[inline]
     pub fn with_filterchain_id(self, value: u64) -> Self {
         HttpConnectionManagerBuilder { filterchain_id: Some(value), ..self }
+    }
+
+    #[inline]
+    pub fn with_downstream_tls(self, value: bool) -> Self {
+        HttpConnectionManagerBuilder { downstream_tls: value, ..self }
     }
 }
 
@@ -385,6 +392,7 @@ impl RoutingState {
 pub struct HttpConnectionManager {
     pub listener_name: &'static str,
     pub filterchain_id: u64,
+    downstream_tls: bool,
     routing_state: ArcSwapOption<RoutingState>,
     pub codec_type: CodecType,
     dynamic_route_name: Option<SmolStr>,
@@ -1196,7 +1204,17 @@ impl RequestHandler<Request<ArionRequestBody>, &HttpConnectionManager> for &Rout
                     let mut response = match &cached_route.route.action {
                         Action::DirectResponse(dr) => dr.to_response(ctx, request, &cached_route.route.name).await,
                         Action::Redirect(rd) => {
-                            rd.to_response(ctx, request, (&cached_route.route_match, &cached_route.route.name)).await
+                            let downstream_scheme = if connection_manager.downstream_tls {
+                                ::http::uri::Scheme::HTTPS
+                            } else {
+                                ::http::uri::Scheme::HTTP
+                            };
+                            rd.to_response(
+                                ctx,
+                                request,
+                                (&cached_route.route_match, &cached_route.route.name, downstream_scheme),
+                            )
+                            .await
                         },
                         Action::Route(route) => {
                             apply_mutations_on_request(
