@@ -641,6 +641,12 @@ pub async fn to_body_data_chunks(mut body: Collected<Bytes>) -> Vec<Bytes> {
     chunks
 }
 
+/// The answer to the empty chunk left to carry `end_of_stream` when the last one was already flushed.
+fn end_of_stream_body_response<M: MessageKind>() -> MockProcessingResponse {
+    create_body_response::<M>(vec![], None, vec![], ResponseStatus::Continue as i32, None)
+        .with_expected_end_of_stream(true)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn create_body_response<M: MessageKind>(
     headers: Vec<Option<(&str, &str)>>,
@@ -2484,7 +2490,8 @@ async fn test_request_multichunk_body_with_mutation() {
             vec![],
             ResponseStatus::Continue as i32,
             None,
-        ));
+        ))
+        .add_response(end_of_stream_body_response::<RequestMsg>());
 
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
@@ -3338,7 +3345,8 @@ async fn test_request_multichunk_not_merged_body_streaming_mode() {
             // the response for the streaming body is still just a normal Body
             // no need to set end_of_stream, which is only for FULL_DUPLEX_STREAMED
             None,
-        ));
+        ))
+        .add_response(end_of_stream_body_response::<RequestMsg>());
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
         request_header_mode: HeaderProcessingMode::Send,
@@ -3559,7 +3567,8 @@ async fn test_request_multichunk_body_no_truncate_body() {
             vec![],
             ResponseStatus::Continue as i32,
             None,
-        ));
+        ))
+        .add_response(end_of_stream_body_response::<RequestMsg>());
 
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
@@ -4288,7 +4297,8 @@ async fn test_response_multichunk_not_merged_body_streaming_mode() {
             vec![],
             ResponseStatus::Continue as i32,
             None,
-        ));
+        ))
+        .add_response(end_of_stream_body_response::<ResponseMsg>());
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
         request_header_mode: HeaderProcessingMode::Skip,
@@ -4350,7 +4360,8 @@ async fn test_response_multichunk_body_with_mutation() {
             vec![],
             ResponseStatus::Continue as i32,
             None,
-        ));
+        ))
+        .add_response(end_of_stream_body_response::<ResponseMsg>());
 
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
@@ -4502,7 +4513,8 @@ async fn test_response_multichunk_body_no_truncate_body() {
             vec![],
             ResponseStatus::Continue as i32,
             None,
-        ));
+        ))
+        .add_response(end_of_stream_body_response::<ResponseMsg>());
 
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
@@ -6257,6 +6269,7 @@ async fn test_request_mutation_with_streamed_10m_body_4k_chunks() {
             None,
         ));
     }
+    mock_state = mock_state.add_response(end_of_stream_body_response::<RequestMsg>());
 
     let (server_addr, _) = start_mock_server(mock_state).await;
 
@@ -6335,6 +6348,7 @@ async fn test_response_mutation_with_streamed_10m_body_4k_chunks() {
             None,
         ));
     }
+    mock_state = mock_state.add_response(end_of_stream_body_response::<ResponseMsg>());
 
     let (server_addr, _) = start_mock_server(mock_state).await;
 
@@ -6415,6 +6429,7 @@ async fn test_request_and_response_mutation_with_streamed_10m_body_4k_chunks() {
             None,
         ));
     }
+    mock_state = mock_state.add_response(end_of_stream_body_response::<RequestMsg>());
 
     // 3. Mock response for Response Headers
     mock_state = mock_state.add_response(create_headers_response::<ResponseMsg>(
@@ -6435,6 +6450,7 @@ async fn test_request_and_response_mutation_with_streamed_10m_body_4k_chunks() {
             None,
         ));
     }
+    mock_state = mock_state.add_response(end_of_stream_body_response::<ResponseMsg>());
 
     let (server_addr, _) = start_mock_server(mock_state).await;
 
@@ -6834,6 +6850,26 @@ fn body_end_of_stream_flags(received: &mut mpsc::UnboundedReceiver<ProcessingReq
     (request, response)
 }
 
+/// A body whose frames arrive `gap` apart.
+fn spaced_body(frames: &'static [&'static str], gap: Duration) -> PolyBody {
+    let (tx, rx) = mpsc::channel::<Result<Frame<Bytes>, crate::body::error::BodyError>>(1);
+    tokio::spawn(async move {
+        for frame in frames {
+            tokio::time::sleep(gap).await;
+            if tx.send(Ok(Frame::data(Bytes::from_static(frame.as_bytes())))).await.is_err() {
+                break;
+            }
+        }
+    });
+    let (body, mut bridge) = ChannelBody::new(
+        StreamBody::new(ReceiverStream::new(rx)),
+        None,
+        std::num::NonZeroUsize::new(1).expect("non-zero"),
+    );
+    tokio::spawn(async move { bridge.drain_and_inject().await });
+    PolyBody::from(body)
+}
+
 #[tokio::test]
 #[test_log::test]
 async fn test_processor_answering_after_the_whole_request() {
@@ -6869,4 +6905,58 @@ async fn test_processor_answering_after_the_whole_request() {
     let mut ext_proc = ExternalProcessor::from((config, None, Some(ext_config)));
     let result = fast_timeout(DEADLINE, ext_proc.apply_request(&mut get, &RequestCtx::default())).await;
     assert_matches!(result, Ok(FilterDecision::Continue));
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_body_end_of_stream_after_the_merge_window() {
+    // Spaced beyond the merge window, every chunk is flushed before the body ends.
+    const FRAMES: &[&str] = &["one ", "two ", "three"];
+    const GAP: Duration = Duration::from_millis(20);
+
+    let (server_addr, mut received) = start_recording_server(false).await;
+    let processing_mode = ProcessingMode {
+        request_header_mode: HeaderProcessingMode::Send,
+        request_body_mode: BodyProcessingMode::Streamed,
+        request_trailer_mode: TrailerProcessingMode::Skip,
+        response_header_mode: HeaderProcessingMode::Send,
+        response_body_mode: BodyProcessingMode::Streamed,
+        response_trailer_mode: TrailerProcessingMode::Skip,
+    };
+    let config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+    let request_body = |frames| {
+        InstrumentedBody::new(
+            BodyKind::Request,
+            TimeoutBody::new(None, spaced_body(frames, GAP)),
+            None,
+            |_, _, _, _| {},
+        )
+    };
+
+    let mut ext_proc = ExternalProcessor::from(config.clone());
+    let mut request =
+        Request::builder().method(Method::POST).uri("http://example.com/test").body(request_body(FRAMES)).unwrap();
+    assert_matches!(ext_proc.apply_request(&mut request, &RequestCtx::default()).await, FilterDecision::Continue);
+    let body = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
+    assert_eq!(body, FRAMES.concat());
+
+    let mut response = Response::builder().body(TimeoutBody::new(None, spaced_body(FRAMES, GAP)).into()).unwrap();
+    assert_matches!(ext_proc.apply_response(&mut response, &RequestCtx::default()).await, FilterDecision::Continue);
+    let body = std::mem::take(&mut response.body_mut().inner).collect().await.unwrap().to_bytes();
+    assert_eq!(body, FRAMES.concat());
+
+    let (request_eos, response_eos) = body_end_of_stream_flags(&mut received);
+    for eos in [request_eos, response_eos] {
+        assert_eq!(eos.iter().filter(|eos| **eos).count(), 1, "{eos:?}");
+        assert_eq!(eos.last(), Some(&true), "{eos:?}");
+    }
+
+    // A body that turns out empty after headers that did not end the stream.
+    let mut ext_proc = ExternalProcessor::from(config);
+    let mut request =
+        Request::builder().method(Method::POST).uri("http://example.com/test").body(request_body(&[])).unwrap();
+    assert_matches!(ext_proc.apply_request(&mut request, &RequestCtx::default()).await, FilterDecision::Continue);
+    let body = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
+    assert!(body.is_empty());
+    assert_eq!(body_end_of_stream_flags(&mut received), (vec![true], vec![]));
 }

@@ -185,6 +185,12 @@ impl FramesBuffer {
         }
     }
 
+    fn push_end_of_stream(&mut self) {
+        if self.data_buffer.is_none() && self.trailers_buffer.is_none() {
+            self.data_buffer = Some(BufferedData::Single(Bytes::new()));
+        }
+    }
+
     #[inline]
     #[allow(unused)]
     pub fn has_data(&self) -> bool {
@@ -884,6 +890,15 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
 
         _ = self.return_status(ProcessingStatus::ready::<Msg>(), "process_body_and_trailers (ready status)!");
         None
+    }
+
+    /// At the end of the body, leaves an empty chunk to carry `end_of_stream` when nothing is
+    /// buffered (the last chunk was already flushed, or no data came after the headers), as Envoy
+    /// sends one. Trailers, when present, end the stream instead.
+    pub fn buffer_end_of_stream(&mut self, override_mode: &OverridableGlobalModes) {
+        if override_mode.should_process_body::<Msg>() && !self.end_of_stream {
+            self.frames_buffer.push_end_of_stream();
+        }
     }
 
     #[must_use = "must handle the returned Action"]

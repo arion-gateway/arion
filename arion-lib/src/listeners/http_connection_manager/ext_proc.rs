@@ -1375,6 +1375,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                             request_body_to_ext_proc_complete = true;
                             debug!(target: "ext_proc", "outbound request body frame: request body stream completing...");
 
+                            self.request_processing.buffer_end_of_stream(&self.overridable_modes);
                             while let Some(last_frame) = self.request_processing.frames_buffer.take() {
                                 if last_frame.is_data() { // DATA
                                   if self.overridable_modes.request.should_process_body() {
@@ -1463,6 +1464,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                             response_body_to_ext_proc_complete = true;
                             debug!(target: "ext_proc", "outbound response body frame: response body stream completing...");
 
+                            self.response_processing.buffer_end_of_stream(&self.overridable_modes);
                             while let Some(last_frame) = self.response_processing.frames_buffer.take() {
                                 if last_frame.is_data() { // DATA
                                   if self.overridable_modes.response.should_process_body() {
@@ -1638,6 +1640,7 @@ impl ExternalProcessingWorker<kind::Observability> {
                                 self.request_processing.return_status(status, "proof for frame injection at end of stream when processing body chunks")
                             });
 
+                            self.request_processing.buffer_end_of_stream(&self.overridable_modes);
                             while let Some(last_frame) = self.request_processing.frames_buffer.take() {
                                 if last_frame.is_data() { // DATA
                                   if self.overridable_modes.request.should_process_body() {
@@ -1717,6 +1720,7 @@ impl ExternalProcessingWorker<kind::Observability> {
                                 self.response_processing.return_status(status, "proof for frame injection at end of stream when processing body chunks")
                             });
 
+                            self.response_processing.buffer_end_of_stream(&self.overridable_modes);
                             while let Some(last_frame) = self.response_processing.frames_buffer.take() {
                                 if last_frame.is_data() { // DATA
                                   if self.overridable_modes.response.should_process_body() {
