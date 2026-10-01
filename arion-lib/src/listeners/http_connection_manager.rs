@@ -1233,7 +1233,10 @@ impl RequestHandler<Request<ArionRequestBody>, &HttpConnectionManager> for &Rout
                                     (
                                         RouteContext {
                                             route_name: &cached_route.route.name,
-                                            retry_policy: cached_route.vh.retry_policy.as_ref(),
+                                            retry_policy: route
+                                                .retry_policy
+                                                .as_ref()
+                                                .or(cached_route.vh.retry_policy.as_ref()),
                                             route_match: &cached_route.route_match,
                                             remote_address,
                                             websocket_enabled_by_default,
