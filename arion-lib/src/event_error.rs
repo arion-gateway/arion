@@ -355,6 +355,8 @@ pub fn elapsed() -> Elapsed {
 // ==================== Typed DownstreamError Conversions ====================
 
 impl From<&h2::Error> for DownstreamError {
+    #[cold]
+    #[inline(never)]
     fn from(err: &h2::Error) -> Self {
         if let Some(reason) = err.reason() {
             match reason {
@@ -383,6 +385,8 @@ impl From<h2::Error> for DownstreamError {
 }
 
 impl From<&hyper::Error> for DownstreamError {
+    #[cold]
+    #[inline(never)]
     fn from(err: &hyper::Error) -> Self {
         if err.is_timeout() {
             DownstreamError::Timeout
@@ -409,6 +413,8 @@ impl From<hyper::Error> for DownstreamError {
 }
 
 impl From<&io::Error> for DownstreamError {
+    #[cold]
+    #[inline(never)]
     fn from(io: &io::Error) -> Self {
         if io.kind() == io::ErrorKind::TimedOut {
             DownstreamError::Timeout
@@ -424,6 +430,8 @@ impl From<&io::Error> for DownstreamError {
 }
 
 impl From<&PolyBodyError> for DownstreamError {
+    #[cold]
+    #[inline(never)]
     fn from(err: &PolyBodyError) -> Self {
         match err {
             PolyBodyError::Hyper(h) => DownstreamError::from(h.as_ref()),
@@ -444,6 +452,8 @@ impl From<PolyBodyError> for DownstreamError {
 }
 
 impl From<&TimeoutBodyError<PolyBodyError>> for DownstreamError {
+    #[cold]
+    #[inline(never)]
     fn from(err: &TimeoutBodyError<PolyBodyError>) -> Self {
         match err {
             TimeoutBodyError::TimedOut => DownstreamError::Timeout,
@@ -460,6 +470,8 @@ impl From<TimeoutBodyError<PolyBodyError>> for DownstreamError {
 }
 
 impl From<&TimeoutBodyError<hyper::Error>> for DownstreamError {
+    #[cold]
+    #[inline(never)]
     fn from(err: &TimeoutBodyError<hyper::Error>) -> Self {
         match err {
             TimeoutBodyError::TimedOut => DownstreamError::Timeout,
@@ -476,6 +488,8 @@ impl From<TimeoutBodyError<hyper::Error>> for DownstreamError {
 }
 
 impl From<&(dyn std::error::Error + 'static)> for DownstreamError {
+    #[cold]
+    #[inline(never)]
     fn from(err: &(dyn std::error::Error + 'static)) -> Self {
         enum ProtocolErr<'a> {
             H2(h2::Reason),
@@ -612,6 +626,8 @@ impl From<crate::Error> for DownstreamError {
 // ==================== Typed UpstreamError Conversions ====================
 
 impl From<&h2::Error> for UpstreamError {
+    #[cold]
+    #[inline(never)]
     fn from(err: &h2::Error) -> Self {
         if let Some(reason) = err.reason() {
             match reason {
@@ -641,6 +657,8 @@ impl From<h2::Error> for UpstreamError {
 }
 
 impl From<&hyper::Error> for UpstreamError {
+    #[cold]
+    #[inline(never)]
     fn from(err: &hyper::Error) -> Self {
         if err.is_timeout() || err.is_incomplete_message() {
             UpstreamError::PerTryTimeout
@@ -664,6 +682,8 @@ impl From<hyper::Error> for UpstreamError {
 }
 
 impl From<&io::Error> for UpstreamError {
+    #[cold]
+    #[inline(never)]
     fn from(io: &io::Error) -> Self {
         if io.kind() == io::ErrorKind::TimedOut {
             UpstreamError::PerTryTimeout
@@ -679,6 +699,8 @@ impl From<&io::Error> for UpstreamError {
 }
 
 impl From<&PolyBodyError> for UpstreamError {
+    #[cold]
+    #[inline(never)]
     fn from(err: &PolyBodyError) -> Self {
         match err {
             PolyBodyError::Hyper(h) => UpstreamError::from(h.as_ref()),
@@ -699,6 +721,8 @@ impl From<PolyBodyError> for UpstreamError {
 }
 
 impl From<&TimeoutBodyError<PolyBodyError>> for UpstreamError {
+    #[cold]
+    #[inline(never)]
     fn from(err: &TimeoutBodyError<PolyBodyError>) -> Self {
         match err {
             TimeoutBodyError::TimedOut => UpstreamError::PerTryTimeout,
@@ -715,6 +739,8 @@ impl From<TimeoutBodyError<PolyBodyError>> for UpstreamError {
 }
 
 impl From<&TimeoutBodyError<hyper::Error>> for UpstreamError {
+    #[cold]
+    #[inline(never)]
     fn from(err: &TimeoutBodyError<hyper::Error>) -> Self {
         match err {
             TimeoutBodyError::TimedOut => UpstreamError::PerTryTimeout,
@@ -745,6 +771,8 @@ impl From<&ConnectError> for UpstreamError {
 }
 
 impl From<&(dyn std::error::Error + 'static)> for UpstreamError {
+    #[cold]
+    #[inline(never)]
     fn from(err: &(dyn std::error::Error + 'static)) -> Self {
         enum ProtocolErr<'a> {
             H2(h2::Reason),

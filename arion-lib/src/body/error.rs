@@ -38,21 +38,24 @@ pub enum BodyError {
 }
 
 impl From<hyper::Error> for BodyError {
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn from(err: hyper::Error) -> Self {
         Self::Hyper(Arc::new(err))
     }
 }
 
 impl From<GrpcError> for BodyError {
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn from(err: GrpcError) -> Self {
         Self::Grpc(Arc::new(err))
     }
 }
 
 impl From<std::io::Error> for BodyError {
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn from(err: std::io::Error) -> Self {
         Self::Io(Arc::new(err))
     }
@@ -66,6 +69,8 @@ impl From<std::convert::Infallible> for BodyError {
 }
 
 impl From<TimeoutBodyError<hyper::Error>> for BodyError {
+    #[cold]
+    #[inline(never)]
     fn from(value: TimeoutBodyError<hyper::Error>) -> Self {
         match value {
             TimeoutBodyError::TimedOut => Self::TimedOut,

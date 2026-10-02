@@ -214,12 +214,16 @@ impl Error {
 }
 
 impl From<crate::event_error::UpstreamError> for Error {
+    #[cold]
+    #[inline(never)]
     fn from(err: crate::event_error::UpstreamError) -> Self {
         Self::upstream(err)
     }
 }
 
 impl From<crate::event_error::DownstreamError> for Error {
+    #[cold]
+    #[inline(never)]
     fn from(err: crate::event_error::DownstreamError) -> Self {
         Self::Downstream(Box::new(err))
     }
@@ -246,24 +250,32 @@ impl From<tokio::sync::mpsc::error::TryRecvError> for Error {
 
 // Http
 impl From<http::Error> for Error {
+    #[cold]
+    #[inline(never)]
     fn from(err: http::Error) -> Self {
         Self::Http(HttpError::Http(err))
     }
 }
 
 impl From<http::uri::InvalidUri> for Error {
+    #[cold]
+    #[inline(never)]
     fn from(err: http::uri::InvalidUri) -> Self {
         Self::Http(HttpError::InvalidUri(err))
     }
 }
 
 impl From<http::uri::InvalidUriParts> for Error {
+    #[cold]
+    #[inline(never)]
     fn from(err: http::uri::InvalidUriParts) -> Self {
         Self::Http(HttpError::InvalidUriParts(err))
     }
 }
 
 impl From<http::header::InvalidHeaderValue> for Error {
+    #[cold]
+    #[inline(never)]
     fn from(err: http::header::InvalidHeaderValue) -> Self {
         Self::Http(HttpError::InvalidHeaderValue(err))
     }
@@ -359,12 +371,16 @@ impl From<&str> for ConfigError {
 }
 
 impl From<String> for Error {
+    #[cold]
+    #[inline(never)]
     fn from(msg: String) -> Self {
         Self::Config(ConfigError::Validation(msg))
     }
 }
 
 impl From<&str> for Error {
+    #[cold]
+    #[inline(never)]
     fn from(msg: &str) -> Self {
         Self::Config(ConfigError::Validation(msg.to_owned()))
     }
