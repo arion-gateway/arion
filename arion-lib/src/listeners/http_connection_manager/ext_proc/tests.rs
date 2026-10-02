@@ -6580,7 +6580,8 @@ async fn test_forward_rules_allowed_headers() {
 #[tokio::test]
 #[allow(clippy::indexing_slicing)]
 async fn test_header_append_action_append_if_exists_or_add() {
-    // We need to create a custom response to test AppendIfExistsOrAdd
+    // We need to create a custom response to test AppendIfExistsOrAdd. Being the proto3 default,
+    // it only appends with the deprecated `append` set.
     let mut header_mutation = HeaderMutation::default();
     header_mutation.set_headers.push(HeaderValueOption {
         header: Some(EnvoyHeaderValue {
@@ -6591,7 +6592,7 @@ async fn test_header_append_action_append_if_exists_or_add() {
         append_action: HeaderAppendAction::AppendIfExistsOrAdd as i32,
         keep_empty_value: false,
         #[allow(deprecated)]
-        append: None,
+        append: Some(google::protobuf::BoolValue { value: true }),
     });
 
     let response = ProcessingResponseType::RequestHeaders(
@@ -6644,6 +6645,63 @@ async fn test_header_append_action_append_if_exists_or_add() {
     assert_eq!(values.len(), 2);
     assert_eq!(values[0], "original-value");
     assert_eq!(values[1], "new-value");
+}
+
+#[test]
+fn test_set_headers_append_fields() {
+    use HeaderAppendAction::{AddIfAbsent, AppendIfExistsOrAdd, OverwriteIfExists, OverwriteIfExistsOrAdd};
+
+    const NAME: &str = "x-gateway-destination-endpoint";
+    // (append, append_action, header already set by the client, values after the mutation)
+    let cases: [(Option<bool>, HeaderAppendAction, bool, &[&str]); 14] = [
+        (None, AppendIfExistsOrAdd, true, &["epp"]),
+        (None, AppendIfExistsOrAdd, false, &["epp"]),
+        (Some(true), AppendIfExistsOrAdd, true, &["client", "epp"]),
+        (Some(true), OverwriteIfExists, true, &["client", "epp"]),
+        (Some(true), OverwriteIfExists, false, &["epp"]),
+        (Some(false), AppendIfExistsOrAdd, true, &["epp"]),
+        (Some(false), AddIfAbsent, true, &["epp"]),
+        (Some(false), OverwriteIfExists, false, &["epp"]),
+        (None, AddIfAbsent, true, &["client"]),
+        (None, AddIfAbsent, false, &["epp"]),
+        (None, OverwriteIfExistsOrAdd, true, &["epp"]),
+        (None, OverwriteIfExistsOrAdd, false, &["epp"]),
+        (None, OverwriteIfExists, true, &["epp"]),
+        (None, OverwriteIfExists, false, &[]),
+    ];
+
+    for (append, append_action, client_set, expected) in cases {
+        let mutation = HeaderMutation {
+            set_headers: vec![HeaderValueOption {
+                header: Some(EnvoyHeaderValue {
+                    key: NAME.to_owned(),
+                    value: String::new(),
+                    raw_value: b"epp".to_vec(),
+                }),
+                #[allow(deprecated)]
+                append: append.map(|value| google::protobuf::BoolValue { value }),
+                append_action: append_action as i32,
+                keep_empty_value: false,
+            }],
+            remove_headers: vec![],
+        };
+        let mut request = Request::new(());
+        let mut response = Response::new(());
+        if client_set {
+            request.headers_mut().insert(NAME, http::HeaderValue::from_static("client"));
+            response.headers_mut().insert(NAME, http::HeaderValue::from_static("client"));
+        }
+
+        apply_request_header_mutations(&mut request, mutation.clone(), None).unwrap();
+        apply_response_header_mutations(&mut response, mutation, None).unwrap();
+
+        let case = format!("append: {append:?}, append_action: {append_action:?}, client_set: {client_set}");
+        let values = |headers: &http::HeaderMap| -> Vec<String> {
+            headers.get_all(NAME).iter().map(|v| v.to_str().unwrap().to_owned()).collect()
+        };
+        assert_eq!(values(request.headers()), expected, "request, {case}");
+        assert_eq!(values(response.headers()), expected, "response, {case}");
+    }
 }
 
 #[tokio::test]
