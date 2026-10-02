@@ -384,9 +384,14 @@ impl From<h2::Error> for DownstreamError {
 
 impl From<&hyper::Error> for DownstreamError {
     fn from(err: &hyper::Error) -> Self {
-        if err.is_timeout() || err.is_incomplete_message() {
+        if err.is_timeout() {
             DownstreamError::Timeout
-        } else if err.is_canceled() || err.is_closed() || err.is_body_write_aborted() || err.is_user() {
+        } else if err.is_incomplete_message()
+            || err.is_canceled()
+            || err.is_closed()
+            || err.is_body_write_aborted()
+            || err.is_user()
+        {
             DownstreamError::Reset
         } else if err.is_parse() || err.is_parse_status() || err.is_parse_too_large() {
             DownstreamError::Protocol(err.to_string())
