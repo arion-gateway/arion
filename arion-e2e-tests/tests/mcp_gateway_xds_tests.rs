@@ -73,6 +73,7 @@ fn rest_tool_proto(name: &str, description: &str, cluster: &str, path: &str) -> 
     McpToolBuilder::new(name, description)
         .input_schema(inline_string_data_source(r#"{"type":"object","properties":{}}"#))
         .rest_backend(McpRestBackendBuilder::new(cluster, "GET", path))
+        .eager()
         .build()
 }
 
@@ -442,7 +443,7 @@ async fn test_mcp_gateway_xds_dynamic_server_add_materializes_tools() {
     let (harness, listener_addr) = start_harness_with_mcp_listener().await;
     let client = new_initialized_client(listener_addr).await;
 
-    let server_proto = DynamicMcpServerBuilder::new("dyn_srv", "dynamic mock", &mock_url).build();
+    let server_proto = DynamicMcpServerBuilder::new("dyn_srv", "dynamic mock", &mock_url).eager_tools().build();
     let resource_id = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "dyn_srv");
     harness.push_dynamic_mcp_server(&resource_id, &server_proto).await.expect("push dyn server");
 
@@ -463,7 +464,7 @@ async fn test_mcp_gateway_xds_dynamic_server_remove_evicts_tools() {
     let (harness, listener_addr) = start_harness_with_mcp_listener().await;
     let client = new_initialized_client(listener_addr).await;
 
-    let server_proto = DynamicMcpServerBuilder::new("dyn_srv", "dynamic mock", &mock_url).build();
+    let server_proto = DynamicMcpServerBuilder::new("dyn_srv", "dynamic mock", &mock_url).eager_tools().build();
     let resource_id = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "dyn_srv");
     harness.push_dynamic_mcp_server(&resource_id, &server_proto).await.expect("push dyn server");
 
@@ -493,7 +494,7 @@ async fn test_mcp_gateway_xds_dynamic_server_replaces_tools_on_update() {
     let (harness, listener_addr) = start_harness_with_mcp_listener().await;
     let client = new_initialized_client(listener_addr).await;
 
-    let server_proto = DynamicMcpServerBuilder::new("dyn_srv", "dynamic mock", &mock_url).build();
+    let server_proto = DynamicMcpServerBuilder::new("dyn_srv", "dynamic mock", &mock_url).eager_tools().build();
     let resource_id = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "dyn_srv");
     harness.push_dynamic_mcp_server(&resource_id, &server_proto).await.expect("initial push");
 

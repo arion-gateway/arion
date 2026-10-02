@@ -19,15 +19,15 @@ use std::time::Duration;
 
 use arion_data_plane_api::envoy_data_plane_api::{
     arion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        DynamicMcpServer, FunctionGraphBackend, HttpUpstreamPolicy, JwtClaimMatcher, JwtHeaderMatcher, McpGateway,
-        McpServerBackend, Permission, QueryParam, RemoteEmbeddings, RestBackend, SemanticSearch, ServerInfo,
-        SimilarityConfig, TdsSpecifier, Tool, ToolRbac, mcp_server_backend, permission::PermissionType, tool,
-        tool_rbac,
+        mcp_server_backend, permission::PermissionType, tool, tool_rbac, DisclosureMode, DynamicMcpServer,
+        FunctionGraphBackend, HttpUpstreamPolicy, JwtClaimMatcher, JwtHeaderMatcher, McpGateway, McpServerBackend,
+        Permission, QueryParam, RemoteEmbeddings, RestBackend, SemanticSearch, ServerInfo, TdsSpecifier, Tool,
+        ToolRbac,
     },
     envoy::{
-        config::core::v3::{DataSource, data_source::Specifier},
+        config::core::v3::{data_source::Specifier, DataSource},
         extensions::filters::network::http_connection_manager::v3::{
-            HttpFilter, http_filter::ConfigType as HttpFilterConfigType,
+            http_filter::ConfigType as HttpFilterConfigType, HttpFilter,
         },
         service::discovery::v3::Resource as XdsResource,
     },
@@ -213,6 +213,12 @@ impl McpToolBuilder {
         I: IntoIterator<Item = f32>,
     {
         self.proto.embedding = embedding.into_iter().collect();
+        self
+    }
+
+    #[must_use]
+    pub fn eager(mut self) -> Self {
+        self.proto.disclosure_mode = DisclosureMode::Eager.into();
         self
     }
 
@@ -403,6 +409,12 @@ impl DynamicMcpServerBuilder {
     }
 
     #[must_use]
+    pub fn eager_tools(mut self) -> Self {
+        self.proto.tool_disclosure_mode = DisclosureMode::Eager.into();
+        self
+    }
+
+    #[must_use]
     pub fn with_proto<F: FnOnce(&mut DynamicMcpServer)>(mut self, f: F) -> Self {
         f(&mut self.proto);
         self
@@ -498,7 +510,7 @@ pub struct McpSemanticSearchBuilder {
 impl McpSemanticSearchBuilder {
     #[must_use]
     pub fn new() -> Self {
-        Self { proto: SemanticSearch { similarity: Some(SimilarityConfig { top_k: 0 }), ..Default::default() } }
+        Self { proto: SemanticSearch::default() }
     }
 
     #[must_use]
@@ -530,14 +542,8 @@ impl McpSemanticSearchBuilder {
     }
 
     #[must_use]
-    pub fn assisted_discovery(mut self, enabled: bool) -> Self {
-        self.proto.enable_assisted_discovery = enabled;
-        self
-    }
-
-    #[must_use]
-    pub fn top_k(mut self, top_k: u32) -> Self {
-        self.proto.similarity = Some(SimilarityConfig { top_k });
+    pub fn max_allowable_results(mut self, max_allowable_results: u32) -> Self {
+        self.proto.max_allowable_results = Some(max_allowable_results);
         self
     }
 
