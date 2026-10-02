@@ -1435,8 +1435,18 @@ impl<S> TransactionLifecycleSvc<S> {
 }
 
 impl TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
-    pub async fn handle_request(self, incoming_request: Request<Incoming>) -> std::result::Result<Response<ArionClientBody>, Box<dyn std::error::Error + Send + Sync>> {
-        let Self { conn, manager, inner } = self;
+    // NOTE: `self` is taken as an 8-byte `StdArc` on purpose. hyper moves this (~18 KB) future into
+    // its `in_flight` box on every request, and only writes it in place when the arguments sit next
+    // to the state byte. rustc orders fields by the largest power of two dividing their size: a
+    // 32-byte `self` can be placed before the inner future (whose size is any multiple of 16), away
+    // from `incoming_request`, which turns the in-place write into a copy of the whole future.
+    pub async fn handle_request(
+        self: StdArc<Self>,
+        incoming_request: Request<Incoming>,
+    ) -> crate::Result<Response<ArionClientBody>> {
+        let conn = self.conn.clone();
+        let manager = &self.manager;
+        let inner = &self.inner;
         let incoming_request_id = RequestId::from_request(&incoming_request);
         let incoming_version = incoming_request.version();
         let listener_name = manager.listener_name;
@@ -1536,7 +1546,7 @@ impl TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
         } else {
             response
         };
-        response.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        response
     }
 }
 
