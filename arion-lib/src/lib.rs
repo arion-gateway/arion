@@ -187,55 +187,29 @@ impl Error {
         None
     }
 
+    #[inline]
     pub fn as_upstream_error(&self) -> Option<&crate::event_error::UpstreamError> {
-        if let Self::Upstream(err) = self {
-            return Some(err.as_ref());
+        match self {
+            Self::Upstream(err) => Some(err.as_ref()),
+            _ => None,
         }
-        let mut curr: Option<&(dyn StdError + 'static)> = Some(self);
-        while let Some(e) = curr {
-            if let Some(err) = e.downcast_ref::<crate::event_error::UpstreamError>() {
-                return Some(err);
-            }
-            if let Some(Self::Upstream(err)) = e.downcast_ref::<Self>() {
-                return Some(err.as_ref());
-            }
-            curr = e.source();
-        }
-        None
     }
 
+    #[inline]
     pub fn as_downstream_error(&self) -> Option<&crate::event_error::DownstreamError> {
-        if let Self::Downstream(err) = self {
-            return Some(err.as_ref());
+        match self {
+            Self::Downstream(err) => Some(err.as_ref()),
+            _ => None,
         }
-        let mut curr: Option<&(dyn StdError + 'static)> = Some(self);
-        while let Some(e) = curr {
-            if let Some(err) = e.downcast_ref::<crate::event_error::DownstreamError>() {
-                return Some(err);
-            }
-            if let Some(Self::Downstream(err)) = e.downcast_ref::<Self>() {
-                return Some(err.as_ref());
-            }
-            curr = e.source();
-        }
-        None
     }
 
     /// Returns the [`TcpErrorContext`] carried by an upstream connection error, if present.
+    #[inline]
     pub fn upstream_context(&self) -> Option<&crate::transport::connector::TcpErrorContext> {
-        if let Some(crate::event_error::UpstreamError::Connect(c)) = self.as_upstream_error() {
-            return Some(&c.context);
+        match self.as_upstream_error()? {
+            crate::event_error::UpstreamError::Connect(c) => Some(&c.context),
+            _ => None,
         }
-        let mut curr: Option<&(dyn StdError + 'static)> = Some(self);
-        while let Some(e) = curr {
-            if let Some(crate::event_error::UpstreamError::Connect(c)) =
-                e.downcast_ref::<crate::event_error::UpstreamError>()
-            {
-                return Some(&c.context);
-            }
-            curr = e.source();
-        }
-        None
     }
 }
 

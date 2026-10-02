@@ -18,7 +18,7 @@
 //
 //
 use super::{http_modifiers, upgrades as upgrade_utils, RequestCtx, RequestHandler};
-use crate::event_error::{EventFailure, EventKind};
+use crate::event_error::{EventFailure, EventKind, UpstreamError};
 use crate::{
     body::response_flags::ResponseFlags,
     clusters::http_upstream::{acquire_http_upstream, AcquireHttpUpstreamError},
@@ -289,18 +289,28 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
             Err(AcquireHttpUpstreamError::RoutingContext { source, .. }) => Err(source.into()),
             // http connection not available from cluster...
             Err(AcquireHttpUpstreamError::Connection { source, .. }) => {
-                let event_error = source.as_upstream_error().cloned();
-                let flags = event_error.clone().map(ResponseFlags::from).unwrap_or_default();
-                let event_kind = event_error.map_or(EventFailure::ViaUpstream.into(), EventKind::Upstream);
+                let event_error = UpstreamError::from(&source);
+                let flags = ResponseFlags::from(event_error.clone());
+                let event_kind = EventKind::Upstream(event_error.clone());
                 debug!(
                     "Failed to get an HTTP connection: {:?}: {}({})",
                     source,
                     ResponseFlagsLong(&flags.0).to_smolstr(),
                     ResponseFlagsShort(&flags.0).to_smolstr()
                 );
-                Ok(SyntheticHttpResponse::internal_server_error(event_kind, flags)
-                    .with_body("Failed to connect to upstream cluster")
-                    .into_response(request.version()))
+                let resp = match event_error {
+                    UpstreamError::Connect(_) | UpstreamError::RefusedStream | UpstreamError::Io(_) => {
+                        SyntheticHttpResponse::service_unavailable(event_kind, flags)
+                    },
+                    UpstreamError::PerTryTimeout | UpstreamError::RouteTimeout => {
+                        SyntheticHttpResponse::gateway_timeout(event_kind, flags)
+                    },
+                    UpstreamError::Reset | UpstreamError::Http3PostConnectFailure | UpstreamError::Protocol(_) => {
+                        SyntheticHttpResponse::bad_gateway(event_kind, flags)
+                    },
+                    UpstreamError::Other(_) => SyntheticHttpResponse::internal_server_error(event_kind, flags),
+                };
+                Ok(resp.with_body("Failed to connect to upstream cluster").into_response(request.version()))
             },
         }
     }

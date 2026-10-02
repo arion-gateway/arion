@@ -119,3 +119,9 @@ impl From<(&'_ TimeoutBodyError<BodyError>, BodyKind)> for ResponseFlags {
         }
     }
 }
+
+impl From<(&'_ std::convert::Infallible, BodyKind)> for ResponseFlags {
+    fn from((inf, _): (&std::convert::Infallible, BodyKind)) -> Self {
+        match *inf {}
+    }
+}

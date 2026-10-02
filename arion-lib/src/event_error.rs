@@ -15,12 +15,11 @@
 use arion_format::types::ResponseFlags as FmtResponseFlags;
 use arion_interner::StringInterner;
 use smol_str::SmolStr;
-use std::error::Error as ErrorTrait;
 use std::io;
 use tokio::time::error::Elapsed;
 
 use crate::body::poly_body::PolyBodyError;
-use crate::body::response_flags::ResponseFlags;
+use crate::body::response_flags::{BodyKind, ResponseFlags};
 use crate::body::timeout_body::TimeoutBodyError;
 use crate::transport::connector::{ConnectError, ConnectErrorKind};
 
@@ -190,113 +189,6 @@ pub struct UpstreamTransportEventError(pub &'static str);
 pub struct ResponseCodeDetails(pub &'static str);
 pub struct ConnectionTerminationDetails(pub &'static str);
 
-pub fn find_error_in_chain<'a, E: ErrorTrait + 'static>(mut err: &'a (dyn ErrorTrait + 'static)) -> Option<&'a E> {
-    loop {
-        if let Some(found) = err.downcast_ref::<E>() {
-            return Some(found);
-        }
-        match err.source() {
-            Some(next) => err = next,
-            None => return None,
-        }
-    }
-}
-
-#[inline]
-fn is_timeout_node(e: &(dyn ErrorTrait + 'static)) -> bool {
-    if e.is::<Elapsed>() || e.is::<pingora_timeout::Elapsed>() {
-        return true;
-    }
-    if let Some(io) = e.downcast_ref::<io::Error>() {
-        if io.kind() == io::ErrorKind::TimedOut {
-            return true;
-        }
-    }
-    if let Some(h) = e.downcast_ref::<hyper::Error>() {
-        if h.is_timeout() {
-            return true;
-        }
-    }
-    if let Some(t) = e.downcast_ref::<TimeoutBodyError<PolyBodyError>>() {
-        if matches!(t, TimeoutBodyError::TimedOut | TimeoutBodyError::BodyError(PolyBodyError::TimedOut)) {
-            return true;
-        }
-    }
-    if let Some(t) = e.downcast_ref::<TimeoutBodyError<hyper::Error>>() {
-        if matches!(t, TimeoutBodyError::TimedOut) {
-            return true;
-        }
-    }
-    if let Some(p) = e.downcast_ref::<PolyBodyError>() {
-        if matches!(p, PolyBodyError::TimedOut) {
-            return true;
-        }
-    }
-    false
-}
-
-#[inline]
-fn is_reset_node(e: &(dyn ErrorTrait + 'static)) -> bool {
-    if let Some(h2_err) = e.downcast_ref::<h2::Error>() {
-        return match h2_err.reason() {
-            Some(h2::Reason::CANCEL | h2::Reason::NO_ERROR) => true,
-            None => true,
-            _ => false,
-        };
-    }
-    if let Some(h) = e.downcast_ref::<hyper::Error>() {
-        if h.is_canceled() || h.is_closed() {
-            return true;
-        }
-    }
-    if let Some(io) = e.downcast_ref::<io::Error>() {
-        if matches!(
-            io.kind(),
-            io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted | io::ErrorKind::BrokenPipe
-        ) {
-            return true;
-        }
-    }
-    false
-}
-
-#[inline]
-fn extract_protocol_node(e: &(dyn ErrorTrait + 'static)) -> Option<String> {
-    if let Some(h2_err) = e.downcast_ref::<h2::Error>() {
-        if let Some(reason) = h2_err.reason() {
-            if matches!(
-                reason,
-                h2::Reason::PROTOCOL_ERROR
-                    | h2::Reason::FRAME_SIZE_ERROR
-                    | h2::Reason::FLOW_CONTROL_ERROR
-                    | h2::Reason::SETTINGS_TIMEOUT
-                    | h2::Reason::COMPRESSION_ERROR
-            ) {
-                return Some(format!("h2 protocol error: {reason:?}"));
-            }
-        }
-    }
-    if let Some(h) = e.downcast_ref::<hyper::Error>() {
-        if h.is_parse() || h.is_parse_status() || h.is_parse_too_large() {
-            return Some(h.to_string());
-        }
-    }
-    None
-}
-
-#[inline]
-pub fn is_timeout(mut err: &(dyn ErrorTrait + 'static)) -> bool {
-    loop {
-        if is_timeout_node(err) {
-            return true;
-        }
-        match err.source() {
-            Some(next) => err = next,
-            None => return false,
-        }
-    }
-}
-
 impl From<&io::Error> for UpstreamTransportEventError {
     fn from(err: &io::Error) -> Self {
         UpstreamTransportEventError(match err.kind() {
@@ -460,43 +352,137 @@ pub fn elapsed() -> Elapsed {
     unsafe { std::mem::transmute(()) }
 }
 
+// ==================== Typed DownstreamError Conversions ====================
+
 impl From<&h2::Error> for DownstreamError {
-    #[inline]
     fn from(err: &h2::Error) -> Self {
-        DownstreamError::from_dyn_error(err)
+        if let Some(reason) = err.reason() {
+            match reason {
+                h2::Reason::REFUSED_STREAM | h2::Reason::CANCEL | h2::Reason::NO_ERROR => DownstreamError::Reset,
+                h2::Reason::PROTOCOL_ERROR
+                | h2::Reason::FRAME_SIZE_ERROR
+                | h2::Reason::FLOW_CONTROL_ERROR
+                | h2::Reason::SETTINGS_TIMEOUT
+                | h2::Reason::COMPRESSION_ERROR => DownstreamError::Protocol(format!("h2 protocol error: {reason:?}")),
+                h2::Reason::CONNECT_ERROR => {
+                    DownstreamError::Io(io::Error::new(io::ErrorKind::ConnectionRefused, "H2 connection refused"))
+                },
+                _ => DownstreamError::Other(err.to_string()),
+            }
+        } else {
+            DownstreamError::Reset
+        }
     }
 }
 
 impl From<h2::Error> for DownstreamError {
     #[inline]
     fn from(err: h2::Error) -> Self {
-        DownstreamError::from_dyn_error(&err)
+        DownstreamError::from(&err)
     }
 }
 
 impl From<&hyper::Error> for DownstreamError {
-    #[inline]
     fn from(err: &hyper::Error) -> Self {
-        DownstreamError::from_dyn_error(err)
+        if err.is_timeout() || err.is_incomplete_message() {
+            DownstreamError::Timeout
+        } else if err.is_canceled() || err.is_closed() || err.is_body_write_aborted() || err.is_user() {
+            DownstreamError::Reset
+        } else if err.is_parse() || err.is_parse_status() || err.is_parse_too_large() {
+            DownstreamError::Protocol(err.to_string())
+        } else {
+            DownstreamError::Other(err.to_string())
+        }
     }
 }
 
 impl From<hyper::Error> for DownstreamError {
     #[inline]
     fn from(err: hyper::Error) -> Self {
-        DownstreamError::from_dyn_error(&err)
+        DownstreamError::from(&err)
     }
 }
 
-impl DownstreamError {
-    pub fn from_dyn_error(err: &(dyn ErrorTrait + 'static)) -> Self {
-        let mut curr: Option<&(dyn ErrorTrait + 'static)> = Some(err);
+impl From<&io::Error> for DownstreamError {
+    fn from(io: &io::Error) -> Self {
+        if io.kind() == io::ErrorKind::TimedOut {
+            DownstreamError::Timeout
+        } else if matches!(
+            io.kind(),
+            io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted | io::ErrorKind::BrokenPipe
+        ) {
+            DownstreamError::Reset
+        } else {
+            DownstreamError::Io(io::Error::new(io.kind(), io.to_string()))
+        }
+    }
+}
+
+impl From<&PolyBodyError> for DownstreamError {
+    fn from(err: &PolyBodyError) -> Self {
+        match err {
+            PolyBodyError::Hyper(h) => DownstreamError::from(h.as_ref()),
+            PolyBodyError::TimedOut => DownstreamError::Timeout,
+            PolyBodyError::Io(io) => DownstreamError::from(io.as_ref()),
+            PolyBodyError::Grpc(g) => DownstreamError::Other(g.to_string()),
+            PolyBodyError::ExtProc(e) => DownstreamError::Other(e.to_string()),
+            PolyBodyError::TrailersNotSupported(s) => DownstreamError::Other((*s).to_owned()),
+        }
+    }
+}
+
+impl From<PolyBodyError> for DownstreamError {
+    #[inline]
+    fn from(err: PolyBodyError) -> Self {
+        DownstreamError::from(&err)
+    }
+}
+
+impl From<&TimeoutBodyError<PolyBodyError>> for DownstreamError {
+    fn from(err: &TimeoutBodyError<PolyBodyError>) -> Self {
+        match err {
+            TimeoutBodyError::TimedOut => DownstreamError::Timeout,
+            TimeoutBodyError::BodyError(inner) => DownstreamError::from(inner),
+        }
+    }
+}
+
+impl From<TimeoutBodyError<PolyBodyError>> for DownstreamError {
+    #[inline]
+    fn from(err: TimeoutBodyError<PolyBodyError>) -> Self {
+        DownstreamError::from(&err)
+    }
+}
+
+impl From<&TimeoutBodyError<hyper::Error>> for DownstreamError {
+    fn from(err: &TimeoutBodyError<hyper::Error>) -> Self {
+        match err {
+            TimeoutBodyError::TimedOut => DownstreamError::Timeout,
+            TimeoutBodyError::BodyError(inner) => DownstreamError::from(inner),
+        }
+    }
+}
+
+impl From<TimeoutBodyError<hyper::Error>> for DownstreamError {
+    #[inline]
+    fn from(err: TimeoutBodyError<hyper::Error>) -> Self {
+        DownstreamError::from(&err)
+    }
+}
+
+impl From<&(dyn std::error::Error + 'static)> for DownstreamError {
+    fn from(err: &(dyn std::error::Error + 'static)) -> Self {
+        enum ProtocolErr<'a> {
+            H2(h2::Reason),
+            Hyper(&'a hyper::Error),
+        }
+
+        let mut curr: Option<&(dyn std::error::Error + 'static)> = Some(err);
         let mut reset = false;
-        let mut protocol = None;
-        let mut fallback_io: Option<io::Error> = None;
+        let mut protocol: Option<ProtocolErr<'_>> = None;
+        let mut fallback_io: Option<&io::Error> = None;
 
         while let Some(e) = curr {
-            // 1. Explicit domain errors in the chain
             if let Some(downstream) = e.downcast_ref::<DownstreamError>() {
                 return downstream.clone();
             }
@@ -506,31 +492,62 @@ impl DownstreamError {
                 }
             }
 
-            // 2. Timeout (highest priority)
-            if is_timeout_node(e) {
-                return DownstreamError::Timeout;
-            }
-
-            // 3. Reset / Cancellation
-            if is_reset_node(e) {
-                reset = true;
-            } else if let Some(h2_err) = e.downcast_ref::<h2::Error>() {
-                if h2_err.reason() == Some(h2::Reason::REFUSED_STREAM) {
+            if let Some(io) = e.downcast_ref::<io::Error>() {
+                if io.kind() == io::ErrorKind::TimedOut {
+                    return DownstreamError::Timeout;
+                }
+                if matches!(
+                    io.kind(),
+                    io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted | io::ErrorKind::BrokenPipe
+                ) {
                     reset = true;
                 }
-            }
-
-            // 4. Protocol error
-            if protocol.is_none() {
-                if let Some(proto) = extract_protocol_node(e) {
-                    protocol = Some(proto);
+                if fallback_io.is_none() {
+                    fallback_io = Some(io);
                 }
-            }
-
-            // 5. I/O error
-            if fallback_io.is_none() {
-                if let Some(io) = e.downcast_ref::<io::Error>() {
-                    fallback_io = Some(io::Error::new(io.kind(), io.to_string()));
+            } else if let Some(h) = e.downcast_ref::<hyper::Error>() {
+                if h.is_timeout() {
+                    return DownstreamError::Timeout;
+                }
+                if h.is_canceled() || h.is_closed() {
+                    reset = true;
+                }
+                if protocol.is_none() && (h.is_parse() || h.is_parse_status() || h.is_parse_too_large()) {
+                    protocol = Some(ProtocolErr::Hyper(h));
+                }
+            } else if let Some(h2_err) = e.downcast_ref::<h2::Error>() {
+                let reason = h2_err.reason();
+                if matches!(reason, Some(h2::Reason::REFUSED_STREAM | h2::Reason::CANCEL | h2::Reason::NO_ERROR) | None)
+                {
+                    reset = true;
+                }
+                if protocol.is_none() {
+                    if let Some(reason) = reason {
+                        if matches!(
+                            reason,
+                            h2::Reason::PROTOCOL_ERROR
+                                | h2::Reason::FRAME_SIZE_ERROR
+                                | h2::Reason::FLOW_CONTROL_ERROR
+                                | h2::Reason::SETTINGS_TIMEOUT
+                                | h2::Reason::COMPRESSION_ERROR
+                        ) {
+                            protocol = Some(ProtocolErr::H2(reason));
+                        }
+                    }
+                }
+            } else if e.is::<Elapsed>() {
+                return DownstreamError::Timeout;
+            } else if let Some(t) = e.downcast_ref::<TimeoutBodyError<PolyBodyError>>() {
+                if matches!(t, TimeoutBodyError::TimedOut | TimeoutBodyError::BodyError(PolyBodyError::TimedOut)) {
+                    return DownstreamError::Timeout;
+                }
+            } else if let Some(t) = e.downcast_ref::<TimeoutBodyError<hyper::Error>>() {
+                if matches!(t, TimeoutBodyError::TimedOut) {
+                    return DownstreamError::Timeout;
+                }
+            } else if let Some(p) = e.downcast_ref::<PolyBodyError>() {
+                if matches!(p, PolyBodyError::TimedOut) {
+                    return DownstreamError::Timeout;
                 }
             }
 
@@ -540,53 +557,193 @@ impl DownstreamError {
         if reset {
             DownstreamError::Reset
         } else if let Some(proto) = protocol {
-            DownstreamError::Protocol(proto)
+            match proto {
+                ProtocolErr::H2(reason) => DownstreamError::Protocol(format!("h2 protocol error: {reason:?}")),
+                ProtocolErr::Hyper(h) => DownstreamError::Protocol(h.to_string()),
+            }
         } else if let Some(io) = fallback_io {
-            DownstreamError::Io(io)
+            DownstreamError::Io(io::Error::new(io.kind(), io.to_string()))
         } else {
             DownstreamError::Other(err.to_string())
         }
     }
 }
 
-impl From<&h2::Error> for UpstreamError {
+impl From<&(dyn std::error::Error + Send + Sync + 'static)> for DownstreamError {
     #[inline]
+    fn from(err: &(dyn std::error::Error + Send + Sync + 'static)) -> Self {
+        DownstreamError::from(err as &(dyn std::error::Error + 'static))
+    }
+}
+
+impl From<Box<dyn std::error::Error + Send + Sync>> for DownstreamError {
+    #[inline]
+    fn from(err: Box<dyn std::error::Error + Send + Sync>) -> Self {
+        DownstreamError::from(err.as_ref())
+    }
+}
+
+impl From<Box<dyn std::error::Error + 'static>> for DownstreamError {
+    #[inline]
+    fn from(err: Box<dyn std::error::Error + 'static>) -> Self {
+        DownstreamError::from(err.as_ref())
+    }
+}
+
+impl From<&crate::Error> for DownstreamError {
+    #[inline]
+    fn from(err: &crate::Error) -> Self {
+        DownstreamError::from(err as &(dyn std::error::Error + 'static))
+    }
+}
+
+impl From<crate::Error> for DownstreamError {
+    #[inline]
+    fn from(err: crate::Error) -> Self {
+        DownstreamError::from(&err)
+    }
+}
+
+// ==================== Typed UpstreamError Conversions ====================
+
+impl From<&h2::Error> for UpstreamError {
     fn from(err: &h2::Error) -> Self {
-        UpstreamError::from_dyn_error(err)
+        if let Some(reason) = err.reason() {
+            match reason {
+                h2::Reason::REFUSED_STREAM => UpstreamError::RefusedStream,
+                h2::Reason::CANCEL | h2::Reason::NO_ERROR => UpstreamError::Reset,
+                h2::Reason::PROTOCOL_ERROR
+                | h2::Reason::FRAME_SIZE_ERROR
+                | h2::Reason::FLOW_CONTROL_ERROR
+                | h2::Reason::SETTINGS_TIMEOUT
+                | h2::Reason::COMPRESSION_ERROR => UpstreamError::Protocol(format!("h2 protocol error: {reason:?}")),
+                h2::Reason::CONNECT_ERROR => {
+                    UpstreamError::Io(io::Error::new(io::ErrorKind::ConnectionRefused, "H2 connection refused"))
+                },
+                _ => UpstreamError::Other(err.to_string()),
+            }
+        } else {
+            UpstreamError::Reset
+        }
     }
 }
 
 impl From<h2::Error> for UpstreamError {
     #[inline]
     fn from(err: h2::Error) -> Self {
-        UpstreamError::from_dyn_error(&err)
+        UpstreamError::from(&err)
     }
 }
 
 impl From<&hyper::Error> for UpstreamError {
-    #[inline]
     fn from(err: &hyper::Error) -> Self {
-        UpstreamError::from_dyn_error(err)
+        if err.is_timeout() || err.is_incomplete_message() {
+            UpstreamError::PerTryTimeout
+        } else if err.is_canceled() || err.is_closed() || err.is_body_write_aborted() {
+            UpstreamError::Reset
+        } else if err.is_user() {
+            UpstreamError::Io(std::io::Error::new(std::io::ErrorKind::ConnectionAborted, err.to_string()))
+        } else if err.is_parse() || err.is_parse_status() || err.is_parse_too_large() {
+            UpstreamError::Protocol(err.to_string())
+        } else {
+            UpstreamError::from(err as &(dyn std::error::Error + 'static))
+        }
     }
 }
 
 impl From<hyper::Error> for UpstreamError {
     #[inline]
     fn from(err: hyper::Error) -> Self {
-        UpstreamError::from_dyn_error(&err)
+        UpstreamError::from(&err)
     }
 }
 
-impl UpstreamError {
-    pub fn from_dyn_error(err: &(dyn ErrorTrait + 'static)) -> Self {
-        let mut curr: Option<&(dyn ErrorTrait + 'static)> = Some(err);
+impl From<&io::Error> for UpstreamError {
+    fn from(io: &io::Error) -> Self {
+        if io.kind() == io::ErrorKind::TimedOut {
+            UpstreamError::PerTryTimeout
+        } else if matches!(
+            io.kind(),
+            io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted | io::ErrorKind::BrokenPipe
+        ) {
+            UpstreamError::Reset
+        } else {
+            UpstreamError::Io(io::Error::new(io.kind(), io.to_string()))
+        }
+    }
+}
+
+impl From<&PolyBodyError> for UpstreamError {
+    fn from(err: &PolyBodyError) -> Self {
+        match err {
+            PolyBodyError::Hyper(h) => UpstreamError::from(h.as_ref()),
+            PolyBodyError::TimedOut => UpstreamError::PerTryTimeout,
+            PolyBodyError::Io(io) => UpstreamError::from(io.as_ref()),
+            PolyBodyError::Grpc(g) => UpstreamError::Other(g.to_string()),
+            PolyBodyError::ExtProc(e) => UpstreamError::Other(e.to_string()),
+            PolyBodyError::TrailersNotSupported(s) => UpstreamError::Other((*s).to_owned()),
+        }
+    }
+}
+
+impl From<PolyBodyError> for UpstreamError {
+    #[inline]
+    fn from(err: PolyBodyError) -> Self {
+        UpstreamError::from(&err)
+    }
+}
+
+impl From<&TimeoutBodyError<PolyBodyError>> for UpstreamError {
+    fn from(err: &TimeoutBodyError<PolyBodyError>) -> Self {
+        match err {
+            TimeoutBodyError::TimedOut => UpstreamError::PerTryTimeout,
+            TimeoutBodyError::BodyError(inner) => UpstreamError::from(inner),
+        }
+    }
+}
+
+impl From<TimeoutBodyError<PolyBodyError>> for UpstreamError {
+    #[inline]
+    fn from(err: TimeoutBodyError<PolyBodyError>) -> Self {
+        UpstreamError::from(&err)
+    }
+}
+
+impl From<&TimeoutBodyError<hyper::Error>> for UpstreamError {
+    fn from(err: &TimeoutBodyError<hyper::Error>) -> Self {
+        match err {
+            TimeoutBodyError::TimedOut => UpstreamError::PerTryTimeout,
+            TimeoutBodyError::BodyError(inner) => UpstreamError::from(inner),
+        }
+    }
+}
+
+impl From<TimeoutBodyError<hyper::Error>> for UpstreamError {
+    #[inline]
+    fn from(err: TimeoutBodyError<hyper::Error>) -> Self {
+        UpstreamError::from(&err)
+    }
+}
+
+impl From<&(dyn std::error::Error + 'static)> for UpstreamError {
+    fn from(err: &(dyn std::error::Error + 'static)) -> Self {
+        enum ProtocolErr<'a> {
+            H2(h2::Reason),
+            Hyper(&'a hyper::Error),
+        }
+
+        enum FallbackIo<'a> {
+            Io(&'a io::Error),
+            H2Connect,
+        }
+
+        let mut curr: Option<&(dyn std::error::Error + 'static)> = Some(err);
         let mut reset = false;
         let mut refused = false;
-        let mut protocol = None;
-        let mut fallback_io: Option<io::Error> = None;
+        let mut protocol: Option<ProtocolErr<'_>> = None;
+        let mut fallback_io: Option<FallbackIo<'_>> = None;
 
         while let Some(e) = curr {
-            // 1. Explicit domain errors in the chain
             if let Some(upstream) = e.downcast_ref::<UpstreamError>() {
                 return upstream.clone();
             }
@@ -599,38 +756,67 @@ impl UpstreamError {
                 return UpstreamError::Connect(conn.clone());
             }
 
-            // 2. Timeout (highest priority)
-            if is_timeout_node(e) {
-                return UpstreamError::PerTryTimeout;
-            }
-
-            // 3. Upstream refused stream
-            if let Some(h2_err) = e.downcast_ref::<h2::Error>() {
-                if h2_err.reason() == Some(h2::Reason::REFUSED_STREAM) {
+            if let Some(io) = e.downcast_ref::<io::Error>() {
+                if io.kind() == io::ErrorKind::TimedOut {
+                    return UpstreamError::PerTryTimeout;
+                }
+                if matches!(
+                    io.kind(),
+                    io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted | io::ErrorKind::BrokenPipe
+                ) {
+                    reset = true;
+                }
+                if fallback_io.is_none() {
+                    fallback_io = Some(FallbackIo::Io(io));
+                }
+            } else if let Some(h) = e.downcast_ref::<hyper::Error>() {
+                if h.is_timeout() {
+                    return UpstreamError::PerTryTimeout;
+                }
+                if h.is_canceled() || h.is_closed() {
+                    reset = true;
+                }
+                if protocol.is_none() && (h.is_parse() || h.is_parse_status() || h.is_parse_too_large()) {
+                    protocol = Some(ProtocolErr::Hyper(h));
+                }
+            } else if let Some(h2_err) = e.downcast_ref::<h2::Error>() {
+                let reason = h2_err.reason();
+                if reason == Some(h2::Reason::REFUSED_STREAM) {
                     refused = true;
                 }
-            }
-
-            // 4. Reset / Cancellation
-            if is_reset_node(e) {
-                reset = true;
-            }
-
-            // 5. Protocol error
-            if protocol.is_none() {
-                if let Some(proto) = extract_protocol_node(e) {
-                    protocol = Some(proto);
+                if matches!(reason, Some(h2::Reason::CANCEL | h2::Reason::NO_ERROR) | None) {
+                    reset = true;
                 }
-            }
-
-            // 6. I/O error
-            if fallback_io.is_none() {
-                if let Some(io) = e.downcast_ref::<io::Error>() {
-                    fallback_io = Some(io::Error::new(io.kind(), io.to_string()));
-                } else if let Some(h2_err) = e.downcast_ref::<h2::Error>() {
-                    if h2_err.reason() == Some(h2::Reason::CONNECT_ERROR) {
-                        fallback_io = Some(io::Error::new(io::ErrorKind::ConnectionRefused, "H2 connection refused"));
+                if protocol.is_none() {
+                    if let Some(reason) = reason {
+                        if matches!(
+                            reason,
+                            h2::Reason::PROTOCOL_ERROR
+                                | h2::Reason::FRAME_SIZE_ERROR
+                                | h2::Reason::FLOW_CONTROL_ERROR
+                                | h2::Reason::SETTINGS_TIMEOUT
+                                | h2::Reason::COMPRESSION_ERROR
+                        ) {
+                            protocol = Some(ProtocolErr::H2(reason));
+                        }
                     }
+                }
+                if fallback_io.is_none() && reason == Some(h2::Reason::CONNECT_ERROR) {
+                    fallback_io = Some(FallbackIo::H2Connect);
+                }
+            } else if e.is::<Elapsed>() {
+                return UpstreamError::PerTryTimeout;
+            } else if let Some(t) = e.downcast_ref::<TimeoutBodyError<PolyBodyError>>() {
+                if matches!(t, TimeoutBodyError::TimedOut | TimeoutBodyError::BodyError(PolyBodyError::TimedOut)) {
+                    return UpstreamError::PerTryTimeout;
+                }
+            } else if let Some(t) = e.downcast_ref::<TimeoutBodyError<hyper::Error>>() {
+                if matches!(t, TimeoutBodyError::TimedOut) {
+                    return UpstreamError::PerTryTimeout;
+                }
+            } else if let Some(p) = e.downcast_ref::<PolyBodyError>() {
+                if matches!(p, PolyBodyError::TimedOut) {
+                    return UpstreamError::PerTryTimeout;
                 }
             }
 
@@ -642,12 +828,108 @@ impl UpstreamError {
         } else if reset {
             UpstreamError::Reset
         } else if let Some(proto) = protocol {
-            UpstreamError::Protocol(proto)
+            match proto {
+                ProtocolErr::H2(reason) => UpstreamError::Protocol(format!("h2 protocol error: {reason:?}")),
+                ProtocolErr::Hyper(h) => UpstreamError::Protocol(h.to_string()),
+            }
         } else if let Some(io) = fallback_io {
-            UpstreamError::Io(io)
+            match io {
+                FallbackIo::Io(io) => UpstreamError::Io(io::Error::new(io.kind(), io.to_string())),
+                FallbackIo::H2Connect => {
+                    UpstreamError::Io(io::Error::new(io::ErrorKind::ConnectionRefused, "H2 connection refused"))
+                },
+            }
         } else {
             UpstreamError::Other(err.to_string())
         }
+    }
+}
+
+impl From<&(dyn std::error::Error + Send + Sync + 'static)> for UpstreamError {
+    #[inline]
+    fn from(err: &(dyn std::error::Error + Send + Sync + 'static)) -> Self {
+        UpstreamError::from(err as &(dyn std::error::Error + 'static))
+    }
+}
+
+impl From<Box<dyn std::error::Error + Send + Sync>> for UpstreamError {
+    #[inline]
+    fn from(err: Box<dyn std::error::Error + Send + Sync>) -> Self {
+        UpstreamError::from(err.as_ref())
+    }
+}
+
+impl From<Box<dyn std::error::Error + 'static>> for UpstreamError {
+    #[inline]
+    fn from(err: Box<dyn std::error::Error + 'static>) -> Self {
+        UpstreamError::from(err.as_ref())
+    }
+}
+
+impl From<&crate::Error> for UpstreamError {
+    #[inline]
+    fn from(err: &crate::Error) -> Self {
+        UpstreamError::from(err as &(dyn std::error::Error + 'static))
+    }
+}
+
+impl From<crate::Error> for UpstreamError {
+    #[inline]
+    fn from(err: crate::Error) -> Self {
+        UpstreamError::from(&err)
+    }
+}
+
+// ==================== Typed EventKind Conversions ====================
+
+impl From<(&'_ PolyBodyError, BodyKind)> for EventKind {
+    fn from((err, kind): (&PolyBodyError, BodyKind)) -> Self {
+        match kind {
+            BodyKind::Request => EventKind::Downstream(DownstreamError::from(err)),
+            BodyKind::Response => EventKind::Upstream(UpstreamError::from(err)),
+        }
+    }
+}
+
+impl From<(&'_ TimeoutBodyError<PolyBodyError>, BodyKind)> for EventKind {
+    fn from((err, kind): (&TimeoutBodyError<PolyBodyError>, BodyKind)) -> Self {
+        match kind {
+            BodyKind::Request => EventKind::Downstream(DownstreamError::from(err)),
+            BodyKind::Response => EventKind::Upstream(UpstreamError::from(err)),
+        }
+    }
+}
+
+impl From<(&'_ TimeoutBodyError<hyper::Error>, BodyKind)> for EventKind {
+    fn from((err, kind): (&TimeoutBodyError<hyper::Error>, BodyKind)) -> Self {
+        match kind {
+            BodyKind::Request => EventKind::Downstream(DownstreamError::from(err)),
+            BodyKind::Response => EventKind::Upstream(UpstreamError::from(err)),
+        }
+    }
+}
+
+impl From<(&'_ hyper::Error, BodyKind)> for EventKind {
+    fn from((err, kind): (&hyper::Error, BodyKind)) -> Self {
+        match kind {
+            BodyKind::Request => EventKind::Downstream(DownstreamError::from(err)),
+            BodyKind::Response => EventKind::Upstream(UpstreamError::from(err)),
+        }
+    }
+}
+
+impl From<(&'_ h2::Error, BodyKind)> for EventKind {
+    fn from((err, kind): (&h2::Error, BodyKind)) -> Self {
+        match kind {
+            BodyKind::Request => EventKind::Downstream(DownstreamError::from(err)),
+            BodyKind::Response => EventKind::Upstream(UpstreamError::from(err)),
+        }
+    }
+}
+
+impl From<(&'_ std::convert::Infallible, BodyKind)> for EventKind {
+    fn from((inf, _): (&std::convert::Infallible, BodyKind)) -> Self {
+        match *inf {}
     }
 }
 
@@ -717,15 +999,6 @@ mod tests {
         };
         let err = Error::upstream(conn_err);
 
-        println!("DEBUG TEST: err = {err:?}");
-        println!("DEBUG TEST: err display = {err}");
-
-        let mut temp_err: Option<&(dyn std::error::Error + 'static)> = Some(&err);
-        while let Some(e) = temp_err {
-            println!("DEBUG TEST: cause = {}, type = {:?}", e, e.source().map(|_| "has_source"));
-            temp_err = e.source();
-        }
-
         let found = err.find_source::<io::Error>();
         assert!(found.is_some(), "Should find std::io::Error in chain!");
 
@@ -772,40 +1045,46 @@ mod tests {
     #[test]
     fn test_timeout_body_error_mapping() {
         let err: TimeoutBodyError<PolyBodyError> = TimeoutBodyError::TimedOut;
-        let downstream = DownstreamError::from_dyn_error(&err);
+        let downstream = DownstreamError::from(&err);
         assert!(matches!(downstream, DownstreamError::Timeout));
 
-        let upstream = UpstreamError::from_dyn_error(&err);
-        assert!(matches!(upstream, UpstreamError::PerTryTimeout));
-
-        // Wrapped in Box<dyn Error>
-        let boxed: Box<dyn std::error::Error + Send + Sync> = Box::new(TimeoutBodyError::<PolyBodyError>::TimedOut);
-        let downstream = DownstreamError::from_dyn_error(&*boxed);
-        assert!(matches!(downstream, DownstreamError::Timeout));
-        let upstream = UpstreamError::from_dyn_error(&*boxed);
+        let upstream = UpstreamError::from(&err);
         assert!(matches!(upstream, UpstreamError::PerTryTimeout));
 
         // PolyBodyError::TimedOut wrapped in TimeoutBodyError::BodyError
         let body_timeout_err: TimeoutBodyError<PolyBodyError> = TimeoutBodyError::BodyError(PolyBodyError::TimedOut);
-        let downstream = DownstreamError::from_dyn_error(&body_timeout_err);
+        let downstream = DownstreamError::from(&body_timeout_err);
         assert!(matches!(downstream, DownstreamError::Timeout));
-        let upstream = UpstreamError::from_dyn_error(&body_timeout_err);
+        let upstream = UpstreamError::from(&body_timeout_err);
         assert!(matches!(upstream, UpstreamError::PerTryTimeout));
 
         // Plain PolyBodyError::TimedOut
         let poly_timeout = PolyBodyError::TimedOut;
-        let downstream = DownstreamError::from_dyn_error(&poly_timeout);
+        let downstream = DownstreamError::from(&poly_timeout);
         assert!(matches!(downstream, DownstreamError::Timeout));
-        let upstream = UpstreamError::from_dyn_error(&poly_timeout);
+        let upstream = UpstreamError::from(&poly_timeout);
         assert!(matches!(upstream, UpstreamError::PerTryTimeout));
 
         // Non-timeout TimeoutBodyError should not map to Timeout
         let body_io_err: TimeoutBodyError<PolyBodyError> = TimeoutBodyError::BodyError(PolyBodyError::Io(
             std::sync::Arc::new(io::Error::new(io::ErrorKind::ConnectionReset, "connection reset")),
         ));
-        let downstream = DownstreamError::from_dyn_error(&body_io_err);
+        let downstream = DownstreamError::from(&body_io_err);
         assert!(!matches!(downstream, DownstreamError::Timeout));
-        let upstream = UpstreamError::from_dyn_error(&body_io_err);
+        let upstream = UpstreamError::from(&body_io_err);
         assert!(!matches!(upstream, UpstreamError::PerTryTimeout));
+
+        // Test From trait objects with 'static bound
+        let boxed: Box<dyn std::error::Error + Send + Sync> = Box::new(TimeoutBodyError::<PolyBodyError>::TimedOut);
+        let downstream = DownstreamError::from(boxed.as_ref());
+        assert!(matches!(downstream, DownstreamError::Timeout));
+        let upstream = UpstreamError::from(boxed.as_ref());
+        assert!(matches!(upstream, UpstreamError::PerTryTimeout));
+
+        let dyn_ref: &(dyn std::error::Error + 'static) = &TimeoutBodyError::<PolyBodyError>::TimedOut;
+        let downstream = DownstreamError::from(dyn_ref);
+        assert!(matches!(downstream, DownstreamError::Timeout));
+        let upstream = UpstreamError::from(dyn_ref);
+        assert!(matches!(upstream, UpstreamError::PerTryTimeout));
     }
 }

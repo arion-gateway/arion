@@ -30,10 +30,7 @@ use crate::body::response_flags::{BodyKind, ResponseFlags};
 mod metrics_enabled {
     #[allow(clippy::wildcard_imports)]
     use super::*;
-    use crate::{
-        event_error::{DownstreamError, EventKind, UpstreamError},
-        utils::StreamMetrics,
-    };
+    use crate::{event_error::EventKind, utils::StreamMetrics};
     use bytes::Buf;
     use pin_project::{pin_project, pinned_drop};
     use std::sync::Arc as StdArc;
@@ -42,7 +39,7 @@ mod metrics_enabled {
     /// Trait that enables call-once semantics through `Arc` without an extra `Box` layer.
     ///
     /// Implementors store the real closure in an `Option` and `take()` it on call,
-    /// so the closure is invoked exactly once even though the method takes `&mut self`.
+    /// so the closure is invoked exactly once even though the method takes `&mut self``.
     /// This eliminates the previous `Arc<Box<dyn FnOnce(...)>>` double indirection,
     /// saving one heap allocation per `InstrumentedBody` construction.
     pub(crate) trait MetricsCallbackFn: Send + Sync + 'static {
@@ -161,6 +158,7 @@ mod metrics_enabled {
         B: Body,
         <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
         ResponseFlags: for<'a> From<(&'a <B as Body>::Error, BodyKind)>,
+        EventKind: for<'a> From<(&'a <B as Body>::Error, BodyKind)>,
     {
         type Data = B::Data;
         type Error = B::Error;
@@ -181,11 +179,7 @@ mod metrics_enabled {
                     if let Some(mut arc_closure) = this.on_complete.take() {
                         if let Some(closure) = StdArc::get_mut(&mut arc_closure) {
                             if let Some(metrics) = this.stream_metrics.as_ref() {
-                                let event_error: Option<EventKind> = match *this.body_kind {
-                                    BodyKind::Request => Some(DownstreamError::from_dyn_error(err).into()),
-                                    BodyKind::Response => Some(UpstreamError::from_dyn_error(err).into()),
-                                };
-
+                                let event_error: Option<EventKind> = Some(EventKind::from((err, *this.body_kind)));
                                 let flags = ResponseFlags::from((err, *this.body_kind));
                                 closure.call(*this.body_bytes, metrics.as_ref(), event_error, flags);
                             }
