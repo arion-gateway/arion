@@ -209,11 +209,11 @@ struct ContextBuilder {
 
 impl ContextBuilder {
     #[inline]
-    fn error(&self, addr: Option<SocketAddr>, flags: ResponseFlags, kind: impl Into<ConnectErrorKind>) -> crate::Error {
-        crate::Error::upstream(UpstreamError::Connect(ConnectError {
+    fn error(&self, addr: Option<SocketAddr>, flags: ResponseFlags, kind: ConnectErrorKind) -> crate::Error {
+        crate::Error::upstream(UpstreamError::Connect(Box::new(ConnectError {
             context: TcpErrorContext { upstream_addr: addr, response_flags: flags, cluster_name: self.cluster_name },
-            kind: kind.into(),
-        }))
+            kind,
+        })))
     }
 }
 
@@ -433,14 +433,14 @@ impl Service<Uri> for UnifiedConnector {
                     crate::clusters::try_increment_connections(cluster_name, crate::clusters::RoutingPriority::Default)
                 {
                     return Box::pin(async move {
-                        Err(crate::Error::upstream(UpstreamError::Connect(ConnectError {
+                        Err(crate::Error::upstream(UpstreamError::Connect(Box::new(ConnectError {
                             context: TcpErrorContext {
                                 upstream_addr: None,
                                 response_flags: ResponseFlags::UPSTREAM_OVERFLOW,
                                 cluster_name,
                             },
                             kind: ConnectErrorKind::CircuitBreaker,
-                        })))
+                        }))))
                     });
                 }
 

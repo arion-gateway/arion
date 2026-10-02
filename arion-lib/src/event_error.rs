@@ -26,7 +26,7 @@ use crate::transport::connector::{ConnectError, ConnectErrorKind};
 #[derive(Debug, thiserror::Error)]
 pub enum UpstreamError {
     #[error("{0}")]
-    Connect(#[from] ConnectError),
+    Connect(#[from] Box<ConnectError>),
     #[error("I/O Error: {0:?}")]
     Io(
         #[source]
@@ -730,6 +730,20 @@ impl From<TimeoutBodyError<hyper::Error>> for UpstreamError {
     }
 }
 
+impl From<ConnectError> for UpstreamError {
+    #[inline]
+    fn from(err: ConnectError) -> Self {
+        UpstreamError::Connect(Box::new(err))
+    }
+}
+
+impl From<&ConnectError> for UpstreamError {
+    #[inline]
+    fn from(err: &ConnectError) -> Self {
+        UpstreamError::Connect(Box::new(err.clone()))
+    }
+}
+
 impl From<&(dyn std::error::Error + 'static)> for UpstreamError {
     fn from(err: &(dyn std::error::Error + 'static)) -> Self {
         enum ProtocolErr<'a> {
@@ -758,6 +772,8 @@ impl From<&(dyn std::error::Error + 'static)> for UpstreamError {
                 }
             }
             if let Some(conn) = e.downcast_ref::<ConnectError>() {
+                return UpstreamError::Connect(Box::new(conn.clone()));
+            } else if let Some(conn) = e.downcast_ref::<Box<ConnectError>>() {
                 return UpstreamError::Connect(conn.clone());
             }
 
