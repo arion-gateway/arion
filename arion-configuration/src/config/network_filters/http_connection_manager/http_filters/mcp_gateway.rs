@@ -20,7 +20,7 @@ use crate::config::network_filters::network_rbac::Action;
 use http::uri::Authority;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use smol_str::{SmolStr, format_smolstr};
+use smol_str::{format_smolstr, SmolStr};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct McpGateway {
@@ -69,6 +69,8 @@ pub struct DynamicMcpServer {
     pub url: String,
     pub cache_duration: Option<Duration>,
     pub rbac: Option<McpToolRbac>,
+    #[serde(default)]
+    pub tool_disclosure_mode: DisclosureMode,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -92,6 +94,16 @@ pub struct McpTool {
     pub rbac: Option<McpToolRbac>,
     #[serde(default, skip_serializing_if = "EmbeddingVector::is_empty")]
     pub embedding: EmbeddingVector,
+    #[serde(default)]
+    pub disclosure_mode: DisclosureMode,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DisclosureMode {
+    #[default]
+    Progressive,
+    Eager,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -175,28 +187,21 @@ pub enum McpRbacPermission {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct McpSemanticSearch {
-    pub enable_assisted_discovery: bool,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub embeddings: Option<RemoteEmbeddings>,
-    #[serde(default)]
-    pub similarity: SimilarityConfig,
+    #[serde(default = "McpSemanticSearch::default_max_allowable_results")]
+    pub max_allowable_results: usize,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub struct SimilarityConfig {
-    #[serde(default = "SimilarityConfig::default_top_k")]
-    pub top_k: usize,
-}
-
-impl SimilarityConfig {
-    const fn default_top_k() -> usize {
-        10
+impl McpSemanticSearch {
+    pub const fn default_max_allowable_results() -> usize {
+        5
     }
 }
 
-impl Default for SimilarityConfig {
+impl Default for McpSemanticSearch {
     fn default() -> Self {
-        Self { top_k: Self::default_top_k() }
+        Self { embeddings: None, max_allowable_results: Self::default_max_allowable_results() }
     }
 }
 
@@ -247,17 +252,18 @@ mod envoy_conversions {
 
     use crate::config::common::envoy_conversions::IsUsed;
     use crate::config::core::RustType;
-    use crate::config::{GenericError, WithNodeOnResult, required};
+    use crate::config::{required, GenericError, WithNodeOnResult};
 
     use super::*;
     use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        DynamicMcpServer as ArionDynamicMcpServer, HttpUpstreamPolicy as ArionHttpUpstreamPolicy, JwtClaimMatcher,
-        JwtHeaderMatcher, McpGateway as ArionMcpGateway, Permission as ArionPermission,
-        QueryParam as ArionMcpQueryParams, RemoteEmbeddings as ArionRemoteEmbeddings,
-        SemanticSearch as ArionSemanticSearch, ServerInfo as ArionMcpServerInfo,
-        SimilarityConfig as ArionSimilarityConfig, TdsSpecifier as ArionTdsSpecifier, Tool as ArionTool,
-        ToolRbac as ArionToolRbac, mcp_server_backend::TransportUpstream as ArionTransportUpstream, permission,
+        mcp_server_backend::TransportUpstream as ArionTransportUpstream, permission,
         tool::UpstreamBackend as ArionUpstreamBackend, tool_rbac::Action as ArionAction,
+        DisclosureMode as ArionDisclosureMode, DynamicMcpServer as ArionDynamicMcpServer,
+        HttpUpstreamPolicy as ArionHttpUpstreamPolicy, JwtClaimMatcher, JwtHeaderMatcher,
+        McpGateway as ArionMcpGateway, Permission as ArionPermission, QueryParam as ArionMcpQueryParams,
+        RemoteEmbeddings as ArionRemoteEmbeddings, SemanticSearch as ArionSemanticSearch,
+        ServerInfo as ArionMcpServerInfo, TdsSpecifier as ArionTdsSpecifier, Tool as ArionTool,
+        ToolRbac as ArionToolRbac,
     };
     use tracing::warn;
 
@@ -266,6 +272,15 @@ mod envoy_conversions {
             match trans {
                 ArionTransportUpstream::Sse => McpBackendTransportUpstream::Sse,
                 ArionTransportUpstream::StreamableHttp => McpBackendTransportUpstream::StreamableHttp,
+            }
+        }
+    }
+
+    impl From<ArionDisclosureMode> for DisclosureMode {
+        fn from(mode: ArionDisclosureMode) -> Self {
+            match mode {
+                ArionDisclosureMode::Progressive => Self::Progressive,
+                ArionDisclosureMode::Eager => Self::Eager,
             }
         }
     }
@@ -349,6 +364,7 @@ mod envoy_conversions {
         type Error = GenericError;
         fn try_from(arion: ArionDynamicMcpServer) -> Result<Self, Self::Error> {
             let transport = arion.transport().into();
+            let tool_disclosure_mode = arion.tool_disclosure_mode().into();
             let ArionDynamicMcpServer { name, description, url, cache_duration, rbac, .. } = arion;
             if name.is_empty() {
                 return Err(GenericError::from_msg("DynamicMcpServer.name must not be empty"));
@@ -356,12 +372,7 @@ mod envoy_conversions {
             if url.is_empty() {
                 return Err(GenericError::from_msg("DynamicMcpServer.url must not be empty"));
             }
-            let cache_duration = cache_duration
-                .map(|d| -> Result<Duration, GenericError> {
-                    let dur: RustType<Duration> = d.try_into()?;
-                    Ok(dur.into_inner())
-                })
-                .transpose()?;
+            let cache_duration = cache_duration.map(parse_positive_duration).transpose().with_node("cache_duration")?;
 
             Ok(DynamicMcpServer {
                 name: name.into(),
@@ -370,6 +381,7 @@ mod envoy_conversions {
                 url,
                 cache_duration,
                 rbac: rbac.map(TryInto::try_into).transpose()?,
+                tool_disclosure_mode,
             })
         }
     }
@@ -395,7 +407,9 @@ mod envoy_conversions {
         type Error = GenericError;
 
         fn try_from(arion: ArionTool) -> Result<Self, Self::Error> {
-            let ArionTool { name, description, input_schema, output_schema, upstream_backend, rbac, embedding } = arion;
+            let disclosure_mode = arion.disclosure_mode().into();
+            let ArionTool { name, description, input_schema, output_schema, upstream_backend, rbac, embedding, .. } =
+                arion;
             let backend = required!(upstream_backend)?.try_into()?;
 
             if let UpstreamBackend::FunctionGraph = backend {
@@ -454,6 +468,7 @@ mod envoy_conversions {
                 backend,
                 rbac,
                 embedding: EmbeddingVector(embedding),
+                disclosure_mode,
             })
         }
     }
@@ -559,12 +574,18 @@ mod envoy_conversions {
     impl TryFrom<ArionSemanticSearch> for McpSemanticSearch {
         type Error = GenericError;
         fn try_from(arion: ArionSemanticSearch) -> Result<Self, Self::Error> {
-            let ArionSemanticSearch { enable_assisted_discovery, similarity, embeddings } = arion;
-
-            let similarity = similarity.map(TryInto::try_into).transpose()?.unwrap_or_default();
+            let ArionSemanticSearch { max_allowable_results, embeddings } = arion;
+            let max_allowable_results = max_allowable_results
+                .map(|value| {
+                    NonZeroUsize::new(value as usize)
+                        .map(NonZeroUsize::get)
+                        .ok_or_else(|| GenericError::from_msg("max_allowable_results must be greater than zero"))
+                })
+                .transpose()?
+                .unwrap_or_else(McpSemanticSearch::default_max_allowable_results);
             let embeddings = embeddings.map(TryInto::try_into).transpose()?;
 
-            Ok(McpSemanticSearch { enable_assisted_discovery, embeddings, similarity })
+            Ok(McpSemanticSearch { embeddings, max_allowable_results })
         }
     }
 
@@ -590,14 +611,6 @@ mod envoy_conversions {
         }
     }
 
-    impl TryFrom<ArionSimilarityConfig> for SimilarityConfig {
-        type Error = GenericError;
-        fn try_from(arion: ArionSimilarityConfig) -> Result<Self, Self::Error> {
-            let ArionSimilarityConfig { top_k } = arion;
-            Ok(SimilarityConfig { top_k: top_k as usize })
-        }
-    }
-
     #[cfg(test)]
     mod tests {
         #![allow(clippy::assertions_on_result_states)]
@@ -607,7 +620,7 @@ mod envoy_conversions {
         #[allow(clippy::indexing_slicing)]
         fn test_tool_rbac_config_parsing() {
             use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::{
-                JwtClaimMatcher, Permission as ArionPermission, ToolRbac as ArionToolRbac, permission,
+                permission, JwtClaimMatcher, Permission as ArionPermission, ToolRbac as ArionToolRbac,
             };
 
             // Create a sample tool RBAC configuration
@@ -656,7 +669,7 @@ mod envoy_conversions {
         #[test]
         fn test_tool_rbac_deny_action() {
             use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::{
-                JwtClaimMatcher, Permission as ArionPermission, ToolRbac as ArionToolRbac, permission,
+                permission, JwtClaimMatcher, Permission as ArionPermission, ToolRbac as ArionToolRbac,
             };
 
             let arion_rbac = ArionToolRbac {
@@ -688,8 +701,7 @@ mod envoy_conversions {
         #[test]
         fn test_semantic_search_round_trip() {
             let arion = ArionSemanticSearch {
-                enable_assisted_discovery: true,
-                similarity: Some(ArionSimilarityConfig { top_k: 5 }),
+                max_allowable_results: Some(9),
                 embeddings: Some(ArionRemoteEmbeddings {
                     cluster: "embeddings".to_owned(),
                     model_id: "test-model".to_owned(),
@@ -699,21 +711,12 @@ mod envoy_conversions {
                 }),
             };
             let parsed: McpSemanticSearch = arion.try_into().unwrap();
-            assert!(parsed.enable_assisted_discovery);
-            assert_eq!(parsed.similarity.top_k, 5);
+            assert_eq!(parsed.max_allowable_results, 9);
             let embeddings = parsed.embeddings.expect("remote embeddings config");
             assert_eq!(embeddings.cluster.as_str(), "embeddings");
             assert_eq!(embeddings.model_id.as_str(), "test-model");
             assert_eq!(embeddings.path, REMOTE_EMBEDDINGS_PATH);
             assert_eq!(embeddings.dimensions, 384);
-        }
-
-        #[test]
-        fn test_semantic_search_defaults_similarity() {
-            let arion = ArionSemanticSearch { enable_assisted_discovery: false, similarity: None, embeddings: None };
-            let parsed: McpSemanticSearch = arion.try_into().unwrap();
-            assert_eq!(parsed.similarity.top_k, 10);
-            assert!(parsed.embeddings.is_none());
         }
 
         #[test]

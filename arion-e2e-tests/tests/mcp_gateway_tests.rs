@@ -61,6 +61,7 @@ fn rest_tool(name: &str, description: &str, cluster: &str, method: &str, path: &
     McpToolBuilder::new(name, description)
         .input_schema(empty_schema())
         .rest_backend(McpRestBackendBuilder::new(cluster, method, path))
+        .eager()
         .build()
 }
 
@@ -68,6 +69,7 @@ fn mcp_server_tool(name: &str, description: &str, url: impl Into<String>) -> Ari
     McpToolBuilder::new(name, description)
         .input_schema(inline_string_data_source("{}"))
         .mcp_server_backend(McpServerBackendBuilder::new(url))
+        .eager()
         .build()
 }
 

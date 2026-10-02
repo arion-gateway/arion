@@ -372,6 +372,7 @@ mod tests {
             })),
             rbac: None,
             embedding: Vec::new(),
+            disclosure_mode: 0,
         }
     }
 
@@ -493,25 +494,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tool_update_propagates_eager_disclosure() {
+        use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::DisclosureMode;
+
+        let handler = stub_handler();
+        let registry = empty_registry();
+        handler.register("srv/cfg".into(), &registry);
+        let mut proto = rest_tool_proto("eager_tool");
+        proto.disclosure_mode = 1;
+
+        handler.handle_update(MCP_TOOL_TYPE_URL, "srv/cfg/eager_tool", &proto.encode_to_vec()).await.unwrap();
+
+        let entry = registry.get_tool_by_name("eager_tool").unwrap();
+        assert_eq!(entry.disclosure_mode, DisclosureMode::Eager);
+    }
+
+    #[tokio::test]
     async fn tool_update_embedding_failure_still_inserts_tool() {
-        use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-            McpSemanticSearch, SimilarityConfig,
-        };
+        use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpSemanticSearch;
 
         let handler = stub_handler();
         let client = embeddings::EmbeddingsClient::test_failing();
         let registry = StdArc::new(
-            ToolsRegistry::with_config(
-                Vec::new(),
-                Vec::new(),
-                Some(McpSemanticSearch {
-                    enable_assisted_discovery: false,
-                    embeddings: None,
-                    similarity: SimilarityConfig::default(),
-                }),
-                Some(client),
-            )
-            .unwrap(),
+            ToolsRegistry::with_config(Vec::new(), Vec::new(), Some(McpSemanticSearch::default()), Some(client))
+                .unwrap(),
         );
         handler.register("srv/cfg".into(), &registry);
 

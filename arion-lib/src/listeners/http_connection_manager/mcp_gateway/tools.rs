@@ -15,7 +15,6 @@
 #[cfg(feature = "metrics")]
 use crate::get_shard_id;
 use crate::listeners::http_connection_manager::{
-    RequestCtx,
     mcp_gateway::{
         embeddings::{self, Bm25Document},
         mcp::{MessageResult, Session},
@@ -23,14 +22,15 @@ use crate::listeners::http_connection_manager::{
             Action as RbacAction, JwtClaimField, JwtHeaderField, JwtHeaderMatcher, JwtPayloadMatcher,
             Permission as RbacPermission, ToolRbac,
         },
-        transcoder::{FunctionGraphTranscoder, RestTranscoder, Transcoder, TranscoderType, rest::DEFAULT_USER_AGENT},
+        transcoder::{rest::DEFAULT_USER_AGENT, FunctionGraphTranscoder, RestTranscoder, Transcoder, TranscoderType},
         upstream::{self, ToolInvocationFailure, ToolInvocationOutcome},
     },
+    RequestCtx,
 };
 use crate::with_metric;
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-    DynamicMcpServer, EmbeddingVector, McpBackendTransportUpstream, McpSemanticSearch, McpTool, UpstreamBackend,
-    UpstreamLimits,
+    DisclosureMode, DynamicMcpServer, EmbeddingVector, McpBackendTransportUpstream, McpSemanticSearch, McpTool,
+    UpstreamBackend, UpstreamLimits,
 };
 use arion_interner::StringInterner;
 use atomic_time::AtomicInstant;
@@ -39,22 +39,23 @@ use opentelemetry::KeyValue;
 use papaya::HashMap as PapayaMap;
 use pingora_timeout::fast_timeout::fast_timeout;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-use rmcp::transport::{DynamicTransportError, StreamableHttpClientTransport};
 use rmcp::{
-    ServiceError, ServiceExt,
     model::{
         CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, ContentBlock, Implementation,
-        InitializeRequestParams, JsonRpcNotification, ServerNotification, ToolListChangedNotification,
+        InitializeRequestParams,
     },
     service::ClientInitializeError,
+    transport::StreamableHttpClientTransport,
+    ServiceError, ServiceExt,
 };
 
 use rmcp::model;
 use rmcp::model::{ListToolsResult, Tool};
 use rmcp::service::{RoleClient, RunningService};
 use scopeguard::defer;
-use serde_json::{Value, json};
-use smol_str::{SmolStr, format_smolstr};
+use serde::Deserialize;
+use serde_json::{json, Value};
+use smol_str::{format_smolstr, SmolStr};
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc as StdArc, LazyLock};
@@ -64,8 +65,10 @@ use tracing::{debug, info, warn};
 
 const DYNAMIC_TOOL_SEPARATOR: &str = "__";
 const INDEFINITE_CACHE_LIFETIME: Duration = Duration::from_secs(100 * 365 * 24 * 3600);
+const DEFAULT_DYNAMIC_REFRESH_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+const TOOL_SEARCH_DESCRIPTION_NAME_LIMIT: usize = 256;
 
-const SEMANTIC_SEARCH_TOOL_NAME: &str = "semantic_search";
+pub const TOOL_SEARCH_TOOL_NAME: &str = "tool_search";
 thread_local! {
     /// One HTTP client per OS thread for upstream MCP transports.
     ///
@@ -74,7 +77,7 @@ thread_local! {
     /// TCP (+TLS) connection even when the `RunningService` is reused. Each thread-local
     /// client keeps its own keep-alive pool, while each transport keeps its own MCP
     /// session state (session id, protocol version) in its worker.
-    static UPSTREAM_REQWEST_CLIENT: Result<reqwest::Client, StdArc<reqwest::Error>> = reqwest::Client::builder()
+    static UPSTREAM_REQWEST_CLIENT: reqwest::Client = reqwest::Client::builder()
         // Keep-alive pool enabled (rmcp's default disables it with
         // `pool_max_idle_per_host(0)`; omitting that call restores reuse).
         // Values below mirror reqwest defaults; written out so the intent
@@ -84,34 +87,40 @@ thread_local! {
         // Same as rmcp's default: never replay caller headers to a redirect target.
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .map_err(StdArc::new);
+        .expect("failed to build upstream reqwest client");
 }
 
 /// Clone the calling thread's HTTP client. Clones share that thread's keep-alive
 /// pool; pools are never shared across OS threads.
-fn upstream_http_client() -> Result<reqwest::Client, Box<ClientInitializeError>> {
-    UPSTREAM_REQWEST_CLIENT.with(|res| match res {
-        Ok(client) => Ok(client.clone()),
-        Err(err) => Err(Box::new(ClientInitializeError::TransportError {
-            error: DynamicTransportError::from_parts(
-                "reqwest",
-                std::any::TypeId::of::<reqwest::Client>(),
-                Box::new(StdArc::clone(err)),
-            ),
-            context: "failed to build upstream reqwest client".into(),
-        })),
-    })
+fn upstream_http_client() -> reqwest::Client {
+    UPSTREAM_REQWEST_CLIENT.with(|client| client.clone())
 }
-
-static SEMANTIC_SEARCH_TOOL_INPUT_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
+static TOOL_SEARCH_INPUT_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
     json!({
         "type": "object",
         "properties": {
-            "user_query": { "type": "string", "description": "The prompt or summary text." }
+            "query": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Natural-language description of the capability to find."
+            },
+            "max_results": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Optional requested result count; values above the configured maximum are clamped."
+            }
         },
-        "required": ["user_query"],
+        "required": ["query"],
+        "additionalProperties": false
     })
 });
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolSearchRequest {
+    pub query: String,
+    pub max_results: Option<usize>,
+}
 
 #[derive(Debug)]
 pub struct ToolsRegistry {
@@ -136,6 +145,7 @@ pub struct ToolEntry {
     pub input_schema_validator: Option<Validator>,
     pub output_schema_validator: Option<Validator>,
     pub rbac: Option<ToolRbac>,
+    pub disclosure_mode: DisclosureMode,
     pub bm25_doc: Bm25Document,
     pub embedding: arc_swap::ArcSwapOption<Vec<f32>>,
 }
@@ -169,8 +179,12 @@ impl DynamicMcpServerEntry {
         now >= self.expires_at.load(Ordering::Relaxed)
     }
 
-    fn bump_deadline(&self) {
-        let lifetime = self.conf.cache_duration.unwrap_or(INDEFINITE_CACHE_LIFETIME);
+    fn bump_deadline(&self, refresh_succeeded: bool) {
+        let lifetime = self.conf.cache_duration.unwrap_or(if refresh_succeeded {
+            INDEFINITE_CACHE_LIFETIME
+        } else {
+            DEFAULT_DYNAMIC_REFRESH_RETRY_INTERVAL
+        });
         let deadline = Instant::now().checked_add(lifetime).unwrap_or_else(|| Instant::now() + Duration::from_secs(60));
         self.expires_at.store(deadline, Ordering::Relaxed);
     }
@@ -190,30 +204,73 @@ pub enum CallToolError {
     #[error("Transcoder: tool: {tool} reason: {reason}")]
     TranscoderError { tool: SmolStr, reason: String },
     #[error("Client initialization error: {0}")]
-    ClientInitializeError(#[source] Box<ClientInitializeError>),
+    ClientInitializeError(#[from] ClientInitializeError),
     #[error("ServiceError: {0}")]
-    ServiceError(#[source] Box<ServiceError>),
+    ServiceError(#[from] ServiceError),
     #[error("SerdeError: {0}")]
     SerdeError(#[from] serde_json::Error),
     #[error("Validation error: {0}")]
     ValidationError(Cow<'static, str>),
 }
 
-impl From<ClientInitializeError> for CallToolError {
-    fn from(err: ClientInitializeError) -> Self {
-        Self::ClientInitializeError(Box::new(err))
-    }
-}
-
-impl From<Box<ClientInitializeError>> for CallToolError {
-    fn from(err: Box<ClientInitializeError>) -> Self {
-        Self::ClientInitializeError(err)
-    }
-}
-
-impl From<ServiceError> for CallToolError {
-    fn from(err: ServiceError) -> Self {
-        Self::ServiceError(Box::new(err))
+impl From<CallToolError> for model::ErrorData {
+    fn from(err: CallToolError) -> Self {
+        match err {
+            CallToolError::NameNotString => {
+                model::ErrorData::invalid_params("'name' parameter is missing or not a valid string", None)
+            },
+            CallToolError::ToolNotFound(ref name) => {
+                model::ErrorData::resource_not_found(format!("Tool '{name}' not found"), None)
+            },
+            CallToolError::RbacDenied(ref tool) => {
+                model::ErrorData::invalid_request(format!("Access denied by RBAC policy for tool '{tool}'"), None)
+            },
+            CallToolError::FunctionGraphNotImplemented => {
+                model::ErrorData::internal_error("FunctionGraph transcoding is not yet implemented", None)
+            },
+            CallToolError::TranscoderError { ref tool, ref reason } => {
+                model::ErrorData::internal_error(format!("Transcoder error for tool '{tool}': {reason}"), None)
+            },
+            CallToolError::ClientInitializeError(ref init_err) => match init_err {
+                ClientInitializeError::JsonRpcError(error_data) => error_data.clone(),
+                ClientInitializeError::ConnectionClosed(ref msg) => {
+                    model::ErrorData::internal_error(format!("Upstream connection closed: {msg}"), None)
+                },
+                ClientInitializeError::TransportError { ref error, ref context } => {
+                    model::ErrorData::internal_error(format!("Upstream transport error ({context}): {error}"), None)
+                },
+                ClientInitializeError::Cancelled => {
+                    model::ErrorData::internal_error("Upstream client initialization was cancelled", None)
+                },
+                _ => {
+                    model::ErrorData::internal_error(format!("Upstream client initialization error: {init_err}"), None)
+                },
+            },
+            CallToolError::SerdeError(ref e) => {
+                model::ErrorData::parse_error(format!("Serialization error: {e}"), None)
+            },
+            CallToolError::ServiceError(ref svc_err) => match svc_err {
+                ServiceError::McpError(error_data) => error_data.clone(),
+                ServiceError::TransportSend(ref e) => {
+                    model::ErrorData::internal_error(format!("Upstream transport send error: {e}"), None)
+                },
+                ServiceError::TransportClosed => model::ErrorData::internal_error("Upstream transport closed", None),
+                ServiceError::UnexpectedResponse => {
+                    model::ErrorData::internal_error("Unexpected response from upstream", None)
+                },
+                ServiceError::Cancelled { ref reason } => model::ErrorData::internal_error(
+                    format!("Upstream request cancelled: {}", reason.as_deref().unwrap_or("<unknown>")),
+                    None,
+                ),
+                ServiceError::Timeout { timeout } => {
+                    model::ErrorData::internal_error(format!("Upstream request timed out after {timeout:?}"), None)
+                },
+                _ => model::ErrorData::internal_error(format!("Upstream service error: {svc_err}"), None),
+            },
+            CallToolError::ValidationError(e) => {
+                model::ErrorData::internal_error(format!("Json schema validation error: {e}"), None)
+            },
+        }
     }
 }
 
@@ -223,27 +280,9 @@ pub enum ListToolsError {
     #[error("Unsupported transport")]
     UnsupportedTransport,
     #[error("Client: {0}")]
-    ClientError(Box<ClientInitializeError>),
+    ClientError(#[from] ClientInitializeError),
     #[error("ServiceError: {0}")]
-    ServiceError(Box<ServiceError>),
-}
-
-impl From<ClientInitializeError> for ListToolsError {
-    fn from(value: ClientInitializeError) -> Self {
-        ListToolsError::ClientError(Box::new(value))
-    }
-}
-
-impl From<Box<ClientInitializeError>> for ListToolsError {
-    fn from(value: Box<ClientInitializeError>) -> Self {
-        ListToolsError::ClientError(value)
-    }
-}
-
-impl From<ServiceError> for ListToolsError {
-    fn from(value: ServiceError) -> Self {
-        ListToolsError::ServiceError(Box::new(value))
-    }
+    ServiceError(#[from] ServiceError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -253,9 +292,11 @@ pub enum ToolBuilderError {
     #[error("Invalid output schema")]
     InvalidOutputSchema(String),
     #[error("Failed compiling template: {0}")]
-    FailedCompilingTemplate(Box<upon::Error>),
+    FailedCompilingTemplate(#[from] upon::Error),
     #[error("Duplicate tool name: {0}")]
     DuplicateTool(SmolStr),
+    #[error("Tool name '{0}' is reserved for Arion's synthetic search tool")]
+    ReservedToolName(SmolStr),
     #[error("Duplicate dynamic MCP server name: {0}")]
     DuplicateDynamicServer(SmolStr),
     #[error("MCP server name '{0}' already registered on this runtime")]
@@ -270,28 +311,16 @@ pub enum ToolBuilderError {
     InvalidEmbeddingsConfig(String),
 }
 
-impl From<upon::Error> for ToolBuilderError {
-    fn from(value: upon::Error) -> Self {
-        ToolBuilderError::FailedCompilingTemplate(Box::new(value))
-    }
-}
-
-impl From<Box<upon::Error>> for ToolBuilderError {
-    fn from(value: Box<upon::Error>) -> Self {
-        ToolBuilderError::FailedCompilingTemplate(value)
-    }
-}
-
 impl ToolEntry {
     #[allow(clippy::result_large_err)]
     fn validate_json_against_schema(
         validator: Option<&jsonschema::Validator>,
         arguments: &Value,
     ) -> Result<(), CallToolError> {
-        if let Some(validator) = validator
-            && let Some(err) = validator.iter_errors(arguments).next()
-        {
-            return Err(CallToolError::ValidationError(err.to_string().into()));
+        if let Some(validator) = validator {
+            if let Some(err) = validator.iter_errors(arguments).next() {
+                return Err(CallToolError::ValidationError(err.to_string().into()));
+            }
         }
         Ok(())
     }
@@ -325,6 +354,7 @@ impl ToolsRegistry {
         };
 
         for tool_conf in tools {
+            Self::validate_tool_name(&tool_conf.name)?;
             registry.validate_supplied_embedding(&tool_conf)?;
 
             let entry = build_tool_entry(tool_conf, ToolSource::Provided)?;
@@ -366,10 +396,17 @@ impl ToolsRegistry {
         Ok(())
     }
 
-    /// Top-K parameter from the configured similarity block, or the default
-    /// (10) when no `semantic_search_tool` is configured.
-    fn similarity_top_k(&self) -> usize {
-        self.semantic_search.as_ref().map(|s| s.similarity.top_k).unwrap_or(10)
+    fn validate_tool_name(name: &SmolStr) -> Result<(), ToolBuilderError> {
+        if name.as_str() == TOOL_SEARCH_TOOL_NAME {
+            return Err(ToolBuilderError::ReservedToolName(name.clone()));
+        }
+        Ok(())
+    }
+
+    fn max_allowable_results(&self) -> usize {
+        self.semantic_search
+            .as_ref()
+            .map_or_else(McpSemanticSearch::default_max_allowable_results, |search| search.max_allowable_results)
     }
 
     pub async fn bootstrap(&self, req_ctx: &RequestCtx) -> Result<(), CallToolError> {
@@ -405,11 +442,11 @@ impl ToolsRegistry {
         let mut texts: Vec<String> = Vec::new();
         {
             let pinned = self.tools.pin();
-            for (_, entry) in &pinned {
-                if let Some(allowed) = restrict_to
-                    && !allowed.contains(&entry.conf.name)
-                {
-                    continue;
+            for (_, entry) in pinned.iter() {
+                if let Some(allowed) = restrict_to {
+                    if !allowed.contains(&entry.conf.name) {
+                        continue;
+                    }
                 }
                 if entry.embedding.load_full().is_some() {
                     continue;
@@ -439,7 +476,7 @@ impl ToolsRegistry {
             Err(err) => {
                 warn!(
                     target: "mcp_gateway",
-                    "embed_batch failed for {} tools: {err}; semantic_search will use BM25 fallback",
+                    "embed_batch failed for {} tools: {err}; tool_search will use BM25 fallback",
                     names.len()
                 );
                 #[cfg(feature = "metrics")]
@@ -461,19 +498,20 @@ impl ToolsRegistry {
     }
 
     #[allow(clippy::unused_async)]
-    pub fn add_tool(&self, tool: McpTool) -> Result<(), ToolBuilderError> {
+    pub async fn add_tool(&self, tool: McpTool) -> Result<(), ToolBuilderError> {
         let name = tool.name.clone();
-        if let Some(existing) = self.tools.pin().get(&name).map(StdArc::clone)
-            && !matches!(existing.source, ToolSource::Provided)
-        {
-            return Err(ToolBuilderError::DuplicateTool(name));
+        Self::validate_tool_name(&name)?;
+        if let Some(existing) = self.tools.pin().get(&name).map(StdArc::clone) {
+            if !matches!(existing.source, ToolSource::Provided) {
+                return Err(ToolBuilderError::DuplicateTool(name));
+            }
         }
         self.validate_supplied_embedding(&tool)?;
         let entry = build_tool_entry(tool, ToolSource::Provided)?;
-        if let Some(existing) = self.tools.pin().get(&name).map(StdArc::clone)
-            && !matches!(existing.source, ToolSource::Provided)
-        {
-            return Err(ToolBuilderError::DuplicateTool(name));
+        if let Some(existing) = self.tools.pin().get(&name).map(StdArc::clone) {
+            if !matches!(existing.source, ToolSource::Provided) {
+                return Err(ToolBuilderError::DuplicateTool(name));
+            }
         }
         self.tools.pin().insert(name, StdArc::new(entry));
         Ok(())
@@ -484,7 +522,11 @@ impl ToolsRegistry {
         // `remove_if(|_, v| matches!(...))` with a guarded check + remove.
         let should_remove =
             self.tools.pin().get(name).is_some_and(|entry| matches!(entry.source, ToolSource::Provided));
-        if should_remove { self.tools.pin().remove(name).is_some() } else { false }
+        if should_remove {
+            self.tools.pin().remove(name).is_some()
+        } else {
+            false
+        }
     }
 
     pub async fn add_dynamic_server(&self, server: DynamicMcpServer) -> Result<(), ToolBuilderError> {
@@ -514,56 +556,70 @@ impl ToolsRegistry {
         &self,
         req_ext: &http::Extensions,
         req_ctx: &RequestCtx,
-        session: &StdArc<Session>,
     ) -> Result<ListToolsResult, CallToolError> {
         self.ensure_tools_current(req_ctx).await?;
 
         let mut tools = Vec::with_capacity(self.tools.len() + 1);
-
-        if self.semantic_search.is_some() {
-            let Value::Object(semantic_search_input_schema) = &*SEMANTIC_SEARCH_TOOL_INPUT_SCHEMA else {
-                unreachable!()
-            };
-
-            tools.push(Tool::new(
-                SEMANTIC_SEARCH_TOOL_NAME,
-                "Pass the user prompt or a summary to discover relevant tools.",
-                StdArc::new(semantic_search_input_schema.clone()),
-            ));
+        let mut progressive_names = Vec::new();
+        let pinned = self.tools.pin();
+        for (_, entry) in pinned.iter() {
+            if !entry.rbac.as_ref().is_none_or(|rbac| rbac.is_permitted(req_ext)) {
+                continue;
+            }
+            match entry.disclosure_mode {
+                DisclosureMode::Eager => tools.push(tool_from_entry(entry)),
+                DisclosureMode::Progressive => progressive_names.push(entry.conf.name.clone()),
+            }
         }
 
-        // Handle different semantic search modes:
-        // - No semantic search: always fill all tools
-        // - Assisted discovery mode: only fill tools after prompt is set (notification flow)
-        // - Direct call mode: always fill all tools (client calls semantic search tool directly)
-        let should_fill_tools = self
-            .semantic_search
-            .as_ref()
-            .is_none_or(|ss| if ss.enable_assisted_discovery { session.prompt.lock().is_some() } else { true });
-
-        if should_fill_tools {
-            self.fill_list_tools(req_ext, session, &mut tools);
+        tools.sort_by(|left, right| left.name.cmp(&right.name));
+        if !progressive_names.is_empty() {
+            let Value::Object(tool_search_input_schema) = &*TOOL_SEARCH_INPUT_SCHEMA else { unreachable!() };
+            tools.push(Tool::new(
+                TOOL_SEARCH_TOOL_NAME,
+                Self::tool_search_description(progressive_names),
+                StdArc::new(tool_search_input_schema.clone()),
+            ));
         }
 
         Ok(ListToolsResult { tools, next_cursor: None, meta: None, ttl_ms: None, result_type: None, cache_scope: None })
     }
 
-    fn fill_list_tools(&self, req_ext: &http::Extensions, session: &StdArc<Session>, tools: &mut Vec<Tool>) {
-        let session = session.as_ref();
+    fn tool_search_description(mut names: Vec<SmolStr>) -> String {
+        names.sort_unstable();
+        let total = names.len();
+        names.truncate(TOOL_SEARCH_DESCRIPTION_NAME_LIMIT);
+        let names_json = serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_owned());
+        let availability = if total > names.len() {
+            format!(
+                "Available tool names (truncated; showing {} of {total}; more are available, try searching by describing what you need): {names_json}",
+                names.len()
+            )
+        } else {
+            format!("Available tool names: {names_json}")
+        };
+        format!(
+            "Search for additional tools using `query`, limit the returned results with `max_results`. Returns full MCP tool definitions. When you find a relevant tool, use the exact returned `name` and follow its `inputSchema`; never invent or normalize names. {availability}"
+        )
+    }
 
-        let restrict_to_active = self.semantic_search.is_some() && !session.active_tools.pin().is_empty();
+    fn has_permitted_progressive_tools(&self, req_ext: &http::Extensions) -> bool {
+        self.tools.pin().iter().any(|(_, entry)| {
+            entry.disclosure_mode == DisclosureMode::Progressive
+                && entry.rbac.as_ref().is_none_or(|rbac| rbac.is_permitted(req_ext))
+        })
+    }
 
-        let pinned = self.tools.pin();
-        let active = session.active_tools.pin();
-        for (_, entry) in &pinned {
-            if !entry.rbac.as_ref().is_none_or(|rbac| rbac.is_permitted(req_ext)) {
-                continue;
-            }
-            if restrict_to_active && !active.contains(&entry.conf.name) {
-                continue;
-            }
-            tools.push(tool_from_entry(entry));
+    fn validate_search_request(&self, request: ToolSearchRequest) -> Result<(String, usize), CallToolError> {
+        if request.query.trim().is_empty() {
+            return Err(CallToolError::ValidationError("query must be non-empty".into()));
         }
+        if request.max_results == Some(0) {
+            return Err(CallToolError::ValidationError("max_results must be greater than zero".into()));
+        }
+        let limit =
+            request.max_results.unwrap_or_else(|| self.max_allowable_results()).min(self.max_allowable_results());
+        Ok((request.query, limit))
     }
 
     async fn refresh_expired_dynamic_servers(&self) {
@@ -605,10 +661,11 @@ impl ToolsRegistry {
                         pinned.insert(entry.conf.name.clone(), StdArc::new(entry));
                     }
                 }
-                server.bump_deadline();
+                server.bump_deadline(true);
                 debug!(target: "mcp_gateway", "Refreshed dynamic MCP server '{}'", server_name);
             },
             Err(err) => {
+                server.bump_deadline(false);
                 warn!(target: "mcp_gateway", "Failed to refresh dynamic MCP server '{}': {}", server_name, err);
             },
         }
@@ -622,10 +679,13 @@ impl ToolsRegistry {
     }
 
     async fn fetch_dynamic_server_tools(server: &DynamicMcpServerEntry) -> Result<Vec<ToolEntry>, ListToolsError> {
-        let server_name = server.conf.name.clone();
         let upstream_tools = Self::list_upstream_tools(&server.conf.transport, &server.conf.url).await?;
+        Ok(Self::materialise_dynamic_tools(server, upstream_tools))
+    }
 
-        let entries = upstream_tools
+    fn materialise_dynamic_tools(server: &DynamicMcpServerEntry, upstream_tools: Vec<Tool>) -> Vec<ToolEntry> {
+        let server_name = server.conf.name.clone();
+        upstream_tools
             .into_iter()
             .map(|tool| {
                 let upstream_tool_name: SmolStr = tool.name.as_ref().into();
@@ -643,6 +703,7 @@ impl ToolsRegistry {
                     },
                     rbac: server.conf.rbac.clone(),
                     embedding: EmbeddingVector::default(),
+                    disclosure_mode: server.conf.tool_disclosure_mode,
                 };
                 let bm25_doc = Bm25Document::from_tool_parts(&conf.name, &conf.description, &conf.input_schema);
                 ToolEntry {
@@ -652,13 +713,12 @@ impl ToolsRegistry {
                     input_schema_validator: None,
                     output_schema_validator: None,
                     rbac: server.rbac.clone(),
+                    disclosure_mode: server.conf.tool_disclosure_mode,
                     bm25_doc,
                     embedding: arc_swap::ArcSwapOption::default(),
                 }
             })
-            .collect();
-
-        Ok(entries)
+            .collect()
     }
 
     async fn list_upstream_tools(
@@ -678,131 +738,93 @@ impl ToolsRegistry {
 
     async fn get_mcp_client(
         url: &str,
-    ) -> Result<RunningService<RoleClient, InitializeRequestParams>, Box<ClientInitializeError>> {
+    ) -> Result<RunningService<RoleClient, InitializeRequestParams>, ClientInitializeError> {
         debug!(target: "mcp_gateway", "Creating MCP client for URL: {url}...");
         let transport = StreamableHttpClientTransport::with_client(
-            upstream_http_client()?,
+            upstream_http_client(),
             StreamableHttpClientTransportConfig::with_uri(url),
         );
         let client_info =
             ClientConfig::new(ClientCapabilities::default(), Implementation::new(DEFAULT_USER_AGENT, "0.1.0"));
-        client_info
-            .serve(transport)
-            .await
-            .inspect_err(|e| {
-                info!(target: "mcp_gateway", "get_mcp_client error: {}!", e);
-            })
-            .map_err(Box::new)
+        client_info.serve(transport).await.inspect_err(|e| {
+            info!(target: "mcp_gateway", "get_mcp_client error: {}!", e);
+        })
     }
 
-    pub async fn call_semantic_search_tool(
+    pub async fn call_tool_search(
         &self,
         req_ext: &http::Extensions,
         req_ctx: &RequestCtx,
         rpc: &model::JsonRpcRequest,
-        session: &StdArc<Session>,
     ) -> Result<MessageResult, CallToolError> {
-        let arguments = match &rpc.request.params.get("arguments") {
-            Some(serde_json::Value::Object(o)) => o.clone(),
-            _ => {
-                return Err(CallToolError::ValidationError("call_semantic_search_tool: missing arguments".into()));
-            },
-        };
-
-        let Some(Value::String(prompt)) = arguments.get("user_query") else {
-            return Err(CallToolError::ValidationError(
-                "call_semantic_search_tool: invalid user_query argument".into(),
-            ));
-        };
-
-        let Some(semantic_search) = &self.semantic_search else {
-            return Err(CallToolError::ValidationError("Semantic search not configured".into()));
-        };
-
         self.ensure_tools_current(req_ctx).await?;
-
-        let ranked = self.rank_tools_for_query(req_ext, req_ctx, prompt).await?;
-        {
-            let active = session.active_tools.pin();
-            active.clear();
-            for entry in &ranked {
-                active.insert(entry.conf.name.clone());
-            }
+        if !self.has_permitted_progressive_tools(req_ext) {
+            return Err(CallToolError::ToolNotFound(TOOL_SEARCH_TOOL_NAME.into()));
         }
-        {
-            let mut session_prompt = session.prompt.lock();
-            *session_prompt = Some(prompt.clone())
-        };
+        let arguments = rpc.request.params.get("arguments").cloned().unwrap_or(Value::Null);
+        let request: ToolSearchRequest = serde_json::from_value(arguments).map_err(|error| {
+            CallToolError::ValidationError(format!("invalid tool_search arguments: {error}").into())
+        })?;
+        let tools = self.search_tools(req_ext, req_ctx, request, DisclosureMode::Progressive).await?;
+        let tools_json = serde_json::to_value(&tools).unwrap_or_else(|_| serde_json::Value::Array(vec![]));
 
-        if semantic_search.enable_assisted_discovery {
-            // Assisted discovery mode: send notification to trigger client re-list. The follow-up
-            // tools/list will read `active_tools` via `fill_list_tools` and emit those names.
-            let json_rpc_notification = JsonRpcNotification::<ServerNotification> {
-                jsonrpc: model::JsonRpcVersion2_0,
-                notification: ServerNotification::ToolListChangedNotification(ToolListChangedNotification::default()),
-            };
+        let success_message =
+            ContentBlock::text(serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_owned()));
+        let json_result = serde_json::to_value(CallToolResult::success(vec![success_message]))?;
 
-            let success_message = ContentBlock::text(
-                "Context acquired. Relevant APIs loaded. The tool list has been updated, please proceed with the new tools.",
-            );
-            let json_result = serde_json::to_value(CallToolResult::success(vec![success_message]))?;
+        let json_rpc_response =
+            model::JsonRpcResponse { jsonrpc: model::JsonRpcVersion2_0, id: rpc.id.clone(), result: json_result };
 
-            let json_rpc_response =
-                model::JsonRpcResponse { jsonrpc: model::JsonRpcVersion2_0, id: rpc.id.clone(), result: json_result };
-
-            Ok(MessageResult::JsonRpcNotificationResponse(json_rpc_notification, json_rpc_response))
-        } else {
-            // Direct call mode: serialise the ranked tools straight into the call result so the
-            // client receives the discovered tools without a follow-up tools/list round-trip.
-            let tools: Vec<Tool> = ranked.iter().map(|e| tool_from_entry(e)).collect();
-            let tools_json = serde_json::to_value(&tools).unwrap_or_else(|_| serde_json::Value::Array(vec![]));
-
-            let success_message =
-                ContentBlock::text(serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_owned()));
-            let json_result = serde_json::to_value(CallToolResult::success(vec![success_message]))?;
-
-            let json_rpc_response =
-                model::JsonRpcResponse { jsonrpc: model::JsonRpcVersion2_0, id: rpc.id.clone(), result: json_result };
-
-            Ok(MessageResult::JsonRpcResponse(json_rpc_response))
-        }
+        Ok(MessageResult::JsonRpcResponse(json_rpc_response))
     }
 
-    /// Score every RBAC-permitted tool against the user query and return the top-K
-    /// entries by descending similarity. Cosine ranking is used only when the
-    /// remote embeddings client can embed the query and every candidate has a vector;
-    /// otherwise the whole candidate set is scored with BM25, unless fallback is disabled.
-    async fn rank_tools_for_query(
+    /// Refresh, authorize, disclosure-filter, rank, limit, and convert registry
+    /// entries into complete MCP tool definitions.
+    ///
+    /// `max_disclosure_mode` is a disclosure ceiling, not an exact-match filter:
+    /// `Progressive` searches progressive tools only, while `Eager` searches
+    /// both progressive and eager tools.
+    pub async fn search_tools(
         &self,
         req_ext: &http::Extensions,
         req_ctx: &RequestCtx,
-        user_query: &str,
-    ) -> Result<Vec<StdArc<ToolEntry>>, CallToolError> {
+        request: ToolSearchRequest,
+        max_disclosure_mode: DisclosureMode,
+    ) -> Result<Vec<Tool>, CallToolError> {
+        let (query, limit) = self.validate_search_request(request)?;
+        self.ensure_tools_current(req_ctx).await?;
+
         let candidates: Vec<StdArc<ToolEntry>> = {
             let pinned = self.tools.pin();
             let mut candidates = Vec::with_capacity(pinned.len());
-            for (_, entry) in &pinned {
-                let entry = StdArc::clone(entry);
+            for (_, entry) in pinned.iter() {
                 if !entry.rbac.as_ref().is_none_or(|r| r.is_permitted(req_ext)) {
                     continue;
                 }
-                candidates.push(entry);
+                if !Self::is_disclosed_for_search(entry.disclosure_mode, max_disclosure_mode) {
+                    continue;
+                }
+                candidates.push(StdArc::clone(entry));
             }
             candidates
         };
 
-        let mut scored = match self.vector_scores(user_query, req_ctx, &candidates).await {
+        let mut scored = match self.vector_scores(&query, req_ctx, &candidates).await {
             Some(scored) => scored,
-            None => Self::bm25_scores(user_query, &candidates),
+            None => Self::bm25_scores(&query, &candidates),
         };
 
         scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.conf.name.cmp(&b.1.conf.name)));
+        scored.truncate(limit);
+        Ok(scored.into_iter().map(|(_, entry)| tool_from_entry(&entry)).collect())
+    }
 
-        let top_k = self.similarity_top_k();
-        if top_k > 0 && scored.len() > top_k {
-            scored.truncate(top_k);
+    #[inline]
+    fn is_disclosed_for_search(tool_mode: DisclosureMode, max_disclosure_mode: DisclosureMode) -> bool {
+        match max_disclosure_mode {
+            DisclosureMode::Progressive => tool_mode == DisclosureMode::Progressive,
+            DisclosureMode::Eager => true,
         }
-        Ok(scored.into_iter().map(|(_, e)| e).collect())
     }
 
     async fn vector_scores(
@@ -834,10 +856,10 @@ impl ToolsRegistry {
             let Some(tool_embedding) = entry.embedding.load_full() else {
                 debug!(
                     target: "mcp_gateway",
-                    "tool '{}' has no embedding yet; excluded from cosine ranking",
+                    "tool '{}' has no embedding yet; using BM25 for the candidate set",
                     entry.conf.name
                 );
-                continue;
+                return None;
             };
             let score = match embeddings::cosine_similarity(query_embedding.as_slice(), tool_embedding.as_slice()) {
                 Ok(score) => score,
@@ -878,21 +900,16 @@ impl ToolsRegistry {
         let name = rpc.request.params.get("name").and_then(Value::as_str).ok_or(CallToolError::NameNotString)?;
         debug!(target: "mcp_gateway", "call: method:{} tool '{name}'", rpc.request.method);
 
-        if name == SEMANTIC_SEARCH_TOOL_NAME && self.semantic_search.is_some() {
-            return self.call_semantic_search_tool(req_ext, req_ctx, rpc, session).await;
-            // todo(francesco) we should send back an error if agent is invoking semantic_search tool and none is configured
+        if name == TOOL_SEARCH_TOOL_NAME {
+            return self.call_tool_search(req_ext, req_ctx, rpc).await;
         }
 
-        let filter_by_active = self.semantic_search.as_ref().is_some_and(|ss| ss.enable_assisted_discovery);
-        let entry = self
-            .get_tool_by_name(name)
-            .filter(|_| !filter_by_active || session.active_tools.pin().contains(name))
-            .ok_or_else(|| CallToolError::ToolNotFound(name.into()))?;
+        let entry = self.get_tool_by_name(name).ok_or_else(|| CallToolError::ToolNotFound(name.into()))?;
 
-        if let Some(rbac) = &entry.rbac
-            && !rbac.is_permitted(req_ext)
-        {
-            return Err(CallToolError::RbacDenied(name.into()));
+        if let Some(rbac) = &entry.rbac {
+            if !rbac.is_permitted(req_ext) {
+                return Err(CallToolError::RbacDenied(name.into()));
+            }
         }
         if entry.input_schema_validator.is_some() {
             match rpc.request.params.get("arguments") {
@@ -948,7 +965,7 @@ impl ToolsRegistry {
                                 info!(target: "mcp_gateway", "removing MCP client for URL {url} due to transport error!");
                                 session.mcp_upstreams.pin().remove(url);
                             }
-                            Err(CallToolError::ServiceError(Box::new(err)))
+                            Err(CallToolError::ServiceError(err))
                         },
                     }
                 };
@@ -1015,6 +1032,7 @@ impl ToolsRegistry {
 
 fn build_tool_entry(tool_conf: McpTool, source: ToolSource) -> Result<ToolEntry, ToolBuilderError> {
     let rbac = tool_conf.rbac.as_ref().map(convert_config_rbac_to_runtime);
+    let disclosure_mode = tool_conf.disclosure_mode;
     let input_schema_validator = if tool_conf.input_schema.is_empty() {
         None
     } else {
@@ -1032,9 +1050,9 @@ fn build_tool_entry(tool_conf: McpTool, source: ToolSource) -> Result<ToolEntry,
         )
     };
     let transcoder = match &tool_conf.backend {
-        UpstreamBackend::Rest { method, path, query_params, body_template, .. } => TranscoderType::Rest(Box::new(
+        UpstreamBackend::Rest { method, path, query_params, body_template, .. } => TranscoderType::Rest(
             RestTranscoder::new(method.clone(), query_params.clone(), path.clone(), body_template.clone())?,
-        )),
+        ),
         UpstreamBackend::FunctionGraph => TranscoderType::FunctionGraph(FunctionGraphTranscoder {}),
         UpstreamBackend::McpServer { .. } => TranscoderType::NoTranscoder,
     };
@@ -1054,6 +1072,7 @@ fn build_tool_entry(tool_conf: McpTool, source: ToolSource) -> Result<ToolEntry,
         source,
         transcoder,
         rbac,
+        disclosure_mode,
         input_schema_validator,
         output_schema_validator,
         bm25_doc,
@@ -1156,11 +1175,226 @@ mod tests {
             },
             rbac: None,
             embedding: EmbeddingVector::default(),
+            disclosure_mode: DisclosureMode::Progressive,
         }
     }
 
     fn registry_with_tool(tool: McpTool) -> ToolsRegistry {
         ToolsRegistry::with_config(vec![tool], Vec::new(), None, None).unwrap()
+    }
+
+    #[tokio::test]
+    async fn eager_tool_is_listed_without_tool_search() {
+        let mut tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
+        tool.disclosure_mode = DisclosureMode::Eager;
+        let registry = registry_with_tool(tool);
+
+        let listed = registry
+            .build_list_tools(&http::Extensions::new(), &RequestCtx::default())
+            .await
+            .expect("tools/list should succeed");
+
+        assert_eq!(listed.tools.len(), 1);
+        assert_eq!(listed.tools[0].name.as_ref(), "test_tool");
+    }
+
+    #[tokio::test]
+    async fn unlisted_progressive_tool_remains_callable() {
+        let tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
+        let registry = ToolsRegistry::with_config(vec![tool], Vec::new(), None, None).unwrap();
+        let rpc = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "test_tool", "arguments": {} }
+        }))
+        .expect("valid tools/call request");
+
+        let result = registry
+            .call(
+                &http::Extensions::new(),
+                &http::HeaderMap::new(),
+                &RequestCtx::default(),
+                &rpc,
+                &UpstreamLimits::default(),
+                &StdArc::new(Session::default()),
+            )
+            .await;
+
+        assert!(matches!(result, Ok(MessageResult::JsonRpcResponse(_))));
+    }
+
+    #[tokio::test]
+    async fn rbac_controls_tool_search_visibility_and_description() {
+        let mut allowed = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
+        allowed.name = "allowed".into();
+        let mut denied = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
+        denied.name = "denied".into();
+        denied.rbac = Some(McpToolRbac {
+            action: Action::Allow,
+            permissions: vec![McpRbacPermission::JwtHeader { field: "kid".into(), value: "required".into() }],
+        });
+        let registry = ToolsRegistry::with_config(vec![denied, allowed], Vec::new(), None, None).unwrap();
+
+        let listed = registry.build_list_tools(&http::Extensions::new(), &RequestCtx::default()).await.unwrap();
+        assert_eq!(listed.tools.len(), 1);
+        let description = listed.tools[0].description.as_deref().unwrap();
+        assert!(description.contains(r#"["allowed"]"#));
+        assert!(!description.contains("denied"));
+
+        let searched = registry
+            .search_tools(
+                &http::Extensions::new(),
+                &RequestCtx::default(),
+                ToolSearchRequest { query: "tool".to_owned(), max_results: None },
+                DisclosureMode::Progressive,
+            )
+            .await
+            .unwrap();
+        assert_eq!(searched.iter().map(|tool| tool.name.as_ref()).collect::<Vec<_>>(), ["allowed"]);
+
+        assert!(registry.remove_tool("allowed"));
+        let listed = registry.build_list_tools(&http::Extensions::new(), &RequestCtx::default()).await.unwrap();
+        assert!(listed.tools.is_empty(), "tool_search must be hidden when RBAC denies every progressive tool");
+    }
+
+    #[tokio::test]
+    async fn calling_tool_search_with_only_eager_tools_is_not_found() {
+        let mut eager = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
+        eager.disclosure_mode = DisclosureMode::Eager;
+        let registry = registry_with_tool(eager);
+        let rpc = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "tool_search", "arguments": { "query": "tool" } }
+        }))
+        .unwrap();
+
+        let result = registry
+            .call(
+                &http::Extensions::new(),
+                &http::HeaderMap::new(),
+                &RequestCtx::default(),
+                &rpc,
+                &UpstreamLimits::default(),
+                &StdArc::new(Session::default()),
+            )
+            .await;
+        assert!(matches!(result, Err(CallToolError::ToolNotFound(name)) if name == TOOL_SEARCH_TOOL_NAME));
+    }
+
+    #[tokio::test]
+    async fn tool_search_rejects_invalid_arguments() {
+        let tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
+        let registry = registry_with_tool(tool);
+
+        for arguments in [
+            json!({ "query": "   " }),
+            json!({ "query": "tool", "max_results": 0 }),
+            json!({ "query": "tool", "unknown": true }),
+        ] {
+            let rpc = serde_json::from_value(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": { "name": "tool_search", "arguments": arguments }
+            }))
+            .unwrap();
+
+            let result = registry.call_tool_search(&http::Extensions::new(), &RequestCtx::default(), &rpc).await;
+            assert!(matches!(result, Err(CallToolError::ValidationError(_))), "accepted arguments: {arguments}");
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_search_defaults_and_clamps_result_count() {
+        let tools = (0..4)
+            .map(|index| {
+                let mut tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
+                tool.name = format_smolstr!("tool_{index}");
+                tool
+            })
+            .collect();
+        let registry = ToolsRegistry::with_config(
+            tools,
+            Vec::new(),
+            Some(McpSemanticSearch { embeddings: None, max_allowable_results: 2 }),
+            None,
+        )
+        .unwrap();
+
+        for (arguments, expected_count) in [
+            (json!({ "query": "tool" }), 2),
+            (json!({ "query": "tool", "max_results": 100 }), 2),
+            (json!({ "query": "tool", "max_results": 1 }), 1),
+        ] {
+            let rpc = serde_json::from_value(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": { "name": "tool_search", "arguments": arguments }
+            }))
+            .unwrap();
+            let response =
+                registry.call_tool_search(&http::Extensions::new(), &RequestCtx::default(), &rpc).await.unwrap();
+            let MessageResult::JsonRpcResponse(response) = response else {
+                panic!("tool_search must return a JSON-RPC response");
+            };
+            let tools: Vec<Value> =
+                serde_json::from_str(response.result["content"][0]["text"].as_str().unwrap()).unwrap();
+            assert_eq!(tools.len(), expected_count, "wrong result count for {arguments}");
+        }
+    }
+
+    fn dynamic_server_for_refresh(cache_duration: Option<Duration>) -> StdArc<DynamicMcpServerEntry> {
+        StdArc::new(DynamicMcpServerEntry::new(DynamicMcpServer {
+            name: "refresh_test".into(),
+            description: String::new(),
+            // Unsupported SSE fails locally, keeping these refresh tests free of network I/O.
+            transport: McpBackendTransportUpstream::Sse,
+            url: "http://unused.invalid/mcp".into(),
+            cache_duration,
+            rbac: None,
+            tool_disclosure_mode: DisclosureMode::Progressive,
+        }))
+    }
+
+    #[tokio::test]
+    async fn failed_dynamic_refresh_waits_for_default_or_configured_retry_deadline() {
+        let registry = ToolsRegistry::with_config(Vec::new(), Vec::new(), None, None).unwrap();
+
+        for (cache_duration, expected_retry) in
+            [(None, Duration::from_secs(30)), (Some(Duration::from_secs(7)), Duration::from_secs(7))]
+        {
+            let server = dynamic_server_for_refresh(cache_duration);
+            let before = Instant::now();
+            registry.refresh_if_idle(StdArc::clone(&server)).await;
+            let after = Instant::now();
+            let deadline = server.expires_at.load(Ordering::Relaxed);
+            assert!(deadline >= before + expected_retry);
+            assert!(deadline <= after + expected_retry);
+            assert!(!server.refresh_in_progress.load(Ordering::Relaxed));
+
+            registry.refresh_if_idle(StdArc::clone(&server)).await;
+            assert_eq!(server.expires_at.load(Ordering::Relaxed), deadline, "refresh retried before expiry");
+            assert!(!server.refresh_in_progress.load(Ordering::Relaxed));
+        }
+    }
+
+    #[test]
+    fn successful_dynamic_refresh_uses_indefinite_or_configured_cache_deadline() {
+        for (cache_duration, expected_lifetime) in
+            [(None, INDEFINITE_CACHE_LIFETIME), (Some(Duration::from_secs(7)), Duration::from_secs(7))]
+        {
+            let server = dynamic_server_for_refresh(cache_duration);
+            let before = Instant::now();
+            server.bump_deadline(true);
+            let after = Instant::now();
+            let deadline = server.expires_at.load(Ordering::Relaxed);
+            assert!(deadline >= before + expected_lifetime);
+            assert!(deadline <= after + expected_lifetime);
+        }
     }
 
     #[test]
@@ -1421,7 +1655,7 @@ mod tests {
         let registry = ToolsRegistry::with_config(Vec::new(), Vec::new(), None, None).unwrap();
         let tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
 
-        registry.add_tool(tool).unwrap();
+        registry.add_tool(tool).await.unwrap();
         assert!(registry.get_tool_by_name("test_tool").is_some());
 
         assert!(registry.remove_tool("test_tool"));
@@ -1444,6 +1678,7 @@ mod tests {
             },
             rbac: None,
             embedding: EmbeddingVector::default(),
+            disclosure_mode: DisclosureMode::Progressive,
         };
         let entry = build_tool_entry(
             dynamic_conf,
@@ -1476,6 +1711,7 @@ mod tests {
             url: "http://localhost/mcp".into(),
             cache_duration: None,
             rbac: None,
+            tool_disclosure_mode: DisclosureMode::Progressive,
         };
         let server = StdArc::new(DynamicMcpServerEntry::new(server_conf));
         registry.dynamic_mcp_servers.pin().insert("srv".into(), StdArc::clone(&server));
@@ -1492,6 +1728,7 @@ mod tests {
                 },
                 rbac: None,
                 embedding: EmbeddingVector::default(),
+                disclosure_mode: DisclosureMode::Progressive,
             };
             let entry = build_tool_entry(
                 conf,
@@ -1503,7 +1740,7 @@ mod tests {
 
         // And a provided tool that must be left alone
         let provided = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
-        registry.add_tool(provided).unwrap();
+        registry.add_tool(provided).await.unwrap();
 
         assert!(registry.remove_dynamic_server("srv"));
         assert!(registry.get_tool_by_name("srv__alpha").is_none());
@@ -1512,17 +1749,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn semantic_search_ranks_with_cosine_and_populates_active_tools() {
-        use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-            McpSemanticSearch, SimilarityConfig,
-        };
-
+    async fn semantic_search_ranks_with_cosine() {
         let client = embeddings::EmbeddingsClient::test_one_hot();
-        let semantic_search = Some(McpSemanticSearch {
-            enable_assisted_discovery: false,
-            embeddings: None,
-            similarity: SimilarityConfig { top_k: 2 },
-        });
+        let semantic_search = Some(McpSemanticSearch { embeddings: None, max_allowable_results: 2 });
 
         let mut tool_a = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
         tool_a.name = "weather_get_forecast".into();
@@ -1552,24 +1781,21 @@ mod tests {
 
         let req_ext = http::Extensions::new();
         let ranked = registry
-            .rank_tools_for_query(&req_ext, &req_ctx, "what is the weather today")
+            .search_tools(
+                &req_ext,
+                &req_ctx,
+                ToolSearchRequest { query: "what is the weather today".to_owned(), max_results: None },
+                DisclosureMode::Progressive,
+            )
             .await
             .expect("semantic search ranking should succeed");
-        assert_eq!(ranked.len(), 2, "top_k=2 should return exactly 2 tools");
-        assert_eq!(ranked[0].conf.name.as_str(), "weather_get_forecast", "weather tool should rank first");
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0].name.as_ref(), "weather_get_forecast", "weather tool should rank first");
     }
 
     #[tokio::test]
     async fn semantic_search_ranks_with_bm25_without_remote_embeddings() {
-        use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-            McpSemanticSearch, SimilarityConfig,
-        };
-
-        let semantic_search = Some(McpSemanticSearch {
-            enable_assisted_discovery: false,
-            embeddings: None,
-            similarity: SimilarityConfig { top_k: 1 },
-        });
+        let semantic_search = Some(McpSemanticSearch { embeddings: None, max_allowable_results: 1 });
 
         let mut tool_a = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
         tool_a.name = "weather_get_forecast".into();
@@ -1583,24 +1809,21 @@ mod tests {
         let req_ext = http::Extensions::new();
         let req_ctx = RequestCtx::default();
         let ranked = registry
-            .rank_tools_for_query(&req_ext, &req_ctx, "weather forecast")
+            .search_tools(
+                &req_ext,
+                &req_ctx,
+                ToolSearchRequest { query: "weather forecast".to_owned(), max_results: None },
+                DisclosureMode::Progressive,
+            )
             .await
             .expect("BM25 ranking should succeed");
-        assert_eq!(ranked.len(), 1, "top_k=1 should return exactly 1 tool");
-        assert_eq!(ranked[0].conf.name.as_str(), "weather_get_forecast", "BM25 should rank weather first");
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].name.as_ref(), "weather_get_forecast", "BM25 should rank weather first");
     }
 
     #[tokio::test]
     async fn add_tool_replacement_refreshes_bm25_ranking() {
-        use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-            McpSemanticSearch, SimilarityConfig,
-        };
-
-        let semantic_search = Some(McpSemanticSearch {
-            enable_assisted_discovery: false,
-            embeddings: None,
-            similarity: SimilarityConfig { top_k: 1 },
-        });
+        let semantic_search = Some(McpSemanticSearch { embeddings: None, max_allowable_results: 1 });
 
         let mut tool_a = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
         tool_a.name = "alpha".into();
@@ -1610,37 +1833,46 @@ mod tests {
         tool_b.description = "Billing invoices and payment records".into();
 
         let registry = ToolsRegistry::with_config(vec![tool_a], Vec::new(), semantic_search, None).unwrap();
-        registry.add_tool(tool_b).unwrap();
+        registry.add_tool(tool_b).await.unwrap();
 
         let req_ext = http::Extensions::new();
         let req_ctx = RequestCtx::default();
         let ranked = registry
-            .rank_tools_for_query(&req_ext, &req_ctx, "billing invoices")
+            .search_tools(
+                &req_ext,
+                &req_ctx,
+                ToolSearchRequest { query: "billing invoices".to_owned(), max_results: None },
+                DisclosureMode::Progressive,
+            )
             .await
             .expect("BM25 ranking should succeed");
-        assert_eq!(ranked[0].conf.name.as_str(), "beta");
+        assert_eq!(ranked[0].name.as_ref(), "beta");
 
         let mut replacement = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
         replacement.name = "alpha".into();
         replacement.description = "Billing billing billing invoices invoices ledger reconciliation".into();
-        registry.add_tool(replacement).unwrap();
+        registry.add_tool(replacement).await.unwrap();
 
         let ranked = registry
-            .rank_tools_for_query(&req_ext, &req_ctx, "billing invoices")
+            .search_tools(
+                &req_ext,
+                &req_ctx,
+                ToolSearchRequest { query: "billing invoices".to_owned(), max_results: None },
+                DisclosureMode::Progressive,
+            )
             .await
             .expect("BM25 ranking should succeed after replacement");
-        assert_eq!(ranked[0].conf.name.as_str(), "alpha");
+        assert_eq!(ranked[0].name.as_ref(), "alpha");
     }
 
     #[tokio::test]
     async fn bm25_fallback_allowed_degrades_to_bm25() {
         use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-            McpSemanticSearch, RemoteEmbeddings, SimilarityConfig,
+            McpSemanticSearch, RemoteEmbeddings,
         };
 
         let client = embeddings::EmbeddingsClient::test_failing();
         let semantic_search = Some(McpSemanticSearch {
-            enable_assisted_discovery: false,
             embeddings: Some(RemoteEmbeddings {
                 cluster: "embeddings".into(),
                 model_id: "test-model".into(),
@@ -1648,7 +1880,7 @@ mod tests {
                 timeout: None,
                 dimensions: 3,
             }),
-            similarity: SimilarityConfig { top_k: 1 },
+            max_allowable_results: 1,
         });
 
         let mut tool_a = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
@@ -1664,29 +1896,26 @@ mod tests {
         let req_ext = http::Extensions::new();
         let req_ctx = RequestCtx::default();
         let ranked = registry
-            .rank_tools_for_query(&req_ext, &req_ctx, "billing invoices")
+            .search_tools(
+                &req_ext,
+                &req_ctx,
+                ToolSearchRequest { query: "billing invoices".to_owned(), max_results: None },
+                DisclosureMode::Progressive,
+            )
             .await
             .expect("BM25 fallback should rank candidates when embeddings fail");
-        assert_eq!(ranked[0].conf.name.as_str(), "billing_lookup");
+        assert_eq!(ranked[0].name.as_ref(), "billing_lookup");
     }
 
     #[tokio::test]
     async fn add_tool_inserts_even_when_embeddings_client_fails() {
-        use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-            McpSemanticSearch, SimilarityConfig,
-        };
-
         let client = embeddings::EmbeddingsClient::test_failing();
-        let semantic_search = Some(McpSemanticSearch {
-            enable_assisted_discovery: false,
-            embeddings: None,
-            similarity: SimilarityConfig::default(),
-        });
+        let semantic_search = Some(McpSemanticSearch::default());
         let registry = ToolsRegistry::with_config(Vec::new(), Vec::new(), semantic_search, Some(client)).unwrap();
         let mut tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
         tool.name = "tds_tool".into();
 
-        let res = registry.add_tool(tool);
+        let res = registry.add_tool(tool).await;
         assert!(res.is_ok(), "embeddings failure should not block insertion: {res:?}");
         assert!(registry.get_tool_by_name("tds_tool").is_some());
         assert!(registry.get_tool_by_name("tds_tool").unwrap().embedding.load_full().is_none());
@@ -1694,16 +1923,8 @@ mod tests {
 
     #[tokio::test]
     async fn embed_tool_if_unembedded_swallows_embeddings_failure() {
-        use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-            McpSemanticSearch, SimilarityConfig,
-        };
-
         let client = embeddings::EmbeddingsClient::test_failing();
-        let semantic_search = Some(McpSemanticSearch {
-            enable_assisted_discovery: false,
-            embeddings: None,
-            similarity: SimilarityConfig::default(),
-        });
+        let semantic_search = Some(McpSemanticSearch::default());
         let mut tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
         tool.name = "needs_embedding".into();
 
@@ -1718,14 +1939,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unembedded_tool_is_excluded_from_cosine_ranking_not_abort() {
+    async fn search_embeds_unembedded_tools_in_both_disclosure_modes() {
         use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-            McpSemanticSearch, RemoteEmbeddings, SimilarityConfig,
+            McpSemanticSearch, RemoteEmbeddings,
         };
 
         let client = embeddings::EmbeddingsClient::test_one_hot();
         let semantic_search = Some(McpSemanticSearch {
-            enable_assisted_discovery: false,
             embeddings: Some(RemoteEmbeddings {
                 cluster: "embeddings".into(),
                 model_id: "test-model".into(),
@@ -1733,7 +1953,7 @@ mod tests {
                 timeout: None,
                 dimensions: 3,
             }),
-            similarity: SimilarityConfig { top_k: 5 },
+            max_allowable_results: 5,
         });
 
         let mut tool_a = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
@@ -1744,6 +1964,7 @@ mod tests {
         let mut tool_b = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
         tool_b.name = "billing_lookup".into();
         tool_b.description = "Find billing invoices".into();
+        tool_b.disclosure_mode = DisclosureMode::Eager;
 
         let registry =
             ToolsRegistry::with_config(vec![tool_a, tool_b], Vec::new(), semantic_search, Some(client)).unwrap();
@@ -1752,25 +1973,23 @@ mod tests {
         assert!(registry.get_tool_by_name("billing_lookup").unwrap().embedding.load_full().is_none());
 
         let req_ext = http::Extensions::new();
-        let result = registry.rank_tools_for_query(&req_ext, &RequestCtx::default(), "weather forecast").await;
-
-        let ranked = result.expect("unembedded tool must not abort cosine ranking");
-        assert_eq!(ranked.len(), 1);
-        assert_eq!(ranked[0].conf.name.as_str(), "weather_get_forecast");
+        registry
+            .search_tools(
+                &req_ext,
+                &RequestCtx::default(),
+                ToolSearchRequest { query: "weather forecast".to_owned(), max_results: None },
+                DisclosureMode::Eager,
+            )
+            .await
+            .expect("search should succeed");
+        assert!(registry.get_tool_by_name("weather_get_forecast").unwrap().embedding.load_full().is_some());
+        assert!(registry.get_tool_by_name("billing_lookup").unwrap().embedding.load_full().is_some());
     }
 
     #[tokio::test]
     async fn bootstrap_retries_after_failure_without_latching() {
-        use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-            McpSemanticSearch, SimilarityConfig,
-        };
-
         let client = embeddings::EmbeddingsClient::test_flaky();
-        let semantic_search = Some(McpSemanticSearch {
-            enable_assisted_discovery: false,
-            embeddings: None,
-            similarity: SimilarityConfig::default(),
-        });
+        let semantic_search = Some(McpSemanticSearch::default());
         let mut tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
         tool.name = "flaky_tool".into();
 
@@ -1792,15 +2011,5 @@ mod tests {
             registry.get_tool_by_name("flaky_tool").unwrap().embedding.load_full().is_some(),
             "embedding should be stored after a successful retry"
         );
-    }
-
-    #[test]
-    fn test_upstream_http_client_initialization() {
-        let client_res = upstream_http_client();
-        assert!(client_res.is_ok(), "upstream_http_client should initialize without error: {client_res:?}");
-        let client_a = client_res.unwrap();
-        let client_b = upstream_http_client().unwrap();
-        drop(client_a);
-        drop(client_b);
     }
 }
