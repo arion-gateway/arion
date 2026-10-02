@@ -39,7 +39,7 @@ mod metrics_enabled {
     /// Trait that enables call-once semantics through `Arc` without an extra `Box` layer.
     ///
     /// Implementors store the real closure in an `Option` and `take()` it on call,
-    /// so the closure is invoked exactly once even though the method takes `&mut self``.
+    /// so the closure is invoked exactly once even though the method takes `&mut self`.
     /// This eliminates the previous `Arc<Box<dyn FnOnce(...)>>` double indirection,
     /// saving one heap allocation per `InstrumentedBody` construction.
     pub(crate) trait MetricsCallbackFn: Send + Sync + 'static {
