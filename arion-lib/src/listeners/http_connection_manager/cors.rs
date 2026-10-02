@@ -58,11 +58,18 @@ impl Cors {
             return FilterDecision::Continue;
         };
 
+        let is_preflight = req.method() == Method::OPTIONS && req.headers().contains_key(ACCESS_CONTROL_REQUEST_METHOD);
+
         // 2. Validate Origin and save state.
         match self.determine_allowed_origin(origin_str) {
             Some((val, is_wildcard)) => {
                 self.validated_origin = Some(val);
                 self.is_wildcard_response = is_wildcard;
+            },
+            None if is_preflight && !self.inner.forward_not_matching_preflights => {
+                // Origin not allowed: answer the preflight here, without CORS headers.
+                debug!(target: "cors", "Preflight from origin not allowed, answering without CORS headers");
+                return Self::empty_response(req.version());
             },
             None => {
                 // Origin not allowed: ignore. Browser will block response due to missing headers.
@@ -71,8 +78,6 @@ impl Cors {
         }
 
         // 3. Preflight Handling (OPTIONS + Access-Control-Request-Method)
-        let is_preflight = req.method() == Method::OPTIONS && req.headers().contains_key(ACCESS_CONTROL_REQUEST_METHOD);
-
         if is_preflight {
             // Strict Validation: Check if the requested method is actually allowed.
             let Some(req_method_hdr) = req.headers().get(ACCESS_CONTROL_REQUEST_METHOD) else {
@@ -169,6 +174,17 @@ impl Cors {
         FilterDecision::Continue
     }
 
+    fn empty_response(ver: http::Version) -> FilterDecision {
+        let Ok(response) = Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .version(ver)
+            .body(TimeoutBody::new(None, PolyBody::from(Empty::new())).into())
+        else {
+            return FilterDecision::internal_server_error("failed to build CORS response", ver);
+        };
+        FilterDecision::DirectResponse(Box::new(response))
+    }
+
     fn generate_preflight_response(
         &self,
         ver: http::Version,
@@ -235,7 +251,14 @@ impl Cors {
             }
         }
 
-        // F. Vary Headers
+        // F. Expose Headers
+        if !conf.expose_headers.is_empty() {
+            if let Ok(val) = HeaderValue::from_str(&conf.expose_headers.join(", ")) {
+                headers.insert(ACCESS_CONTROL_EXPOSE_HEADERS, val);
+            }
+        }
+
+        // G. Vary Headers
         // 1. Vary on Origin (Same logic as apply_response)
         if !self.is_wildcard_response || conf.allow_credentials {
             headers.append(VARY, HeaderValue::from_static("Origin"));
@@ -368,6 +391,40 @@ mod tests {
         } else {
             panic!("Expected DirectResponse for Preflight");
         }
+    }
+
+    #[test]
+    fn test_preflight_exposes_configured_headers() {
+        let mut cors =
+            Cors::from(CorsConfig { expose_headers: vec!["x-header-1".into(), "x-header-2".into()], ..basic_config() });
+        let mut req = mock_req(Method::OPTIONS, Some("https://allowed.com"), Some("POST"));
+
+        let FilterDecision::DirectResponse(resp) = cors.apply_request(&mut req) else {
+            panic!("Expected DirectResponse for Preflight");
+        };
+        assert_eq!(resp.headers().get(ACCESS_CONTROL_EXPOSE_HEADERS).unwrap(), "x-header-1, x-header-2");
+
+        let mut cors = Cors::from(CorsConfig { expose_headers: vec![], ..basic_config() });
+        let mut req = mock_req(Method::OPTIONS, Some("https://allowed.com"), Some("POST"));
+        let FilterDecision::DirectResponse(resp) = cors.apply_request(&mut req) else {
+            panic!("Expected DirectResponse for Preflight");
+        };
+        assert!(resp.headers().get(ACCESS_CONTROL_EXPOSE_HEADERS).is_none());
+    }
+
+    #[test]
+    fn test_preflight_from_unknown_origin_answered_or_forwarded() {
+        let mut cors = Cors::from(CorsConfig { forward_not_matching_preflights: false, ..basic_config() });
+        let mut req = mock_req(Method::OPTIONS, Some("https://unknown.com"), Some("POST"));
+        let FilterDecision::DirectResponse(resp) = cors.apply_request(&mut req) else {
+            panic!("Expected the preflight to be answered");
+        };
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert!(resp.headers().get(ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+
+        let mut cors = Cors::from(basic_config());
+        let mut req = mock_req(Method::OPTIONS, Some("https://unknown.com"), Some("POST"));
+        assert!(matches!(cors.apply_request(&mut req), FilterDecision::Continue));
     }
 
     #[test]
