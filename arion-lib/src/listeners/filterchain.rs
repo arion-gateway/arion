@@ -25,7 +25,7 @@ use super::{
 use crate::{
     event_error::DownstreamError,
     listeners::{
-        metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
+        metadata::{ConnMeta, DownstreamConnectionMetadata, DownstreamMetadata},
         rate_limiter::{
             connection_limit::{ConnectionGuard, NetworkConnectionLimit},
             global_rate_limiter::NetworkGlobalRateLimit,
@@ -317,11 +317,8 @@ impl FilterchainType {
                     CodecType::Http2 => hyper_server.http2_only(),
                     CodecType::Auto => hyper_server,
                 };
-                let trans_svc = StdArc::new(HttpConnectionManager::transaction_context_svc(
-                    http_connection_manager,
-                    metadata,
-                    Arc::clone(&stream_metrics),
-                ));
+                let conn = ConnMeta::new(metadata, stream_metrics);
+                let trans_svc = HttpConnectionManager::transaction_context_svc(http_connection_manager, conn);
                 // `service_fn` keeps the per-request future monomorphized (stack-allocated,
                 // polled in place): no `Box::pin` allocation on the hot path.
                 // NOTE: the closure returns `handle_request`'s concrete future directly

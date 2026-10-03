@@ -430,12 +430,9 @@ impl HttpConnectionManager {
     #[allow(clippy::type_complexity)]
     pub(crate) fn transaction_context_svc(
         this: &Arc<Self>,
-        downstream: Arc<DownstreamMetadata>,
-        stream_metrics: Arc<StreamMetrics>,
-    ) -> TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
-        let pipeline_service = HttpPipelineSvc::new(Arc::clone(this));
-        let transaction_service = TransactionSvc::new(Arc::clone(this), pipeline_service);
-        TransactionLifecycleSvc::new(Arc::clone(this), downstream, stream_metrics, transaction_service)
+        conn: ConnMeta,
+    ) -> StdArc<TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>>> {
+        StdArc::new(TransactionLifecycleSvc::new(Arc::clone(this), conn, TransactionSvc::new(HttpPipelineSvc::new())))
     }
 }
 
@@ -880,23 +877,21 @@ impl TransactionContext {
     }
 }
 
-#[derive(Clone)]
-pub struct HttpPipelineSvc {
-    manager: Arc<HttpConnectionManager>,
-}
+#[derive(Clone, Copy)]
+pub struct HttpPipelineSvc;
 
 impl HttpPipelineSvc {
-    pub fn new(manager: Arc<HttpConnectionManager>) -> Self {
-        Self { manager }
+    pub const fn new() -> Self {
+        Self
     }
 
     #[allow(clippy::too_many_lines)]
     async fn call(
         &self,
+        manager: &HttpConnectionManager,
         req: RoutedHttpRequest<'_, ArionRequestBody>,
     ) -> StdResult<Response<ArionClientBody>, crate::Error> {
         let RoutedHttpRequest { http: HttpRequest { mut request, ctx }, routing_state } = req;
-        let manager = self.manager.as_ref();
 
         #[allow(unused_variables)]
         let listener_name = manager.listener_name;
@@ -974,7 +969,7 @@ impl HttpPipelineSvc {
 
             #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
             let trans_ctx = ctx.tx;
-            let stream_metrics = Arc::clone(&ctx.conn.stream_metrics);
+            let stream_metrics = ctx.conn.stream_metrics;
 
             response.map(move |body| {
                 InstrumentedBody::new(
@@ -1420,33 +1415,30 @@ pub struct RoutedHttpRequest<'a, B> {
 pub struct TransactionLifecycleSvc<S> {
     conn: ConnMeta,
     manager: Arc<HttpConnectionManager>,
-    inner: Arc<S>,
+    inner: S,
 }
 
 impl<S> TransactionLifecycleSvc<S> {
-    pub fn new(
-        manager: Arc<HttpConnectionManager>,
-        downstream: Arc<DownstreamMetadata>,
-        stream_metrics: Arc<StreamMetrics>,
-        inner: S,
-    ) -> Self {
-        Self { conn: ConnMeta::new(downstream, stream_metrics), manager, inner: Arc::new(inner) }
+    pub fn new(manager: Arc<HttpConnectionManager>, conn: ConnMeta, inner: S) -> Self {
+        Self { conn, manager, inner }
     }
 }
 
 impl TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
     // NOTE: `self` is taken as an 8-byte `StdArc` on purpose. hyper moves this (~18 KB) future into
     // its `in_flight` box on every request, and only writes it in place when the arguments sit next
-    // to the state byte. rustc orders fields by the largest power of two dividing their size: a
-    // 32-byte `self` can be placed before the inner future (whose size is any multiple of 16), away
+    // to the state byte. rustc orders fields by the largest power of two dividing their size: an
+    // 8-byte `StdArc` can be placed before the inner future (whose size is any multiple of 16), away
     // from `incoming_request`, which turns the in-place write into a copy of the whole future.
+    // `StdArc` (rather than `&self`) is also required: hyper-util bounds the per-request future
+    // with `S::Future: 'static`, so it must own — not borrow — the connection state. Cloning the
+    // `Arc` (one atomic inc) is cheaper than cloning the whole struct (three: conn x2 + manager).
     pub async fn handle_request(
         self: StdArc<Self>,
         incoming_request: Request<Incoming>,
     ) -> crate::Result<Response<ArionClientBody>> {
         let conn = self.conn.clone();
         let manager = &self.manager;
-        let inner = &self.inner;
         let incoming_request_id = RequestId::from_request(&incoming_request);
         let incoming_version = incoming_request.version();
         let listener_name = manager.listener_name;
@@ -1529,7 +1521,7 @@ impl TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
         let ctx = RequestCtx::new(conn, trans_ctx.clone());
         let http_req = HttpRequest { request, ctx };
 
-        let response = inner.call(http_req).await;
+        let response = self.inner.call(manager, http_req).await;
 
         trans_ctx.trace_status_code(&response, listener_name);
         let response = if let Err(err) = response {
@@ -1552,22 +1544,25 @@ impl TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
 
 #[derive(Clone)]
 pub struct TransactionSvc<S> {
-    manager: Arc<HttpConnectionManager>,
     inner: S,
 }
 
 impl<S> TransactionSvc<S> {
-    pub fn new(manager: Arc<HttpConnectionManager>, inner: S) -> Self {
-        Self { manager, inner }
+    pub fn new(inner: S) -> Self {
+        Self { inner }
     }
 }
 
 impl TransactionSvc<HttpPipelineSvc> {
     #[allow(clippy::too_many_lines)]
-    async fn call(&self, req: HttpRequest<Incoming>) -> StdResult<Response<ArionClientBody>, crate::Error> {
+    async fn call(
+        &self,
+        manager: &HttpConnectionManager,
+        req: HttpRequest<Incoming>,
+    ) -> StdResult<Response<ArionClientBody>, crate::Error> {
         let HttpRequest { request, ctx } = req;
-        let listener_name = self.manager.listener_name;
-        let routing_state_guard = self.manager.routing_state.load();
+        let listener_name = manager.listener_name;
+        let routing_state_guard = manager.routing_state.load();
 
         with_metric!(http::DOWNSTREAM_RQ_TOTAL, add, 1, ctx.tx.shard_id(), &[KeyValue::new("listener", listener_name)]);
         with_metric!(
@@ -1610,8 +1605,8 @@ impl TransactionSvc<HttpPipelineSvc> {
             with_metric!(http::DOWNSTREAM_RQ_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
         }
 
-        let req_timeout = self.manager.request_timeout;
-        let filterchain_id = self.manager.filterchain_id;
+        let req_timeout = manager.request_timeout;
+        let filterchain_id = manager.filterchain_id;
 
         eval_http_init_context(&request, &ctx.tx, Some(ctx.conn.downstream.as_ref()));
 
@@ -1697,7 +1692,7 @@ impl TransactionSvc<HttpPipelineSvc> {
 
         #[cfg(feature = "access-log")]
         let trans_ctx_clone = http.ctx.tx.clone();
-        let response = self.inner.call(RoutedHttpRequest { http, routing_state }).await;
+        let response = self.inner.call(manager, RoutedHttpRequest { http, routing_state }).await;
 
         #[cfg(feature = "metrics")]
         if let Ok(response) = &response {
