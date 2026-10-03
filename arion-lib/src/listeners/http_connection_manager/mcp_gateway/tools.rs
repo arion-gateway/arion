@@ -29,7 +29,7 @@ use crate::listeners::http_connection_manager::{
 };
 use crate::with_metric;
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-    DisclosureMode, DynamicMcpServer, EmbeddingVector, McpBackendTransportUpstream, McpSemanticSearch, McpTool,
+    DisclosureMode, DynamicMcpServer, EmbeddingVector, McpBackendTransportUpstream, McpTool, McpToolSearch,
     UpstreamBackend, UpstreamLimits,
 };
 use arion_interner::StringInterner;
@@ -126,7 +126,7 @@ pub struct ToolSearchRequest {
 pub struct ToolsRegistry {
     tools: PapayaMap<SmolStr, StdArc<ToolEntry>, ahash::RandomState>,
     dynamic_mcp_servers: PapayaMap<SmolStr, StdArc<DynamicMcpServerEntry>, ahash::RandomState>,
-    semantic_search: Option<McpSemanticSearch>,
+    semantic_search: Option<McpToolSearch>,
     bootstrapped: OnceCell<()>,
     embeddings_client: Option<StdArc<embeddings::EmbeddingsClient>>,
 }
@@ -309,6 +309,8 @@ pub enum ToolBuilderError {
     EmbeddingNotFinite(SmolStr),
     #[error("Invalid embeddings config: {0}")]
     InvalidEmbeddingsConfig(String),
+    #[error("MCP CodeMode runtime is not available in this build")]
+    CodeModeUnavailable,
 }
 
 impl ToolEntry {
@@ -342,7 +344,7 @@ impl ToolsRegistry {
     pub fn with_config(
         tools: Vec<McpTool>,
         dynamic_mcp_servers: Vec<DynamicMcpServer>,
-        semantic_search: Option<McpSemanticSearch>,
+        semantic_search: Option<McpToolSearch>,
         embeddings_client: Option<StdArc<embeddings::EmbeddingsClient>>,
     ) -> Result<Self, ToolBuilderError> {
         let registry = Self {
@@ -365,7 +367,7 @@ impl ToolsRegistry {
         }
 
         for server in dynamic_mcp_servers {
-            let name = server.name.clone();
+            let name = server.namespace.clone();
             let entry = StdArc::new(DynamicMcpServerEntry::new(server));
             if registry.dynamic_mcp_servers.pin().insert(name.clone(), entry).is_some() {
                 return Err(ToolBuilderError::DuplicateDynamicServer(name));
@@ -406,7 +408,7 @@ impl ToolsRegistry {
     fn max_allowable_results(&self) -> usize {
         self.semantic_search
             .as_ref()
-            .map_or_else(McpSemanticSearch::default_max_allowable_results, |search| search.max_allowable_results)
+            .map_or_else(McpToolSearch::default_max_allowable_results, |search| search.max_allowable_results)
     }
 
     pub async fn bootstrap(&self, req_ctx: &RequestCtx) -> Result<(), CallToolError> {
@@ -530,7 +532,7 @@ impl ToolsRegistry {
     }
 
     pub async fn add_dynamic_server(&self, server: DynamicMcpServer) -> Result<(), ToolBuilderError> {
-        let name = server.name.clone();
+        let name = server.namespace.clone();
         let entry = StdArc::new(DynamicMcpServerEntry::new(server));
         if self.dynamic_mcp_servers.pin().insert(name.clone(), StdArc::clone(&entry)).is_some() {
             self.evict_dynamic_tools_for(&name);
@@ -636,7 +638,7 @@ impl ToolsRegistry {
 
     async fn refresh_if_idle(&self, server: StdArc<DynamicMcpServerEntry>) {
         if server.refresh_in_progress.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-            debug!(target: "mcp_gateway", "Refresh already in progress for dynamic MCP server '{}'", server.conf.name);
+            debug!(target: "mcp_gateway", "Refresh already in progress for dynamic MCP server '{}'", server.conf.namespace);
             return;
         }
         defer! {
@@ -651,7 +653,7 @@ impl ToolsRegistry {
     }
 
     async fn fetch_and_materialise(&self, server: &DynamicMcpServerEntry) {
-        let server_name = &server.conf.name;
+        let server_name = &server.conf.namespace;
         match Self::fetch_dynamic_server_tools(server).await {
             Ok(materialised) => {
                 self.evict_dynamic_tools_for(server_name);
@@ -684,7 +686,7 @@ impl ToolsRegistry {
     }
 
     fn materialise_dynamic_tools(server: &DynamicMcpServerEntry, upstream_tools: Vec<Tool>) -> Vec<ToolEntry> {
-        let server_name = server.conf.name.clone();
+        let server_name = server.conf.namespace.clone();
         upstream_tools
             .into_iter()
             .map(|tool| {
@@ -693,8 +695,9 @@ impl ToolsRegistry {
                 let description = tool.description.as_deref().map(str::to_owned).unwrap_or_default();
                 let input_schema = tool.input_schema.as_ref().clone();
                 let conf = McpTool {
+                    namespace: server_name.clone(),
                     name: exposed_name,
-                    description,
+                    description: description.into(),
                     input_schema,
                     output_schema: serde_json::Map::new(),
                     backend: UpstreamBackend::McpServer {
@@ -943,12 +946,12 @@ impl ToolsRegistry {
                 };
 
                 let invocation = async {
-                    let cached = session.mcp_upstreams.pin().get(url).map(StdArc::clone);
+                    let cached = session.mcp_upstreams.pin().get(url.as_str()).map(StdArc::clone);
                     let client = if let Some(client) = cached {
                         client
                     } else {
                         let new_client = StdArc::new(Self::get_mcp_client(url).await?);
-                        StdArc::clone(session.mcp_upstreams.pin().get_or_insert(url.to_owned(), new_client))
+                        StdArc::clone(session.mcp_upstreams.pin().get_or_insert(url.to_string(), new_client))
                     };
 
                     let call_params = match &rpc.request.params.get("arguments") {
@@ -963,7 +966,7 @@ impl ToolsRegistry {
                         Err(err) => {
                             if matches!(&err, ServiceError::TransportSend(_) | ServiceError::TransportClosed) {
                                 info!(target: "mcp_gateway", "removing MCP client for URL {url} due to transport error!");
-                                session.mcp_upstreams.pin().remove(url);
+                                session.mcp_upstreams.pin().remove(url.as_str());
                             }
                             Err(CallToolError::ServiceError(err))
                         },
@@ -1050,9 +1053,14 @@ fn build_tool_entry(tool_conf: McpTool, source: ToolSource) -> Result<ToolEntry,
         )
     };
     let transcoder = match &tool_conf.backend {
-        UpstreamBackend::Rest { method, path, query_params, body_template, .. } => TranscoderType::Rest(
-            RestTranscoder::new(method.clone(), query_params.clone(), path.clone(), body_template.clone())?,
-        ),
+        UpstreamBackend::Rest { method, path, query_params, body_template, .. } => {
+            TranscoderType::Rest(RestTranscoder::new(
+                method.clone(),
+                query_params.clone(),
+                path.to_string(),
+                body_template.as_ref().map(ToString::to_string),
+            )?)
+        },
         UpstreamBackend::FunctionGraph => TranscoderType::FunctionGraph(FunctionGraphTranscoder {}),
         UpstreamBackend::McpServer { .. } => TranscoderType::NoTranscoder,
     };
@@ -1083,7 +1091,7 @@ fn build_tool_entry(tool_conf: McpTool, source: ToolSource) -> Result<ToolEntry,
 fn tool_from_entry(entry: &ToolEntry) -> Tool {
     let tool = Tool::new(
         entry.conf.name.to_string(),
-        entry.conf.description.clone(),
+        entry.conf.description.to_string(),
         StdArc::new(entry.conf.input_schema.clone()),
     );
     if entry.conf.output_schema.is_empty() {
@@ -1161,6 +1169,7 @@ mod tests {
         output_schema: serde_json::Map<String, Value>,
     ) -> McpTool {
         McpTool {
+            namespace: String::new().into(),
             name: "test_tool".into(),
             description: "A test tool".into(),
             input_schema,
@@ -1319,7 +1328,7 @@ mod tests {
         let registry = ToolsRegistry::with_config(
             tools,
             Vec::new(),
-            Some(McpSemanticSearch { embeddings: None, max_allowable_results: 2 }),
+            Some(McpToolSearch { embeddings: None, max_allowable_results: 2 }),
             None,
         )
         .unwrap();
@@ -1349,8 +1358,8 @@ mod tests {
 
     fn dynamic_server_for_refresh(cache_duration: Option<Duration>) -> StdArc<DynamicMcpServerEntry> {
         StdArc::new(DynamicMcpServerEntry::new(DynamicMcpServer {
-            name: "refresh_test".into(),
-            description: String::new(),
+            namespace: "refresh_test".into(),
+            description: String::new().into(),
             // Unsupported SSE fails locally, keeping these refresh tests free of network I/O.
             transport: McpBackendTransportUpstream::Sse,
             url: "http://unused.invalid/mcp".into(),
@@ -1668,8 +1677,9 @@ mod tests {
         let registry = ToolsRegistry::with_config(Vec::new(), Vec::new(), None, None).unwrap();
 
         let dynamic_conf = McpTool {
+            namespace: "srv".into(),
             name: "srv__tool".into(),
-            description: String::new(),
+            description: String::new().into(),
             input_schema: serde_json::Map::new(),
             output_schema: serde_json::Map::new(),
             backend: UpstreamBackend::McpServer {
@@ -1705,8 +1715,8 @@ mod tests {
 
         // Pretend a server previously materialised two tools
         let server_conf = DynamicMcpServer {
-            name: "srv".into(),
-            description: String::new(),
+            namespace: "srv".into(),
+            description: String::new().into(),
             transport: McpBackendTransportUpstream::StreamableHttp,
             url: "http://localhost/mcp".into(),
             cache_duration: None,
@@ -1718,8 +1728,9 @@ mod tests {
 
         for upstream in ["alpha", "beta"] {
             let conf = McpTool {
+                namespace: "srv".into(),
                 name: format_smolstr!("srv__{upstream}"),
-                description: String::new(),
+                description: String::new().into(),
                 input_schema: serde_json::Map::new(),
                 output_schema: serde_json::Map::new(),
                 backend: UpstreamBackend::McpServer {
@@ -1751,7 +1762,7 @@ mod tests {
     #[tokio::test]
     async fn semantic_search_ranks_with_cosine() {
         let client = embeddings::EmbeddingsClient::test_one_hot();
-        let semantic_search = Some(McpSemanticSearch { embeddings: None, max_allowable_results: 2 });
+        let semantic_search = Some(McpToolSearch { embeddings: None, max_allowable_results: 2 });
 
         let mut tool_a = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
         tool_a.name = "weather_get_forecast".into();
@@ -1795,7 +1806,7 @@ mod tests {
 
     #[tokio::test]
     async fn semantic_search_ranks_with_bm25_without_remote_embeddings() {
-        let semantic_search = Some(McpSemanticSearch { embeddings: None, max_allowable_results: 1 });
+        let semantic_search = Some(McpToolSearch { embeddings: None, max_allowable_results: 1 });
 
         let mut tool_a = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
         tool_a.name = "weather_get_forecast".into();
@@ -1823,7 +1834,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_tool_replacement_refreshes_bm25_ranking() {
-        let semantic_search = Some(McpSemanticSearch { embeddings: None, max_allowable_results: 1 });
+        let semantic_search = Some(McpToolSearch { embeddings: None, max_allowable_results: 1 });
 
         let mut tool_a = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
         tool_a.name = "alpha".into();
@@ -1868,17 +1879,18 @@ mod tests {
     #[tokio::test]
     async fn bm25_fallback_allowed_degrades_to_bm25() {
         use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-            McpSemanticSearch, RemoteEmbeddings,
+            McpToolSearch, RemoteEmbeddings,
         };
 
         let client = embeddings::EmbeddingsClient::test_failing();
-        let semantic_search = Some(McpSemanticSearch {
+        let semantic_search = Some(McpToolSearch {
             embeddings: Some(RemoteEmbeddings {
                 cluster: "embeddings".into(),
                 model_id: "test-model".into(),
                 path: RemoteEmbeddings::default_path(),
                 timeout: None,
                 dimensions: 3,
+                max_batch_size: None,
             }),
             max_allowable_results: 1,
         });
@@ -1910,7 +1922,7 @@ mod tests {
     #[tokio::test]
     async fn add_tool_inserts_even_when_embeddings_client_fails() {
         let client = embeddings::EmbeddingsClient::test_failing();
-        let semantic_search = Some(McpSemanticSearch::default());
+        let semantic_search = Some(McpToolSearch::default());
         let registry = ToolsRegistry::with_config(Vec::new(), Vec::new(), semantic_search, Some(client)).unwrap();
         let mut tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
         tool.name = "tds_tool".into();
@@ -1924,7 +1936,7 @@ mod tests {
     #[tokio::test]
     async fn embed_tool_if_unembedded_swallows_embeddings_failure() {
         let client = embeddings::EmbeddingsClient::test_failing();
-        let semantic_search = Some(McpSemanticSearch::default());
+        let semantic_search = Some(McpToolSearch::default());
         let mut tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
         tool.name = "needs_embedding".into();
 
@@ -1941,17 +1953,18 @@ mod tests {
     #[tokio::test]
     async fn search_embeds_unembedded_tools_in_both_disclosure_modes() {
         use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-            McpSemanticSearch, RemoteEmbeddings,
+            McpToolSearch, RemoteEmbeddings,
         };
 
         let client = embeddings::EmbeddingsClient::test_one_hot();
-        let semantic_search = Some(McpSemanticSearch {
+        let semantic_search = Some(McpToolSearch {
             embeddings: Some(RemoteEmbeddings {
                 cluster: "embeddings".into(),
                 model_id: "test-model".into(),
                 path: RemoteEmbeddings::default_path(),
                 timeout: None,
                 dimensions: 3,
+                max_batch_size: None,
             }),
             max_allowable_results: 5,
         });
@@ -1989,7 +2002,7 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_retries_after_failure_without_latching() {
         let client = embeddings::EmbeddingsClient::test_flaky();
-        let semantic_search = Some(McpSemanticSearch::default());
+        let semantic_search = Some(McpToolSearch::default());
         let mut tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
         tool.name = "flaky_tool".into();
 

@@ -53,11 +53,12 @@ pub use listener::{
     Listener, ListenerBuilder, ProxyProtocolConfig, ProxyProtocolPassThroughTlvs, ProxyProtocolVersion,
 };
 pub use mcp_gateway::{
-    DEFAULT_MCP_FILTER_CHAIN_NAME, DEFAULT_MCP_ROUTE_CONFIG_NAME, DEFAULT_MCP_VHOST_NAME, DynamicMcpServerBuilder,
-    MCP_DYNAMIC_SERVER_TYPE_URL, MCP_GATEWAY_FILTER_NAME, MCP_GATEWAY_TYPE_URL, MCP_TOOL_TYPE_URL, McpGatewayBuilder,
-    McpGatewayHttpConfigBuilder, McpRestBackendBuilder, McpSemanticSearchBuilder, McpServerBackendBuilder,
-    McpToolBuilder, McpToolRbacBuilder, McpTransport, dynamic_mcp_server_xds_resource, inline_string_data_source,
-    mcp_gateway_any, mcp_gateway_http_filter, mcp_gateway_route_config, mcp_resource_id, mcp_tool_xds_resource,
+    dynamic_mcp_server_xds_resource, inline_string_data_source, mcp_gateway_any, mcp_gateway_http_filter,
+    mcp_gateway_route_config, mcp_resource_id, mcp_tool_xds_resource, DynamicMcpServerBuilder, McpGatewayBuilder,
+    McpGatewayHttpConfigBuilder, McpRestBackendBuilder, McpServerBackendBuilder, McpToolBuilder, McpToolRbacBuilder,
+    McpToolSearchBuilder, McpTransport, DEFAULT_MCP_FILTER_CHAIN_NAME, DEFAULT_MCP_ROUTE_CONFIG_NAME,
+    DEFAULT_MCP_VHOST_NAME, MCP_DYNAMIC_SERVER_TYPE_URL, MCP_GATEWAY_FILTER_NAME, MCP_GATEWAY_TYPE_URL,
+    MCP_TOOL_TYPE_URL,
 };
 pub use network_global_rate_limit::{NetworkGlobalRateLimit, NetworkGlobalRateLimitBuilder};
 pub use oauth2::OAuth2Builder;

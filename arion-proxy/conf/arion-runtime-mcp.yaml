@@ -46,10 +46,12 @@ envoy_bootstrap:
                         server_info:
                           name: "arion-mcp-gateway"
                           version: "0.0.1"
+                        tools_mode: {}
                         upstream_timeout: 15s
                         max_upstream_response_bytes: 1048576
                         tools:
-                          - name: "weather_get_forecast"
+                          - namespace: "weather"
+                            name: "weather_get_forecast"
                             description: "Get weather forecast for a location"
                             input_schema:
                               inline_string: >-
@@ -105,7 +107,8 @@ envoy_bootstrap:
                                    "latitude": "{{latitude}}",
                                    "longitude": "{{longitude}}",
                                    "days": "{{days}}"
-                          - name: "user_profile_get"
+                          - namespace: "users"
+                            name: "user_profile_get"
                             description: "Get user profile information"
                             input_schema:
                               inline_string: >-
@@ -122,7 +125,8 @@ envoy_bootstrap:
                               cluster: user_profile_api_cluster
                               method: GET
                               path: "/v1/user/profile"
-                          - name: "admin_delete_user"
+                          - namespace: "admin"
+                            name: "admin_delete_user"
                             description: "Delete a user account (admin only)"
                             rbac:
                               action: ALLOW
@@ -171,9 +175,9 @@ envoy_bootstrap:
                               url: http://127.0.0.1:3001/mcp
                         # Upstream MCP servers whose tools are discovered at
                         # runtime. Each server materialises one registry entry
-                        # per tool it exposes, namespaced as `{name}__{tool}`.
+                        # per tool it exposes, namespaced as `{namespace}__{tool}`.
                         dynamic_mcp_servers:
-                          - name: "everything"
+                          - namespace: "everything"
                             description: "everything mcp server"
                             transport: StreamableHttp
                             url: http://127.0.0.1:3001/mcp

@@ -9,7 +9,7 @@ This directory contains runnable examples for Arion MCP Gateway semantic search.
 
 The MCP gateway exposes RBAC-permitted progressive tools through a synthetic tool named `tool_search`. When a client calls it with a `query`, Arion ranks progressive tools using each tool's name, description, and input schema metadata.
 
-By default, ranking uses BM25 locally and does not require an embeddings service. If `semantic_search_tool.embeddings` is configured, Arion can use remote vector ranking and falls back to BM25 if query embedding fails or any candidate lacks a vector.
+By default, ranking uses BM25 locally and does not require an embeddings service. If `search.embeddings` is configured, Arion can use remote vector ranking and falls back to BM25 if query embedding fails or any candidate lacks a vector.
 
 ## Discovery Flow
 
@@ -57,7 +57,7 @@ The example prints the generated config path, backend addresses, the MCP endpoin
 
 ## Remote FastEmbed Sidecar
 
-To test vector search with FastEmbed, run the sidecar example and configure `semantic_search_tool.embeddings` to point at its cluster:
+To test vector search with FastEmbed, run the sidecar example and configure `search.embeddings` to point at its cluster:
 
 ```bash
 cargo run -p arion-e2e-tests --features fastembed-service --example fastembed_embedding_service

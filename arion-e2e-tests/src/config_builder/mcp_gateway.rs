@@ -19,10 +19,10 @@ use std::time::Duration;
 
 use arion_data_plane_api::envoy_data_plane_api::{
     arion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        mcp_server_backend, permission::PermissionType, tool, tool_rbac, DisclosureMode, DynamicMcpServer,
+        mcp_gateway, mcp_server_backend, permission::PermissionType, tool, tool_rbac, DisclosureMode, DynamicMcpServer,
         FunctionGraphBackend, HttpUpstreamPolicy, JwtClaimMatcher, JwtHeaderMatcher, McpGateway, McpServerBackend,
-        Permission, QueryParam, RemoteEmbeddings, RestBackend, SemanticSearch, ServerInfo, TdsSpecifier, Tool,
-        ToolRbac,
+        Permission, QueryParam, RemoteEmbeddings, RestBackend, ServerInfo, TdsSpecifier, Tool, ToolRbac, ToolSearch,
+        ToolsMode,
     },
     envoy::{
         config::core::v3::{data_source::Specifier, DataSource},
@@ -81,6 +81,7 @@ impl McpGatewayBuilder {
         Self {
             proto: McpGateway {
                 server_info: Some(ServerInfo { name: server_name.into(), version: server_version.into() }),
+                mode: Some(mcp_gateway::Mode::ToolsMode(ToolsMode {})),
                 ..Default::default()
             },
         }
@@ -137,8 +138,8 @@ impl McpGatewayBuilder {
     }
 
     #[must_use]
-    pub fn semantic_search(mut self, search: impl Into<SemanticSearch>) -> Self {
-        self.proto.semantic_search_tool = Some(search.into());
+    pub fn search(mut self, search: impl Into<ToolSearch>) -> Self {
+        self.proto.search = Some(search.into());
         self
     }
 
@@ -169,6 +170,12 @@ impl McpToolBuilder {
     #[must_use]
     pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
         Self { proto: Tool { name: name.into(), description: description.into(), ..Default::default() } }
+    }
+
+    #[must_use]
+    pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.proto.namespace = namespace.into();
+        self
     }
 
     #[must_use]
@@ -368,7 +375,7 @@ impl DynamicMcpServerBuilder {
     pub fn new(name: impl Into<String>, description: impl Into<String>, url: impl Into<String>) -> Self {
         Self {
             proto: DynamicMcpServer {
-                name: name.into(),
+                namespace: name.into(),
                 description: description.into(),
                 transport: McpTransport::StreamableHttp.to_proto(),
                 url: url.into(),
@@ -503,14 +510,14 @@ impl From<McpToolRbacBuilder> for ToolRbac {
 }
 
 #[derive(Debug, Clone)]
-pub struct McpSemanticSearchBuilder {
-    proto: SemanticSearch,
+pub struct McpToolSearchBuilder {
+    proto: ToolSearch,
 }
 
-impl McpSemanticSearchBuilder {
+impl McpToolSearchBuilder {
     #[must_use]
     pub fn new() -> Self {
-        Self { proto: SemanticSearch::default() }
+        Self { proto: ToolSearch::default() }
     }
 
     #[must_use]
@@ -542,31 +549,37 @@ impl McpSemanticSearchBuilder {
     }
 
     #[must_use]
+    pub fn embeddings_max_batch_size(mut self, max_batch_size: u32) -> Self {
+        self.proto.embeddings.get_or_insert_with(RemoteEmbeddings::default).max_batch_size = Some(max_batch_size);
+        self
+    }
+
+    #[must_use]
     pub fn max_allowable_results(mut self, max_allowable_results: u32) -> Self {
         self.proto.max_allowable_results = Some(max_allowable_results);
         self
     }
 
     #[must_use]
-    pub fn with_proto<F: FnOnce(&mut SemanticSearch)>(mut self, f: F) -> Self {
+    pub fn with_proto<F: FnOnce(&mut ToolSearch)>(mut self, f: F) -> Self {
         f(&mut self.proto);
         self
     }
 
     #[must_use]
-    pub fn build(self) -> SemanticSearch {
+    pub fn build(self) -> ToolSearch {
         self.proto
     }
 }
 
-impl Default for McpSemanticSearchBuilder {
+impl Default for McpToolSearchBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl From<McpSemanticSearchBuilder> for SemanticSearch {
-    fn from(builder: McpSemanticSearchBuilder) -> Self {
+impl From<McpToolSearchBuilder> for ToolSearch {
+    fn from(builder: McpToolSearchBuilder) -> Self {
         builder.build()
     }
 }

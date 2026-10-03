@@ -35,8 +35,8 @@ use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http
     DisclosureMode, Tool as ArionMcpTool,
 };
 use arion_e2e_tests::config_builder::{
-    BootstrapBuilder, ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder,
-    McpRestBackendBuilder, McpSemanticSearchBuilder, McpToolBuilder, inline_string_data_source,
+    inline_string_data_source, BootstrapBuilder, ClusterBuilder, EndpointBuilder, McpGatewayBuilder,
+    McpGatewayHttpConfigBuilder, McpRestBackendBuilder, McpToolBuilder, McpToolSearchBuilder,
 };
 use arion_e2e_tests::{
     ArionInstance, CallToolResult, CapturedEmbeddingsTestRequest, EmbeddingsTestService, McpTestClient,
@@ -215,7 +215,7 @@ async fn test_rest_search_is_sessionless_includes_both_modes_and_validates_http(
     eager.disclosure_mode = DisclosureMode::Eager.into();
     let gateway = McpGatewayBuilder::new("test-gateway", "1.0.0")
         .tools([progressive, eager])
-        .semantic_search(McpSemanticSearchBuilder::new().max_allowable_results(3));
+        .search(McpToolSearchBuilder::new().max_allowable_results(3));
     let bootstrap = McpGatewayHttpConfigBuilder::new(gateway)
         .build_bootstrap(vec![
             ClusterBuilder::new(BACKEND_CLUSTER).endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
@@ -306,8 +306,8 @@ fn mcp_gateway_with_remote_semantic_search_bootstrap(
     embeddings: &EmbeddingsTestService,
     max_allowable_results: u32,
 ) -> BootstrapBuilder {
-    let gateway = McpGatewayBuilder::new("test-gateway", "1.0.0").tools(tools).semantic_search(
-        McpSemanticSearchBuilder::new()
+    let gateway = McpGatewayBuilder::new("test-gateway", "1.0.0").tools(tools).search(
+        McpToolSearchBuilder::new()
             .remote_embeddings(EMBEDDINGS_CLUSTER, TEST_EMBEDDINGS_MODEL)
             .embeddings_path(TEST_EMBEDDINGS_PATH)
             .embeddings_timeout(Duration::from_secs(5))
