@@ -18,7 +18,7 @@
 //
 //
 use super::{http_modifiers, upgrades as upgrade_utils, RequestCtx, RequestHandler};
-use crate::event_error::{EventFailure, EventKind, TryInferFrom, UpstreamError};
+use crate::event_error::{EventFailure, EventKind, UpstreamError};
 use crate::{
     body::response_flags::ResponseFlags,
     clusters::http_upstream::{acquire_http_upstream, AcquireHttpUpstreamError},
@@ -36,7 +36,6 @@ use arion_configuration::config::network_filters::http_connection_manager::{
     route::{RouteAction, RouteMatchResult},
     RetryPolicy,
 };
-use arion_error::Context;
 #[cfg(feature = "metrics")]
 use arion_metrics::metrics::http as http_metrics;
 use http::{uri::Parts as UriParts, Uri};
@@ -139,9 +138,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
                 let mut upstream_request: Request<ArionRequestBody> = {
                     let (mut parts, body) = request.into_parts();
                     let path_and_query_replacement = if let Some(rewrite) = &self.rewrite {
-                        rewrite
-                            .apply(parts.uri.path_and_query(), route_match)
-                            .with_context_msg("invalid path after rewrite")?
+                        rewrite.apply(parts.uri.path_and_query(), route_match).map_err(crate::Error::from)?
                     } else {
                         None
                     };
@@ -152,7 +149,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
                             new_parts.scheme = scheme;
                             new_parts.authority = authority;
                             new_parts.path_and_query = path_and_query_replacement;
-                            Uri::from_parts(new_parts).with_context_msg("failed to replace request path_and_query")?
+                            Uri::from_parts(new_parts).map_err(crate::Error::from)?
                         }
                     }
                     parts.version = svc_channel.http_version().into();
@@ -258,8 +255,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
                 drop(acquired);
                 match resp {
                     Err(err) => {
-                        let err = err.into_inner();
-                        let event_error = UpstreamError::try_infer_from(&err);
+                        let event_error = err.as_upstream_error().cloned();
                         let flags = event_error.clone().map(ResponseFlags::from).unwrap_or_default();
                         let event_kind = event_error.map_or(EventFailure::ViaUpstream.into(), EventKind::Upstream);
                         debug!(
@@ -293,18 +289,28 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
             Err(AcquireHttpUpstreamError::RoutingContext { source, .. }) => Err(source.into()),
             // http connection not available from cluster...
             Err(AcquireHttpUpstreamError::Connection { source, .. }) => {
-                let event_error = UpstreamError::try_infer_from(source.as_ref());
-                let flags = event_error.clone().map(ResponseFlags::from).unwrap_or_default();
-                let event_kind = event_error.map_or(EventFailure::ViaUpstream.into(), EventKind::Upstream);
+                let event_error = UpstreamError::from(&source);
+                let flags = ResponseFlags::from(event_error.clone());
+                let event_kind = EventKind::Upstream(event_error.clone());
                 debug!(
                     "Failed to get an HTTP connection: {:?}: {}({})",
                     source,
                     ResponseFlagsLong(&flags.0).to_smolstr(),
                     ResponseFlagsShort(&flags.0).to_smolstr()
                 );
-                Ok(SyntheticHttpResponse::internal_server_error(event_kind, flags)
-                    .with_body("Failed to connect to upstream cluster")
-                    .into_response(request.version()))
+                let resp = match event_error {
+                    UpstreamError::Connect(_) | UpstreamError::RefusedStream | UpstreamError::Io(_) => {
+                        SyntheticHttpResponse::service_unavailable(event_kind, flags)
+                    },
+                    UpstreamError::PerTryTimeout | UpstreamError::RouteTimeout => {
+                        SyntheticHttpResponse::gateway_timeout(event_kind, flags)
+                    },
+                    UpstreamError::Reset | UpstreamError::Http3PostConnectFailure | UpstreamError::Protocol(_) => {
+                        SyntheticHttpResponse::bad_gateway(event_kind, flags)
+                    },
+                    UpstreamError::Other(_) => SyntheticHttpResponse::internal_server_error(event_kind, flags),
+                };
+                Ok(resp.with_body("Failed to connect to upstream cluster").into_response(request.version()))
             },
         }
     }

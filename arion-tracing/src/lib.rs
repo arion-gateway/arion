@@ -41,10 +41,9 @@ use arc_swap::ArcSwap;
 use arion_configuration::config::network_filters::tracing::{SupportedTracingProvider, TracingConfig, TracingKey};
 use opentelemetry::global::BoxedTracer;
 use parking_lot::Mutex;
-use smol_str::SmolStr;
+use smol_str::{SmolStr, ToSmolStr};
 use std::result::Result as StdResult;
 use thiserror::Error;
-use {arion_error::Result, smol_str::ToSmolStr};
 
 #[allow(dead_code)]
 struct OtelConfig {
@@ -60,7 +59,11 @@ pub enum OtelConfigError {
     UnsupportedProvider,
     #[error("OpenTelemetry configuration is missing required GRPC service details")]
     MissingGrpcService,
+    #[error("Failed to build OpenTelemetry exporter: {0}")]
+    ExporterError(String),
 }
+
+pub type Result<T> = StdResult<T, OtelConfigError>;
 
 type TracerMap = HashMap<TracingKey, Arc<BoxedTracer>>;
 
@@ -174,7 +177,8 @@ fn insert_tracer(
         .with_tonic()
         .with_endpoint(config.target_uri.clone())
         .with_timeout(Duration::from_secs(3))
-        .build()?;
+        .build()
+        .map_err(|e| OtelConfigError::ExporterError(e.to_string()))?;
 
     let provider =
         sdktrace::SdkTracerProvider::builder().with_batch_exporter(exporter).with_resource(resource.clone()).build();

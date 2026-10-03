@@ -30,9 +30,13 @@ async fn setup() -> (ArionInstance, TestBackend, TcpTestClient, std::path::PathB
     let bootstrap = presets::simple_proxy("backend", backend.addr());
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
-    let arion = ArionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
-        .await
-        .expect("Failed to spawn Arion");
+    let arion = ArionInstance::spawn_auto_port(
+        &config_path,
+        "http",
+        SpawnOptions { verbose_output: true, log_level: Some("debug".to_owned()), ..SpawnOptions::default() },
+    )
+    .await
+    .expect("Failed to spawn Arion");
 
     #[allow(clippy::unwrap_used)]
     let tcp_client = TcpTestClient::new(arion.listener_addr().unwrap());

@@ -18,8 +18,9 @@
 //
 //
 
+use anyhow::Result;
 use arion_configuration::{config::Config, options::Options};
-use arion_lib::{metrics, Result, RUNTIME_CONFIG};
+use arion_lib::{metrics, RUNTIME_CONFIG};
 use arion_stats::{set_proxy_state, ProxyState};
 
 #[macro_use]
@@ -40,7 +41,9 @@ pub fn run() -> bool {
 
         set_proxy_state(ProxyState::Initializing);
 
-        RUNTIME_CONFIG.set(runtime).map_err(|_e| "runtime config was somehow set before we had a chance to set it")?;
+        RUNTIME_CONFIG
+            .set(runtime)
+            .map_err(|_e| anyhow::anyhow!("runtime config was somehow set before we had a chance to set it"))?;
 
         // Set the header_name from which to extract the user_id
         if let Some(source) =
@@ -95,8 +98,8 @@ mod proxy_tracing {
         fmt, fmt::format::DefaultFields, layer::Layered, reload, reload::Handle, EnvFilter, Registry,
     };
 
+    use anyhow::Result;
     use arion_configuration::config::LogConfig as LogConf;
-    use arion_lib::Result;
 
     #[derive(Clone, Default)]
     struct CustomTime;

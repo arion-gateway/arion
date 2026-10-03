@@ -139,14 +139,20 @@ impl From<&str> for TypeUrl {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum RejectedReason {
+    #[error("{0}")]
+    Custom(String),
+}
+
 #[derive(Debug)]
 pub struct RejectedConfig {
     name: ResourceId,
-    reason: arion_error::Error,
+    reason: RejectedReason,
 }
-impl<E: Into<arion_error::Error>> From<(ResourceId, E)> for RejectedConfig {
-    fn from(context: (ResourceId, E)) -> RejectedConfig {
-        RejectedConfig { name: context.0, reason: context.1.into() }
+impl<E: std::fmt::Display> From<(ResourceId, E)> for RejectedConfig {
+    fn from((name, err): (ResourceId, E)) -> RejectedConfig {
+        RejectedConfig { name, reason: RejectedReason::Custom(err.to_string()) }
     }
 }
 impl Display for RejectedConfig {

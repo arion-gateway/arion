@@ -23,14 +23,13 @@ use crate::{
     secrets::{TlsConfigurator, WantsToBuildClient},
     transport::AsyncInstrumentedStream,
     utils::rewindable_stream::RewindableHeadAsyncStream,
-    Error, Result, SecretManager,
+    Result, SecretManager,
 };
 use arion_configuration::config::{
     common::{ProxyProtocolVersion, TlvType},
     listener_filters::DownstreamProxyProtocolConfig,
     transport::{PassTlvMatchType, ProxyProtocolPassThroughTlvs, TlvEntry, UpstreamProxyProtocolConfig},
 };
-use arion_error::Context;
 use ppp::{v1, v2, HeaderResult};
 use rustls::ClientConfig;
 use std::{
@@ -39,6 +38,22 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use triomphe::Arc;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProxyProtocolError {
+    #[error("I/O error during PROXY handshake: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("rejected by proxy protocol policy: {0}")]
+    PolicyRejected(String),
+    #[error("invalid PROXY header: {0}")]
+    InvalidHeader(String),
+    #[error("buffer bounds error: {0}")]
+    BufferBounds(&'static str),
+    #[error("unsupported address: {0}")]
+    UnsupportedAddress(String),
+    #[error("failed to build proxy protocol header: {0}")]
+    BuildHeader(String),
+}
 
 const V1_PREFIX_LEN: usize = 5;
 const V1_MAX_LENGTH: usize = 107;
@@ -83,7 +98,7 @@ impl ProxyProtocolReader {
         let maybe_header = Self::read_header_bytes(&mut stream, &mut buffer, peer_address).await?;
         let buffered_data = match self.apply_policy(&maybe_header, peer_address) {
             PolicyAction::Reject(error_msg) => {
-                return Err(Error::new(error_msg));
+                return Err(ProxyProtocolError::PolicyRejected(error_msg).into());
             },
             PolicyAction::TransparentPassthrough => {
                 return Ok((
@@ -157,19 +172,17 @@ impl ProxyProtocolReader {
     async fn read_header_bytes<I>(
         stream: &mut I,
         buffer: &mut [u8; READ_BUFFER_LEN],
-        peer_address: SocketAddr,
+        _peer_address: SocketAddr,
     ) -> Result<DetectedHeader>
     where
         I: AsyncRead + Unpin,
     {
         // Use get_mut to safely access the initial prefix range
-        let initial_buf =
-            buffer.get_mut(..V1_PREFIX_LEN).ok_or_else(|| Error::new("V1_PREFIX_LEN is out of bounds"))?;
+        let initial_buf = buffer
+            .get_mut(..V1_PREFIX_LEN)
+            .ok_or(ProxyProtocolError::BufferBounds("V1_PREFIX_LEN is out of bounds"))?;
 
-        stream
-            .read_exact(initial_buf)
-            .await
-            .with_context_msg(format!("Failed to read initial bytes from peer {peer_address}"))?;
+        stream.read_exact(initial_buf).await.map_err(ProxyProtocolError::Io)?;
 
         // Safe comparison using get()
         if buffer.get(..V1_PREFIX_LEN) == Some(v1::PROTOCOL_PREFIX.as_bytes()) {
@@ -178,7 +191,7 @@ impl ProxyProtocolReader {
 
             for i in V1_PREFIX_LEN..max_v1 {
                 // Safe byte write with get_mut
-                let byte = stream.read_u8().await.with_context_msg("Problem reading V1 header bytes")?;
+                let byte = stream.read_u8().await.map_err(ProxyProtocolError::Io)?;
                 if let Some(slot) = buffer.get_mut(i) {
                     *slot = byte;
                 }
@@ -192,7 +205,10 @@ impl ProxyProtocolReader {
             }
 
             if !end_found {
-                return Err(Error::new("Invalid V1 header: terminator not found or header too long"));
+                return Err(ProxyProtocolError::InvalidHeader(
+                    "Invalid V1 header: terminator not found or header too long".to_string(),
+                )
+                .into());
             }
             Ok(DetectedHeader::V1)
         } else {
@@ -200,17 +216,17 @@ impl ProxyProtocolReader {
             let v2_min_range = V1_PREFIX_LEN..V2_MINIMUM_LEN;
             let v2_min_buf = buffer
                 .get_mut(v2_min_range)
-                .ok_or_else(|| Error::new("V2_MINIMUM_LEN is out of bounds for the current buffer"))?;
+                .ok_or(ProxyProtocolError::BufferBounds("V2_MINIMUM_LEN is out of bounds for the current buffer"))?;
 
-            stream
-                .read_exact(v2_min_buf)
-                .await
-                .with_context_msg(format!("Problem reading V2 bytes from {peer_address}"))?;
+            stream.read_exact(v2_min_buf).await.map_err(ProxyProtocolError::Io)?;
 
             if buffer.get(..V2_PREFIX_LEN) == Some(v2::PROTOCOL_PREFIX) {
                 // Extract length using safe get() and array conversion
-                let b1 = *buffer.get(V2_LENGTH_INDEX).ok_or_else(|| Error::new("Invalid V2 length index"))?;
-                let b2 = *buffer.get(V2_LENGTH_INDEX + 1).ok_or_else(|| Error::new("Invalid V2 length index + 1"))?;
+                let b1 =
+                    *buffer.get(V2_LENGTH_INDEX).ok_or(ProxyProtocolError::BufferBounds("Invalid V2 length index"))?;
+                let b2 = *buffer
+                    .get(V2_LENGTH_INDEX + 1)
+                    .ok_or(ProxyProtocolError::BufferBounds("Invalid V2 length index + 1"))?;
 
                 let length = u16::from_be_bytes([b1, b2]) as usize;
                 let full_length = V2_MINIMUM_LEN + length;
@@ -219,7 +235,8 @@ impl ProxyProtocolReader {
                     let mut dynamic_buffer = Vec::with_capacity(full_length);
 
                     // Safe extension: get() ensures we only copy what exists
-                    let head = buffer.get(..V2_MINIMUM_LEN).ok_or_else(|| Error::new("Buffer truncated"))?;
+                    let head =
+                        buffer.get(..V2_MINIMUM_LEN).ok_or(ProxyProtocolError::BufferBounds("Buffer truncated"))?;
                     dynamic_buffer.extend_from_slice(head);
 
                     // Ensure length is set for read_exact
@@ -227,17 +244,17 @@ impl ProxyProtocolReader {
 
                     let tail_buf = dynamic_buffer
                         .get_mut(V2_MINIMUM_LEN..full_length)
-                        .ok_or_else(|| Error::new("Dynamic buffer range invalid"))?;
+                        .ok_or(ProxyProtocolError::BufferBounds("Dynamic buffer range invalid"))?;
 
-                    stream.read_exact(tail_buf).await.with_context_msg("Problem reading V2 into extended buffer")?;
+                    stream.read_exact(tail_buf).await.map_err(ProxyProtocolError::Io)?;
                     Some(dynamic_buffer)
                 } else {
                     // Safe read into the remaining part of the fixed buffer
                     let tail_buf = buffer
                         .get_mut(V2_MINIMUM_LEN..full_length)
-                        .ok_or_else(|| Error::new("V2 full length exceeds fixed buffer capacity"))?;
+                        .ok_or(ProxyProtocolError::BufferBounds("V2 full length exceeds fixed buffer capacity"))?;
 
-                    stream.read_exact(tail_buf).await.with_context_msg("Problem reading V2 into fixed buffer")?;
+                    stream.read_exact(tail_buf).await.map_err(ProxyProtocolError::Io)?;
                     None
                 };
                 Ok(DetectedHeader::V2 { extra_buffer })
@@ -277,9 +294,10 @@ impl ProxyProtocolReader {
                     proxy_local_address: local_address,
                 })
             },
-            HeaderResult::V1(Err(error)) => {
-                Err(Error::new(format!("Detected, but failed to parse proxy protocol V1 header: {error}")))
-            },
+            HeaderResult::V1(Err(error)) => Err(ProxyProtocolError::InvalidHeader(format!(
+                "Detected, but failed to parse proxy protocol V1 header: {error}"
+            ))
+            .into()),
             HeaderResult::V2(Ok(header)) => {
                 let (original_peer_address, original_destination_address) = match header.addresses {
                     v2::Addresses::IPv4(ip) => (
@@ -291,7 +309,10 @@ impl ProxyProtocolReader {
                         SocketAddr::new(IpAddr::V6(ip.destination_address), ip.destination_port),
                     ),
                     v2::Addresses::Unix(unix) => {
-                        return Err(Error::new(format!("Unix socket addresses are not supported: {unix:?}")));
+                        return Err(ProxyProtocolError::UnsupportedAddress(format!(
+                            "Unix socket addresses are not supported: {unix:?}"
+                        ))
+                        .into());
                     },
                     v2::Addresses::Unspecified => {
                         return Ok(DownstreamConnectionMetadata::FromSocket { peer_address, local_address });
@@ -322,9 +343,10 @@ impl ProxyProtocolReader {
                     proxy_local_address: local_address,
                 })
             },
-            HeaderResult::V2(Err(error)) => {
-                Err(Error::new(format!("Detected, but failed to parse proxy protocol V2 header: {error}")))
-            },
+            HeaderResult::V2(Err(error)) => Err(ProxyProtocolError::InvalidHeader(format!(
+                "Detected, but failed to parse proxy protocol V2 header: {error}"
+            ))
+            .into()),
         }
     }
 }
@@ -359,7 +381,7 @@ impl ProxyProtocolConfigurator {
         S: AsyncWrite + Unpin,
     {
         let header = self.build_proxy_header(connection_metadata)?;
-        stream.write_all(&header).await.with_context_msg("Failed to write proxy protocol header")?;
+        stream.write_all(&header).await.map_err(ProxyProtocolError::Io)?;
         Ok(())
     }
 
@@ -381,7 +403,10 @@ impl ProxyProtocolConfigurator {
                 format!("PROXY TCP6 {} {} {} {}\r\n", src.ip(), dst.ip(), src.port(), dst.port())
             },
             _ => {
-                return Err(Error::new("Mixed IPv4/IPv6 addresses not supported in proxy protocol v1"));
+                return Err(ProxyProtocolError::UnsupportedAddress(
+                    "Mixed IPv4/IPv6 addresses not supported in proxy protocol v1".to_string(),
+                )
+                .into());
             },
         };
         Ok(header.into_bytes())
@@ -399,7 +424,7 @@ impl ProxyProtocolConfigurator {
             let tlv_type: u8 = tlv_entry.tlv_type.clone().into();
             builder = builder
                 .write_tlv(tlv_type, &tlv_entry.value)
-                .map_err(|e| Error::new(format!("Failed to add configured TLV: {e}")))?;
+                .map_err(|e| ProxyProtocolError::BuildHeader(format!("Failed to add configured TLV: {e}")))?;
         }
         if let DownstreamConnectionMetadata::FromProxyProtocol { tlv_data, .. } = connection_metadata {
             if let Some(pass_through_config) = &self.pass_through_tlvs {
@@ -410,14 +435,16 @@ impl ProxyProtocolConfigurator {
                     };
                     if should_pass_through {
                         let tlv_type: u8 = tlv_type.clone().into();
-                        builder = builder
-                            .write_tlv(tlv_type, value)
-                            .map_err(|e| Error::new(format!("Failed to add pass-through TLV: {e}")))?;
+                        builder = builder.write_tlv(tlv_type, value).map_err(|e| {
+                            ProxyProtocolError::BuildHeader(format!("Failed to add pass-through TLV: {e}"))
+                        })?;
                     }
                 }
             }
         }
-        builder.build().map_err(|e| Error::new(format!("Failed to build proxy protocol v2 header: {e}")))
+        builder.build().map_err(|e| {
+            ProxyProtocolError::BuildHeader(format!("Failed to build proxy protocol v2 header: {e}")).into()
+        })
     }
 }
 

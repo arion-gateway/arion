@@ -21,8 +21,8 @@
 use std::time::{Duration, Instant};
 use triomphe::Arc;
 
+use anyhow::Result;
 use arion_configuration::config::Bootstrap;
-use arion_error::{Error, Result};
 use arion_lib::{ConfigDump, ConfigurationSenders, ListenerConfigurationChange, SecretManager};
 use axum::{routing::get, Router};
 use parking_lot::RwLock;
@@ -142,8 +142,11 @@ pub async fn start_admin_server(
         server_startup: Instant::now(),
     };
     let app = build_admin_router(admin_state);
-    let address =
-        bootstrap.admin.ok_or(Error::from("Missing admin configuration in bootstrap"))?.address.into_socket_addr()?;
+    let address = bootstrap
+        .admin
+        .ok_or(anyhow::anyhow!("Missing admin configuration in bootstrap"))?
+        .address
+        .into_socket_addr()?;
     let listener = tokio::net::TcpListener::bind(address).await?;
 
     axum::serve(listener, app).await?;

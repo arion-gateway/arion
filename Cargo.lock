@@ -211,8 +211,8 @@ name = "arion-configuration"
 version = "0.1.0"
 dependencies = [
  "ahash",
+ "anyhow",
  "arion-data-plane-api",
- "arion-error",
  "arion-format",
  "arion-interner",
  "base64 0.22.1",
@@ -315,10 +315,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arion-error"
-version = "0.1.0"
-
-[[package]]
 name = "arion-format"
 version = "0.1.0"
 dependencies = [
@@ -372,7 +368,6 @@ dependencies = [
  "arc-swap",
  "arion-configuration",
  "arion-data-plane-api",
- "arion-error",
  "arion-format",
  "arion-http-header",
  "arion-interner",
@@ -511,9 +506,9 @@ dependencies = [
  "abort-on-drop",
  "affinity",
  "ahash",
+ "anyhow",
  "arion-configuration",
  "arion-data-plane-api",
- "arion-error",
  "arion-format",
  "arion-lib",
  "arion-metrics",
@@ -564,7 +559,6 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "arion-configuration",
- "arion-error",
  "arion-http-header",
  "arion-interner",
  "arrayvec 0.7.8",
@@ -602,7 +596,6 @@ version = "0.1.0"
 dependencies = [
  "arion-configuration",
  "arion-data-plane-api",
- "arion-error",
  "async-stream",
  "atomic-take",
  "bytes",
