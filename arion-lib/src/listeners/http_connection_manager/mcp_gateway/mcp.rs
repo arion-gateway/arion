@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-    DisclosureMode, McpGateway as McpGatewayConfig,
+    DisclosureMode, McpGateway as McpGatewayConfig, McpGatewayMode,
 };
 use arion_http_header::MCP_SESSION_ID;
 use atomic_time::AtomicInstant;
@@ -226,7 +226,11 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
     type Error = ToolBuilderError;
 
     fn try_from(config: McpGatewayConfig) -> Result<Self, Self::Error> {
-        let embeddings_client = match config.semantic_search_tool.as_ref().and_then(|s| s.embeddings.clone()) {
+        if matches!(config.mode, McpGatewayMode::Code(_)) {
+            return Err(ToolBuilderError::CodeModeUnavailable);
+        }
+
+        let embeddings_client = match config.search.embeddings.clone() {
             Some(cfg) => {
                 let cfg = cfg.normalized().map_err(ToolBuilderError::InvalidEmbeddingsConfig)?;
                 Some(StdArc::new(embeddings::EmbeddingsClient::from_config(cfg)))
@@ -237,7 +241,7 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
         let tools = StdArc::new(ToolsRegistry::with_config(
             config.tools.clone(),
             config.dynamic_mcp_servers.clone(),
-            config.semantic_search_tool.clone(),
+            Some(config.search.clone()),
             embeddings_client,
         )?);
 

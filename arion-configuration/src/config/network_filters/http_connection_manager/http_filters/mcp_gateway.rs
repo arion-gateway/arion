@@ -25,57 +25,14 @@ use smol_str::{format_smolstr, SmolStr};
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct McpGateway {
     pub server_info: McpServerInfo,
+    pub mode: McpGatewayMode,
+    #[serde(default)]
+    pub search: McpToolSearch,
     pub tools: Vec<McpTool>,
-    pub dynamic_mcp_servers: Vec<DynamicMcpServer>,
-    pub tds: Option<TdsSpecifier>,
-    pub semantic_search_tool: Option<McpSemanticSearch>,
     #[serde(default)]
     pub upstream_limits: UpstreamLimits,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub struct UpstreamLimits {
-    #[serde(with = "humantime_serde")]
-    pub timeout: Duration,
-    pub max_response_bytes: usize,
-}
-
-impl UpstreamLimits {
-    pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
-    pub const DEFAULT_MAX_RESPONSE_BYTES: usize = 1024 * 1024;
-}
-
-impl Default for UpstreamLimits {
-    fn default() -> Self {
-        Self { timeout: Self::DEFAULT_TIMEOUT, max_response_bytes: Self::DEFAULT_MAX_RESPONSE_BYTES }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
-pub struct HttpUpstreamPolicy {
-    #[serde(with = "http_serde_ext::authority::option", skip_serializing_if = "Option::is_none", default)]
-    pub authority: Option<Authority>,
-    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none", default)]
-    pub timeout: Option<Duration>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub retry_policy: Option<RetryPolicy>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub struct DynamicMcpServer {
-    pub name: SmolStr,
-    pub description: String,
-    pub transport: McpBackendTransportUpstream,
-    pub url: String,
-    pub cache_duration: Option<Duration>,
-    pub rbac: Option<McpToolRbac>,
-    #[serde(default)]
-    pub tool_disclosure_mode: DisclosureMode,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub struct TdsSpecifier {
-    pub config_name: SmolStr,
+    pub dynamic_mcp_servers: Vec<DynamicMcpServer>,
+    pub tds: Option<TdsSpecifier>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -85,9 +42,160 @@ pub struct McpServerInfo {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub struct McpTool {
+pub enum McpGatewayMode {
+    Tools(McpToolsMode),
+    Code(McpCodeMode),
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct McpToolsMode;
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct McpCodeMode {
+    #[serde(default = "McpCodeMode::default_execution_timeout", with = "humantime_serde")]
+    pub execution_timeout: Duration,
+    #[serde(default = "McpCodeMode::default_max_host_calls")]
+    pub max_host_calls: usize,
+    #[serde(default = "McpCodeMode::default_max_concurrent_executions")]
+    pub max_concurrent_executions: usize,
+    #[serde(default = "McpCodeMode::default_max_concurrent_tool_calls")]
+    pub max_concurrent_tool_calls: usize,
+    #[serde(default = "McpCodeMode::default_max_output_bytes")]
+    pub max_output_bytes: usize,
+    #[serde(default = "McpCodeMode::default_memory_limit_bytes")]
+    pub memory_limit_bytes: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_artifact_path: Option<SmolStr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub toolkits: Vec<McpToolkit>,
+}
+
+impl McpCodeMode {
+    pub const fn default_execution_timeout() -> Duration {
+        Duration::from_secs(30)
+    }
+
+    pub const fn default_max_host_calls() -> usize {
+        100
+    }
+
+    pub const fn default_max_concurrent_executions() -> usize {
+        32
+    }
+
+    pub const fn default_max_concurrent_tool_calls() -> usize {
+        8
+    }
+
+    pub const fn default_max_output_bytes() -> usize {
+        1024 * 1024
+    }
+
+    pub const fn default_memory_limit_bytes() -> usize {
+        64 * 1024 * 1024
+    }
+}
+
+impl Default for McpCodeMode {
+    fn default() -> Self {
+        Self {
+            execution_timeout: Self::default_execution_timeout(),
+            max_host_calls: Self::default_max_host_calls(),
+            max_concurrent_executions: Self::default_max_concurrent_executions(),
+            max_concurrent_tool_calls: Self::default_max_concurrent_tool_calls(),
+            max_output_bytes: Self::default_max_output_bytes(),
+            memory_limit_bytes: Self::default_memory_limit_bytes(),
+            engine_artifact_path: None,
+            toolkits: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct McpToolkit {
     pub name: SmolStr,
-    pub description: String,
+    pub description: SmolStr,
+    pub instructions: SmolStr,
+    pub tools: Vec<McpToolkitToolRef>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct McpToolkitToolRef {
+    pub namespace: SmolStr,
+    pub name: SmolStr,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct McpToolSearch {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub embeddings: Option<RemoteEmbeddings>,
+    #[serde(default = "McpToolSearch::default_max_allowable_results")]
+    pub max_allowable_results: usize,
+}
+
+impl McpToolSearch {
+    pub const fn default_max_allowable_results() -> usize {
+        5
+    }
+}
+
+impl Default for McpToolSearch {
+    fn default() -> Self {
+        Self { embeddings: None, max_allowable_results: Self::default_max_allowable_results() }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteEmbeddings {
+    pub cluster: SmolStr,
+    pub model_id: SmolStr,
+    #[serde(default = "RemoteEmbeddings::default_path", skip_serializing_if = "RemoteEmbeddings::is_default_path")]
+    pub path: SmolStr,
+    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none", default)]
+    pub timeout: Option<Duration>,
+    pub dimensions: usize,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_batch_size: Option<usize>,
+}
+
+pub const REMOTE_EMBEDDINGS_PATH: &str = "/v1/embeddings";
+
+impl RemoteEmbeddings {
+    pub fn default_path() -> SmolStr {
+        SmolStr::new_inline(REMOTE_EMBEDDINGS_PATH)
+    }
+
+    fn is_default_path(path: &str) -> bool {
+        path == REMOTE_EMBEDDINGS_PATH
+    }
+
+    pub fn normalized(mut self) -> Result<Self, String> {
+        if self.cluster.is_empty() {
+            return Err("RemoteEmbeddings.cluster must not be empty".to_owned());
+        }
+        if self.model_id.is_empty() {
+            return Err("RemoteEmbeddings.model_id must not be empty".to_owned());
+        }
+        if self.dimensions == 0 {
+            return Err("RemoteEmbeddings.dimensions must be greater than zero".to_owned());
+        }
+        if self.max_batch_size == Some(0) {
+            return Err("RemoteEmbeddings.max_batch_size must be greater than zero".to_owned());
+        }
+        if self.path.is_empty() {
+            self.path = Self::default_path();
+        } else if !self.path.starts_with('/') {
+            self.path = format_smolstr!("/{}", self.path);
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct McpTool {
+    pub namespace: SmolStr,
+    pub name: SmolStr,
+    pub description: SmolStr,
     pub input_schema: Map<String, Value>,
     pub output_schema: Map<String, Value>,
     pub backend: UpstreamBackend,
@@ -146,16 +254,16 @@ pub enum UpstreamBackend {
     Rest {
         #[serde(with = "http_serde_ext::method")]
         method: http::Method,
-        path: String,
+        path: SmolStr,
         query_params: Vec<McpRestQueryParams>,
         cluster: SmolStr,
         #[serde(default)]
         upstream_policy: Box<HttpUpstreamPolicy>,
-        body_template: Option<String>,
+        body_template: Option<SmolStr>,
     },
     McpServer {
         transport: McpBackendTransportUpstream,
-        url: String,
+        url: SmolStr,
     },
     FunctionGraph,
 }
@@ -172,6 +280,16 @@ pub struct McpRestQueryParams {
     pub source: SmolStr,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
+pub struct HttpUpstreamPolicy {
+    #[serde(with = "http_serde_ext::authority::option", skip_serializing_if = "Option::is_none", default)]
+    pub authority: Option<Authority>,
+    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none", default)]
+    pub timeout: Option<Duration>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub retry_policy: Option<RetryPolicy>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct McpToolRbac {
     pub action: Action,
@@ -186,64 +304,38 @@ pub enum McpRbacPermission {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub struct McpSemanticSearch {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub embeddings: Option<RemoteEmbeddings>,
-    #[serde(default = "McpSemanticSearch::default_max_allowable_results")]
-    pub max_allowable_results: usize,
+pub struct UpstreamLimits {
+    #[serde(with = "humantime_serde")]
+    pub timeout: Duration,
+    pub max_response_bytes: usize,
 }
 
-impl McpSemanticSearch {
-    pub const fn default_max_allowable_results() -> usize {
-        5
-    }
+impl UpstreamLimits {
+    pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
+    pub const DEFAULT_MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 }
 
-impl Default for McpSemanticSearch {
+impl Default for UpstreamLimits {
     fn default() -> Self {
-        Self { embeddings: None, max_allowable_results: Self::default_max_allowable_results() }
+        Self { timeout: Self::DEFAULT_TIMEOUT, max_response_bytes: Self::DEFAULT_MAX_RESPONSE_BYTES }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RemoteEmbeddings {
-    pub cluster: SmolStr,
-    pub model_id: SmolStr,
-    #[serde(default = "RemoteEmbeddings::default_path", skip_serializing_if = "RemoteEmbeddings::is_default_path")]
-    pub path: SmolStr,
-    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none", default)]
-    pub timeout: Option<Duration>,
-    pub dimensions: usize,
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct DynamicMcpServer {
+    pub namespace: SmolStr,
+    pub description: SmolStr,
+    pub transport: McpBackendTransportUpstream,
+    pub url: SmolStr,
+    pub cache_duration: Option<Duration>,
+    pub rbac: Option<McpToolRbac>,
+    #[serde(default)]
+    pub tool_disclosure_mode: DisclosureMode,
 }
 
-pub const REMOTE_EMBEDDINGS_PATH: &str = "/v1/embeddings";
-
-impl RemoteEmbeddings {
-    pub fn default_path() -> SmolStr {
-        SmolStr::new_inline(REMOTE_EMBEDDINGS_PATH)
-    }
-
-    fn is_default_path(path: &str) -> bool {
-        path == REMOTE_EMBEDDINGS_PATH
-    }
-
-    pub fn normalized(mut self) -> Result<Self, String> {
-        if self.cluster.is_empty() {
-            return Err("RemoteEmbeddings.cluster must not be empty".to_owned());
-        }
-        if self.model_id.is_empty() {
-            return Err("RemoteEmbeddings.model_id must not be empty".to_owned());
-        }
-        if self.dimensions == 0 {
-            return Err("RemoteEmbeddings.dimensions must be greater than zero".to_owned());
-        }
-        if self.path.is_empty() {
-            self.path = Self::default_path();
-        } else if !self.path.starts_with('/') {
-            self.path = format_smolstr!("/{}", self.path);
-        }
-        Ok(self)
-    }
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct TdsSpecifier {
+    pub config_name: SmolStr,
 }
 
 #[cfg(feature = "envoy-conversions")]
@@ -256,14 +348,14 @@ mod envoy_conversions {
 
     use super::*;
     use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        mcp_server_backend::TransportUpstream as ArionTransportUpstream, permission,
-        tool::UpstreamBackend as ArionUpstreamBackend, tool_rbac::Action as ArionAction,
-        DisclosureMode as ArionDisclosureMode, DynamicMcpServer as ArionDynamicMcpServer,
+        mcp_gateway::Mode as ArionMcpGatewayMode, mcp_server_backend::TransportUpstream as ArionTransportUpstream,
+        permission, tool::UpstreamBackend as ArionUpstreamBackend, tool_rbac::Action as ArionAction,
+        CodeMode as ArionCodeMode, DisclosureMode as ArionDisclosureMode, DynamicMcpServer as ArionDynamicMcpServer,
         HttpUpstreamPolicy as ArionHttpUpstreamPolicy, JwtClaimMatcher, JwtHeaderMatcher,
         McpGateway as ArionMcpGateway, Permission as ArionPermission, QueryParam as ArionMcpQueryParams,
-        RemoteEmbeddings as ArionRemoteEmbeddings, SemanticSearch as ArionSemanticSearch,
-        ServerInfo as ArionMcpServerInfo, TdsSpecifier as ArionTdsSpecifier, Tool as ArionTool,
-        ToolRbac as ArionToolRbac,
+        RemoteEmbeddings as ArionRemoteEmbeddings, ServerInfo as ArionMcpServerInfo, TdsSpecifier as ArionTdsSpecifier,
+        Tool as ArionTool, ToolRbac as ArionToolRbac, ToolSearch as ArionToolSearch, Toolkit as ArionToolkit,
+        ToolkitToolRef as ArionToolkitToolRef,
     };
     use tracing::warn;
 
@@ -290,26 +382,116 @@ mod envoy_conversions {
         fn try_from(arion: ArionMcpGateway) -> Result<Self, Self::Error> {
             let ArionMcpGateway {
                 server_info,
+                mode,
+                search,
                 tools,
-                semantic_search_tool,
-                tds,
-                dynamic_mcp_servers,
                 upstream_timeout,
                 max_upstream_response_bytes,
+                dynamic_mcp_servers,
+                tds,
             } = arion;
             let server_info = required!(server_info)?;
+            let mode = match required!(mode)? {
+                ArionMcpGatewayMode::ToolsMode(_) => McpGatewayMode::Tools(McpToolsMode),
+                ArionMcpGatewayMode::CodeMode(code_mode) => McpGatewayMode::Code(code_mode.try_into()?),
+            };
+            let search = search.map(TryInto::try_into).transpose()?.unwrap_or_default();
             let tools = tools.into_iter().map(TryInto::try_into).collect::<Result<Vec<_>, _>>()?;
+            let upstream_limits = parse_upstream_limits(upstream_timeout, max_upstream_response_bytes)?;
             let dynamic_mcp_servers =
                 dynamic_mcp_servers.into_iter().map(TryInto::try_into).collect::<Result<Vec<_>, _>>()?;
+            let tds = tds.map(TryInto::try_into).transpose()?;
 
             Ok(McpGateway {
                 server_info: server_info.try_into()?,
+                mode,
+                search,
                 tools,
+                upstream_limits,
                 dynamic_mcp_servers,
-                tds: tds.map(TryInto::try_into).transpose()?,
-                semantic_search_tool: semantic_search_tool.map(TryInto::try_into).transpose()?,
-                upstream_limits: parse_upstream_limits(upstream_timeout, max_upstream_response_bytes)?,
+                tds,
             })
+        }
+    }
+
+    impl TryFrom<ArionCodeMode> for McpCodeMode {
+        type Error = GenericError;
+
+        fn try_from(arion: ArionCodeMode) -> Result<Self, Self::Error> {
+            let ArionCodeMode {
+                execution_timeout,
+                max_host_calls,
+                max_concurrent_executions,
+                max_concurrent_tool_calls,
+                max_output_bytes,
+                memory_limit_bytes,
+                engine_artifact_path,
+                toolkits,
+            } = arion;
+
+            let toolkits = toolkits.into_iter().map(TryInto::try_into).collect::<Result<Vec<McpToolkit>, _>>()?;
+
+            Ok(Self {
+                execution_timeout: execution_timeout
+                    .map(parse_positive_duration)
+                    .transpose()
+                    .with_node("execution_timeout")?
+                    .unwrap_or_else(Self::default_execution_timeout),
+                max_host_calls: usize_with_default(max_host_calls, Self::default_max_host_calls()),
+                max_concurrent_executions: usize_with_default(
+                    max_concurrent_executions,
+                    Self::default_max_concurrent_executions(),
+                ),
+                max_concurrent_tool_calls: usize_with_default(
+                    max_concurrent_tool_calls,
+                    Self::default_max_concurrent_tool_calls(),
+                ),
+                max_output_bytes: usize_from_u64_with_default(max_output_bytes, Self::default_max_output_bytes())?,
+                memory_limit_bytes: usize_from_u64_with_default(
+                    memory_limit_bytes,
+                    Self::default_memory_limit_bytes(),
+                )?,
+                engine_artifact_path: engine_artifact_path.map(Into::into),
+                toolkits,
+            })
+        }
+    }
+
+    // Registry validation also covers resources received over TDS.
+    impl TryFrom<ArionToolkit> for McpToolkit {
+        type Error = GenericError;
+
+        fn try_from(toolkit: ArionToolkit) -> Result<Self, Self::Error> {
+            Ok(Self {
+                name: toolkit.name.into(),
+                description: toolkit.description.into(),
+                instructions: toolkit.instructions.into(),
+                tools: toolkit.tools.into_iter().map(TryInto::try_into).collect::<Result<Vec<_>, _>>()?,
+            })
+        }
+    }
+
+    impl TryFrom<ArionToolkitToolRef> for McpToolkitToolRef {
+        type Error = GenericError;
+
+        fn try_from(tool: ArionToolkitToolRef) -> Result<Self, Self::Error> {
+            Ok(Self { namespace: tool.namespace.into(), name: tool.name.into() })
+        }
+    }
+
+    fn usize_with_default(value: u32, default: usize) -> usize {
+        if value == 0 {
+            default
+        } else {
+            value as usize
+        }
+    }
+
+    fn usize_from_u64_with_default(value: u64, default: usize) -> Result<usize, GenericError> {
+        if value == 0 {
+            Ok(default)
+        } else {
+            Ok(usize::try_from(value)?)
         }
     }
 
@@ -342,6 +524,30 @@ mod envoy_conversions {
         (!duration.is_zero()).then_some(duration).ok_or_else(|| GenericError::from_msg("must be greater than zero"))
     }
 
+    fn validate_mcp_url(url: String, field: &'static str) -> Result<String, GenericError> {
+        let url = required!(url).with_node(field)?;
+        let parsed = url::Url::parse(&url)
+            .map_err(|error| GenericError::from_msg_with_cause(format!("Invalid {field}"), error))?;
+        if !matches!(parsed.scheme(), "http" | "https") || !parsed.has_host() {
+            return Err(GenericError::from_msg(format!("{field} must be an absolute HTTP(S) URL")));
+        }
+        Ok(url)
+    }
+
+    fn validate_rest_path(path: String) -> Result<String, GenericError> {
+        let path = required!(path).with_node("RestBackend.path")?;
+
+        // Ensure any statically defined paths are valid.
+        if !path.contains('{') && !path.contains('}') {
+            let normalized = (!path.starts_with('/')).then(|| format!("/{path}"));
+            let path_and_query = normalized.as_deref().unwrap_or(&path);
+            http::uri::PathAndQuery::from_str(path_and_query)
+                .map_err(|error| GenericError::from_msg_with_cause("Invalid RestBackend.path", error))?;
+        }
+
+        Ok(path)
+    }
+
     impl TryFrom<ArionHttpUpstreamPolicy> for HttpUpstreamPolicy {
         type Error = GenericError;
 
@@ -365,20 +571,15 @@ mod envoy_conversions {
         fn try_from(arion: ArionDynamicMcpServer) -> Result<Self, Self::Error> {
             let transport = arion.transport().into();
             let tool_disclosure_mode = arion.tool_disclosure_mode().into();
-            let ArionDynamicMcpServer { name, description, url, cache_duration, rbac, .. } = arion;
-            if name.is_empty() {
-                return Err(GenericError::from_msg("DynamicMcpServer.name must not be empty"));
-            }
-            if url.is_empty() {
-                return Err(GenericError::from_msg("DynamicMcpServer.url must not be empty"));
-            }
+            let ArionDynamicMcpServer { namespace, description, url, cache_duration, rbac, .. } = arion;
+            let url = validate_mcp_url(url, "DynamicMcpServer.url")?;
             let cache_duration = cache_duration.map(parse_positive_duration).transpose().with_node("cache_duration")?;
 
             Ok(DynamicMcpServer {
-                name: name.into(),
-                description,
+                namespace: namespace.into(),
+                description: description.into(),
                 transport,
-                url,
+                url: url.into(),
                 cache_duration,
                 rbac: rbac.map(TryInto::try_into).transpose()?,
                 tool_disclosure_mode,
@@ -408,8 +609,18 @@ mod envoy_conversions {
 
         fn try_from(arion: ArionTool) -> Result<Self, Self::Error> {
             let disclosure_mode = arion.disclosure_mode().into();
-            let ArionTool { name, description, input_schema, output_schema, upstream_backend, rbac, embedding, .. } =
-                arion;
+            let ArionTool {
+                namespace,
+                name,
+                description,
+                input_schema,
+                output_schema,
+                upstream_backend,
+                rbac,
+                embedding,
+                ..
+            } = arion;
+            let description = required!(description).with_node("Tool.description")?;
             let backend = required!(upstream_backend)?.try_into()?;
 
             if let UpstreamBackend::FunctionGraph = backend {
@@ -461,8 +672,9 @@ mod envoy_conversions {
 
             let rbac = rbac.map(TryInto::try_into).transpose()?;
             Ok(McpTool {
+                namespace: namespace.into(),
                 name: name.into(),
-                description,
+                description: description.into(),
                 input_schema,
                 output_schema,
                 backend,
@@ -481,13 +693,14 @@ mod envoy_conversions {
                 ArionUpstreamBackend::RestBackend(be) => {
                     let cluster = be.cluster;
                     let cluster = required!(cluster)?;
+                    let path = validate_rest_path(be.path)?;
                     let template_ds: Option<DataSource> = be.body_template.map(TryInto::try_into).transpose()?;
                     let template_bytes = template_ds.map(|t| t.to_bytes_blocking()).transpose()?;
-                    let body_template = template_bytes.map(String::from_utf8).transpose()?;
+                    let body_template = template_bytes.map(String::from_utf8).transpose()?.map(Into::into);
                     Ok(UpstreamBackend::Rest {
                         method: http::Method::from_str(&be.method)?,
-                        path: be.path,
-                        query_params: be.query_params.into_iter().map(Into::into).collect(),
+                        path: path.into(),
+                        query_params: be.query_params.into_iter().map(TryInto::try_into).collect::<Result<_, _>>()?,
                         cluster: cluster.into(),
                         upstream_policy: Box::new(
                             be.upstream_policy.map(TryInto::try_into).transpose()?.unwrap_or_default(),
@@ -496,16 +709,24 @@ mod envoy_conversions {
                     })
                 },
                 ArionUpstreamBackend::McpServerBackend(be) => {
-                    Ok(UpstreamBackend::McpServer { transport: be.transport().into(), url: be.url })
+                    let transport = be.transport().into();
+                    let url = validate_mcp_url(be.url, "McpServerBackend.url")?;
+                    Ok(UpstreamBackend::McpServer { transport, url: url.into() })
                 },
                 ArionUpstreamBackend::FunctionGraphBackend(_) => todo!(),
             }
         }
     }
 
-    impl From<ArionMcpQueryParams> for McpRestQueryParams {
-        fn from(arion: ArionMcpQueryParams) -> Self {
-            McpRestQueryParams { name: arion.name.into(), source: arion.source.into() }
+    impl TryFrom<ArionMcpQueryParams> for McpRestQueryParams {
+        type Error = GenericError;
+
+        fn try_from(arion: ArionMcpQueryParams) -> Result<Self, Self::Error> {
+            let ArionMcpQueryParams { name, source } = arion;
+            Ok(McpRestQueryParams {
+                name: required!(name).with_node("QueryParam.name")?.into(),
+                source: required!(source).with_node("QueryParam.source")?.into(),
+            })
         }
     }
 
@@ -571,10 +792,10 @@ mod envoy_conversions {
         }
     }
 
-    impl TryFrom<ArionSemanticSearch> for McpSemanticSearch {
+    impl TryFrom<ArionToolSearch> for McpToolSearch {
         type Error = GenericError;
-        fn try_from(arion: ArionSemanticSearch) -> Result<Self, Self::Error> {
-            let ArionSemanticSearch { max_allowable_results, embeddings } = arion;
+        fn try_from(arion: ArionToolSearch) -> Result<Self, Self::Error> {
+            let ArionToolSearch { max_allowable_results, embeddings } = arion;
             let max_allowable_results = max_allowable_results
                 .map(|value| {
                     NonZeroUsize::new(value as usize)
@@ -582,17 +803,17 @@ mod envoy_conversions {
                         .ok_or_else(|| GenericError::from_msg("max_allowable_results must be greater than zero"))
                 })
                 .transpose()?
-                .unwrap_or_else(McpSemanticSearch::default_max_allowable_results);
+                .unwrap_or_else(McpToolSearch::default_max_allowable_results);
             let embeddings = embeddings.map(TryInto::try_into).transpose()?;
 
-            Ok(McpSemanticSearch { embeddings, max_allowable_results })
+            Ok(McpToolSearch { embeddings, max_allowable_results })
         }
     }
 
     impl TryFrom<ArionRemoteEmbeddings> for RemoteEmbeddings {
         type Error = GenericError;
         fn try_from(arion: ArionRemoteEmbeddings) -> Result<Self, Self::Error> {
-            let ArionRemoteEmbeddings { cluster, model_id, path, timeout, dimensions } = arion;
+            let ArionRemoteEmbeddings { cluster, model_id, path, timeout, dimensions, max_batch_size } = arion;
             let timeout = timeout
                 .map(|d| -> Result<Duration, GenericError> {
                     let dur: RustType<Duration> = d.try_into()?;
@@ -605,6 +826,7 @@ mod envoy_conversions {
                 path: path.into(),
                 timeout,
                 dimensions: dimensions as usize,
+                max_batch_size: max_batch_size.map(|value| value as usize),
             }
             .normalized()
             .map_err(GenericError::from_msg)
@@ -615,6 +837,85 @@ mod envoy_conversions {
     mod tests {
         #![allow(clippy::assertions_on_result_states)]
         use super::*;
+        use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::RestBackend as ArionRestBackend;
+
+        fn rest_backend(path: &str, query_params: Vec<ArionMcpQueryParams>) -> ArionUpstreamBackend {
+            ArionUpstreamBackend::RestBackend(ArionRestBackend {
+                method: "GET".to_owned(),
+                path: path.to_owned(),
+                query_params,
+                cluster: "upstream".to_owned(),
+                ..Default::default()
+            })
+        }
+
+        fn gateway_with_mode(mode: Option<ArionMcpGatewayMode>) -> ArionMcpGateway {
+            ArionMcpGateway {
+                server_info: Some(ArionMcpServerInfo { name: "gateway".to_owned(), version: "1.0".to_owned() }),
+                mode,
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn gateway_requires_an_explicit_mode() {
+            let result: Result<McpGateway, _> = gateway_with_mode(None).try_into();
+            assert!(result.unwrap_err().to_string().contains("mode"));
+        }
+
+        #[test]
+        fn code_mode_conversion_applies_defaults_and_preserves_toolkits() {
+            let toolkit = ArionToolkit {
+                name: "support".to_owned(),
+                description: "Support workflows".to_owned(),
+                instructions: "Look up the customer first".to_owned(),
+                tools: vec![ArionToolkitToolRef { namespace: "crm".to_owned(), name: "lookup".to_owned() }],
+            };
+            let code_mode = ArionCodeMode { toolkits: vec![toolkit], ..Default::default() };
+            let parsed: McpGateway =
+                gateway_with_mode(Some(ArionMcpGatewayMode::CodeMode(code_mode))).try_into().unwrap();
+
+            assert_eq!(parsed.search, McpToolSearch::default());
+            let McpGatewayMode::Code(mode) = parsed.mode else { panic!("expected CodeMode") };
+            assert_eq!(mode, McpCodeMode { toolkits: mode.toolkits.clone(), ..McpCodeMode::default() });
+            assert_eq!(mode.toolkits.len(), 1);
+            let toolkit = mode.toolkits.first().expect("one toolkit");
+            assert_eq!(toolkit.name, "support");
+            let tool = toolkit.tools.first().expect("one tool");
+            assert_eq!(tool.namespace, "crm");
+            assert_eq!(tool.name, "lookup");
+        }
+
+        #[test]
+        fn dynamic_mcp_server_conversion_rejects_an_invalid_url() {
+            let result: Result<DynamicMcpServer, _> = ArionDynamicMcpServer {
+                namespace: "example".to_owned(),
+                url: "localhost:3000/mcp".to_owned(),
+                ..Default::default()
+            }
+            .try_into();
+
+            assert!(result.unwrap_err().to_string().contains("DynamicMcpServer.url"));
+        }
+
+        #[test]
+        fn rest_backend_conversion_rejects_invalid_static_paths() {
+            for path in ["", "/invalid path"] {
+                let result: Result<UpstreamBackend, _> = rest_backend(path, Vec::new()).try_into();
+                assert!(result.unwrap_err().to_string().contains("RestBackend.path"));
+            }
+        }
+
+        #[test]
+        fn rest_backend_conversion_rejects_incomplete_query_params() {
+            for query_param in [
+                ArionMcpQueryParams { name: String::new(), source: "id".to_owned() },
+                ArionMcpQueryParams { name: "id".to_owned(), source: String::new() },
+            ] {
+                let result: Result<UpstreamBackend, _> = rest_backend("/lookup", vec![query_param]).try_into();
+                assert!(result.unwrap_err().to_string().contains("QueryParam."));
+            }
+        }
 
         #[test]
         #[allow(clippy::indexing_slicing)]
@@ -699,8 +1000,8 @@ mod envoy_conversions {
         }
 
         #[test]
-        fn test_semantic_search_round_trip() {
-            let arion = ArionSemanticSearch {
+        fn test_tool_search_round_trip() {
+            let arion = ArionToolSearch {
                 max_allowable_results: Some(9),
                 embeddings: Some(ArionRemoteEmbeddings {
                     cluster: "embeddings".to_owned(),
@@ -708,25 +1009,28 @@ mod envoy_conversions {
                     path: REMOTE_EMBEDDINGS_PATH.to_owned(),
                     timeout: None,
                     dimensions: 384,
+                    max_batch_size: Some(32),
                 }),
             };
-            let parsed: McpSemanticSearch = arion.try_into().unwrap();
+            let parsed: McpToolSearch = arion.try_into().unwrap();
             assert_eq!(parsed.max_allowable_results, 9);
             let embeddings = parsed.embeddings.expect("remote embeddings config");
             assert_eq!(embeddings.cluster.as_str(), "embeddings");
             assert_eq!(embeddings.model_id.as_str(), "test-model");
             assert_eq!(embeddings.path, REMOTE_EMBEDDINGS_PATH);
             assert_eq!(embeddings.dimensions, 384);
+            assert_eq!(embeddings.max_batch_size, Some(32));
         }
 
         #[test]
-        fn test_semantic_search_empty_remote_cluster_is_rejected() {
+        fn test_tool_search_empty_remote_cluster_is_rejected() {
             let result: Result<RemoteEmbeddings, _> = ArionRemoteEmbeddings {
                 cluster: String::new(),
                 model_id: "test-model".to_owned(),
                 path: String::new(),
                 timeout: None,
                 dimensions: 384,
+                max_batch_size: None,
             }
             .try_into();
             assert!(result.is_err());
@@ -740,6 +1044,7 @@ mod envoy_conversions {
                 path: path.into(),
                 timeout: None,
                 dimensions,
+                max_batch_size: None,
             }
         }
 
@@ -748,6 +1053,13 @@ mod envoy_conversions {
             assert_eq!(remote("c", "m", "v1/embeddings", 384).normalized().unwrap().path, REMOTE_EMBEDDINGS_PATH);
             assert_eq!(remote("c", "m", "", 384).normalized().unwrap().path, RemoteEmbeddings::default_path());
             assert_eq!(remote("c", "m", "/custom", 384).normalized().unwrap().path, "/custom");
+        }
+
+        #[test]
+        fn normalized_rejects_a_zero_max_batch_size() {
+            let mut config = remote("c", "m", "/p", 384);
+            config.max_batch_size = Some(0);
+            assert!(config.normalized().unwrap_err().contains("max_batch_size"));
         }
 
         #[test]

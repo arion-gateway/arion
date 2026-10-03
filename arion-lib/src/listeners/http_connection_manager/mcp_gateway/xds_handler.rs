@@ -358,6 +358,7 @@ mod tests {
 
     fn rest_tool_proto(name: &str) -> ArionTool {
         ArionTool {
+            namespace: String::new(),
             name: name.into(),
             description: "A test tool".into(),
             input_schema: None,
@@ -511,13 +512,12 @@ mod tests {
 
     #[tokio::test]
     async fn tool_update_embedding_failure_still_inserts_tool() {
-        use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpSemanticSearch;
+        use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpToolSearch;
 
         let handler = stub_handler();
         let client = embeddings::EmbeddingsClient::test_failing();
         let registry = StdArc::new(
-            ToolsRegistry::with_config(Vec::new(), Vec::new(), Some(McpSemanticSearch::default()), Some(client))
-                .unwrap(),
+            ToolsRegistry::with_config(Vec::new(), Vec::new(), Some(McpToolSearch::default()), Some(client)).unwrap(),
         );
         handler.register("srv/cfg".into(), &registry);
 

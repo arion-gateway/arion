@@ -24,8 +24,8 @@ use std::time::Duration;
 
 use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::Tool as ArionMcpTool;
 use arion_e2e_tests::config_builder::{
-    ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder, McpRestBackendBuilder,
-    McpSemanticSearchBuilder, McpToolBuilder, inline_string_data_source,
+    inline_string_data_source, ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder,
+    McpRestBackendBuilder, McpToolBuilder, McpToolSearchBuilder,
 };
 use arion_e2e_tests::{ArionInstance, CallToolResult, McpTestClient, PreConfiguredResponse, SpawnOptions, TestBackend};
 use bytes::Bytes;
@@ -107,7 +107,7 @@ fn spawn_options(args: &Args) -> SpawnOptions {
 fn build_config(args: &Args, backends: &DemoBackends) -> arion_e2e_tests::Result<PathBuf> {
     let gateway = McpGatewayBuilder::new("arion-mcp-local-demo", "1.0.0")
         .tools(demo_tools())
-        .semantic_search(McpSemanticSearchBuilder::new().max_allowable_results(args.max_allowable_results));
+        .search(McpToolSearchBuilder::new().max_allowable_results(args.max_allowable_results));
 
     McpGatewayHttpConfigBuilder::new(gateway)
         .listener(LISTENER_NAME, 0)
