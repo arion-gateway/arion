@@ -133,6 +133,8 @@ wasm = [
   "dep:http-serde-ext",
   "dep:bincode-next",
 ]
+# Sandboxed JavaScript execution for the MCP gateway; runtime wiring follows.
+codemode = []
 
 # performance instrumentation
 instrumentation = ["dep:contatori"]

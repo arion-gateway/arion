@@ -17,6 +17,7 @@ members = [
   "tools/hyper_unix_listener",
 ]
 exclude = [
+  "arion-sandbox",
   "arion-wasm-sdk",
   "arion-wasm-sdk-macros",
 ]
@@ -157,6 +158,8 @@ test-log                 = { version = "0.2.21", features = ["trace"] }
 thiserror                = "2.0.21"
 thread-id                = "5.1.0"
 thread_local             = "1.1.10"
+swc_common               = "14"
+swc_fast_ts_strip        = { package = "swc_ts_fast_strip", version = "=26.0.0" }
 tikv-jemalloc-ctl        = { version = "0.6.1", features = ["stats"] }
 tikv-jemallocator        = { version = "0.6" }
 tokio                    = { version = "1.53", features = ["full"] }
@@ -183,6 +186,7 @@ upon                     = "0.8"
 url                      = "2"
 uuid                     = { version = "1.27.0", features = ["v4"] }
 wasmtime 	             = "40.0.4"
+wasmtime-wasi            = { version = "40.0.4", default-features = false, features = ["p2"] }
 x509-parser              = { version = "0.17", features = ["default"] }
 
 [profile.release]
