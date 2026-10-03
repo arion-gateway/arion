@@ -23,6 +23,21 @@ interface runner {
     execute: func(code: string) -> result<string, execution-error>;
 }
 
+interface host {
+    /// Synchronous host request. Supports only kind "log".
+    request: func(kind: string, payload: string) -> result<string, string>;
+
+    /// Begin an asynchronous tool-call or catalog dispatch. Returns the call
+    /// id, which is also the submission sequence number to track completion.
+    submit: func(kind: string, payload: string) -> result<u64, string>;
+
+    /// Block until one submitted call completes and return it. Returns none
+    /// when no calls are in flight. A per-completion err rejects that call's
+    /// promise; an outer err is a host defect and ends the execution.
+    next-completion: func() -> result<option<tuple<u64, result<string, string>>>, string>;
+}
+
 world sandbox {
+    import host;
     export runner;
 }
