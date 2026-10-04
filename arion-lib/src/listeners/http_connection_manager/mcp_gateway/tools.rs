@@ -35,6 +35,8 @@ pub(crate) use entry::catalog_page;
 pub use entry::{CatalogPage, CompactToolDefinition, NamespaceSummary, ToolDefinition, ToolEntry, ToolSource};
 pub use errors::{CallToolError, ToolBuilderError};
 pub(crate) use invoke::call_tool_result_into_value;
+#[cfg(feature = "codemode")]
+pub(crate) use invoke::serialized_json_size;
 #[cfg(test)]
 pub(crate) use invoke::TestCallContext;
 pub use invoke::ToolCallContext;
@@ -62,7 +64,7 @@ use crate::listeners::http_connection_manager::{mcp_gateway::embeddings, Request
 
 const MAX_MCP_TOOL_NAME_BYTES: usize = 128;
 pub const TOOL_SEARCH_TOOL_NAME: &str = "tool_search";
-#[cfg(test)]
+#[cfg(any(test, feature = "codemode"))]
 pub const CODEMODE_EXECUTE_TOOL_NAME: &str = "execute";
 
 #[derive(Debug, Clone, Deserialize)]

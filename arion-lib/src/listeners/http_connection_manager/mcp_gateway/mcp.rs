@@ -62,6 +62,9 @@ use crate::{
     ArionRequestBody, ArionResponseBody, PolyBody,
 };
 
+#[cfg(feature = "codemode")]
+use crate::listeners::http_connection_manager::mcp_gateway::codemode::CodeMode;
+
 const MCP_MESSAGE_ENDPOINT: &str = "/mcp";
 const MCP_SEARCH_ENDPOINT: &str = "/mcp/search";
 const SESSION_IDLE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(300);
@@ -212,13 +215,13 @@ struct ToolsMode;
 #[derive(Debug)]
 enum GatewayMode {
     Tools(ToolsMode),
+    #[cfg(feature = "codemode")]
+    Code(CodeMode),
 }
 
 impl GatewayMode {
     fn exposes_rest_search(&self) -> bool {
-        match self {
-            Self::Tools(_) => true,
-        }
+        matches!(self, Self::Tools(_))
     }
 
     async fn list_tools(
@@ -229,6 +232,8 @@ impl GatewayMode {
     ) -> Result<model::ListToolsResult, CallToolError> {
         match self {
             Self::Tools(mode) => mode.list_tools(tools, req_ext, req_ctx).await,
+            #[cfg(feature = "codemode")]
+            Self::Code(mode) => mode.list_tools(tools, req_ext, req_ctx).await,
         }
     }
 
@@ -241,6 +246,8 @@ impl GatewayMode {
     ) -> Result<model::CallToolResult, CallToolError> {
         match self {
             Self::Tools(mode) => mode.call_tool(tools, cx, name, arguments).await,
+            #[cfg(feature = "codemode")]
+            Self::Code(mode) => mode.call_tool(tools, cx, name, arguments).await,
         }
     }
 }
@@ -365,13 +372,24 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
     type Error = ToolBuilderError;
 
     fn try_from(config: McpGatewayConfig) -> Result<Self, Self::Error> {
+        #[cfg(not(feature = "codemode"))]
         if matches!(&config.mode, ConfigGatewayMode::Code(_)) {
             return Err(ToolBuilderError::CodeModeFeatureDisabled);
         }
 
         let mode = match &config.mode {
             ConfigGatewayMode::Tools(_) => GatewayMode::Tools(ToolsMode),
-            ConfigGatewayMode::Code(_) => unreachable!("codemode configuration was rejected above"),
+            ConfigGatewayMode::Code(code_mode) => {
+                #[cfg(feature = "codemode")]
+                {
+                    GatewayMode::Code(CodeMode::try_new(code_mode)?)
+                }
+                #[cfg(not(feature = "codemode"))]
+                {
+                    let _ = code_mode;
+                    unreachable!("codemode configuration was rejected above")
+                }
+            },
         };
         let embeddings_client = match config.search.embeddings.clone() {
             Some(cfg) => {
@@ -395,7 +413,17 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
             let server_name = config.server_info.name.clone();
             super::uniqueness::claim(runtime_id, server_name.clone()).map_err(ToolBuilderError::DuplicateServerName)?;
             let scope = format_smolstr!("{server_name}/{config_name}", config_name = tds.config_name);
-            super::xds_handler::subscribe_for_updates(scope.clone(), &tools);
+            #[cfg(feature = "codemode")]
+            let toolkits = match &mode {
+                GatewayMode::Code(mode) => Some(mode.toolkits()),
+                GatewayMode::Tools(_) => None,
+            };
+            super::xds_handler::subscribe_for_updates(
+                scope.clone(),
+                &tools,
+                #[cfg(feature = "codemode")]
+                toolkits,
+            );
             Some(TdsRegistration { runtime_id, server_name, scope })
         } else {
             None
@@ -742,6 +770,11 @@ impl McpGateway {
             };
 
             let result = InitializeResult::new(capabilities).with_server_info(server_info);
+            #[cfg(feature = "codemode")]
+            let result = match &self.inner.mode {
+                GatewayMode::Tools(_) => result,
+                GatewayMode::Code(_) => result.with_instructions(CodeMode::instructions()),
+            };
 
             let Some(new_session) = ctx.create_session(listener_name) else {
                 info!(target: "mcp_gateway", "handle_rpc_json_request: failed to create new session!");
@@ -934,6 +967,30 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "codemode")]
+    #[tokio::test]
+    async fn codemode_invocation_runs_as_a_normal_tool_call_result() {
+        let gateway = McpGateway::try_from(config_with_codemode()).expect("codemode-enabled gateway");
+        let GatewayMode::Code(mode) = &gateway.inner.mode else { panic!("codemode") };
+        let cx = TestCallContext::default();
+        let result = mode
+            .call_tool(
+                &gateway.inner.tools,
+                cx.context(),
+                CODEMODE_EXECUTE_TOOL_NAME,
+                json!({ "code": "return { answer: 42 as number }" }),
+            )
+            .await
+            .expect("execute result");
+
+        let structured = result.structured_content.expect("structured execute result");
+        assert_eq!(structured["status"], "completed");
+        assert_eq!(structured["result"], json!({ "answer": 42 }));
+        assert_eq!(structured["toolCalls"], json!([]));
+        assert_eq!(result.is_error, Some(false));
+    }
+
+    #[cfg(not(feature = "codemode"))]
     #[test]
     fn enabled_codemode_requires_the_build_feature() {
         assert!(matches!(McpGateway::try_from(config_with_codemode()), Err(ToolBuilderError::CodeModeFeatureDisabled)));
@@ -993,7 +1050,11 @@ mod tests {
             let mut config = config_with_tools_mode();
             config.tools = tools;
             let gateway = McpGateway::try_from(config).expect("tools-mode gateway");
-            let GatewayMode::Tools(mode) = &gateway.inner.mode;
+            let mode = match &gateway.inner.mode {
+                GatewayMode::Tools(mode) => mode,
+                #[cfg(feature = "codemode")]
+                GatewayMode::Code(_) => panic!("tools mode"),
+            };
             let listed = mode
                 .list_tools(&gateway.inner.tools, &http::Extensions::new(), &RequestCtx::default())
                 .await
@@ -1006,7 +1067,11 @@ mod tests {
     #[tokio::test]
     async fn tools_mode_does_not_accept_execute() {
         let gateway = McpGateway::try_from(config_with_tools_mode()).expect("tools-mode gateway");
-        let GatewayMode::Tools(mode) = &gateway.inner.mode;
+        let mode = match &gateway.inner.mode {
+            GatewayMode::Tools(mode) => mode,
+            #[cfg(feature = "codemode")]
+            GatewayMode::Code(_) => panic!("tools mode"),
+        };
         let cx = TestCallContext::default();
         let result = mode
             .call_tool(&gateway.inner.tools, cx.context(), CODEMODE_EXECUTE_TOOL_NAME, json!({ "code": "42" }))

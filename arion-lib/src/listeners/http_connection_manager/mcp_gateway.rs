@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(feature = "codemode")]
+pub mod codemode;
 pub(crate) mod embeddings;
 pub mod mcp;
 pub mod rbac;

@@ -113,6 +113,9 @@ pub enum CallToolError {
     SerdeError(#[from] serde_json::Error),
     #[error("Validation error: {0}")]
     ValidationError(String),
+    #[cfg(feature = "codemode")]
+    #[error("too many Code Mode executions are active")]
+    CodeModeConcurrencyLimit,
 }
 
 impl From<CallToolError> for model::ErrorData {
@@ -172,6 +175,10 @@ impl From<CallToolError> for model::ErrorData {
             CallToolError::ValidationError(e) => {
                 model::ErrorData::internal_error(format!("Json schema validation error: {e}"), None)
             },
+            #[cfg(feature = "codemode")]
+            CallToolError::CodeModeConcurrencyLimit => {
+                model::ErrorData::invalid_request("Too many Code Mode executions are active", None)
+            },
         }
     }
 }
@@ -225,4 +232,10 @@ pub enum ToolBuilderError {
     InvalidEmbeddingsConfig(String),
     #[error("Code Mode requires building Arion with the 'codemode' feature")]
     CodeModeFeatureDisabled,
+    #[cfg(feature = "codemode")]
+    #[error("Invalid Code Mode configuration: {0}")]
+    InvalidCodeMode(#[from] super::super::codemode::CodeModeError),
+    #[cfg(feature = "codemode")]
+    #[error("Invalid Code Mode toolkit configuration: {0}")]
+    InvalidToolkit(String),
 }
