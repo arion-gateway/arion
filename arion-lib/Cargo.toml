@@ -105,7 +105,10 @@ rustls-platform-verifier = { workspace = true }
 contatori = { workspace = true, optional = true }
 pingora = { workspace = true, features = ["time"] }
 arion-wasm-types = { workspace = true, optional = true }
+swc_common = { workspace = true, optional = true }
+swc_fast_ts_strip = { workspace = true, optional = true }
 wasmtime = { workspace = true, optional = true }
+wasmtime-wasi = { workspace = true, optional = true }
 bitflags = { workspace = true, optional = true }
 crossbeam-queue = { workspace = true, optional = true }
 http-serde-ext = { workspace = true, optional = true }
@@ -133,8 +136,13 @@ wasm = [
   "dep:http-serde-ext",
   "dep:bincode-next",
 ]
-# Sandboxed JavaScript execution for the MCP gateway; runtime wiring follows.
-codemode = []
+# Sandboxed JavaScript execution for the MCP gateway
+codemode = [
+  "dep:swc_common",
+  "dep:swc_fast_ts_strip",
+  "dep:wasmtime",
+  "dep:wasmtime-wasi",
+]
 
 # performance instrumentation
 instrumentation = ["dep:contatori"]

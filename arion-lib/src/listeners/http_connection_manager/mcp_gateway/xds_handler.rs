@@ -22,6 +22,8 @@ use arion_configuration::config::{
     common::GenericError,
     network_filters::http_connection_manager::http_filters::mcp_gateway::{DynamicMcpServer, McpTool},
 };
+#[cfg(feature = "codemode")]
+use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::Toolkit as ArionToolkit;
 use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::{
     DynamicMcpServer as ArionDynamicMcpServer, Tool as ArionTool,
 };
@@ -35,7 +37,11 @@ use prost::Message;
 use smol_str::SmolStr;
 use tracing::{debug, warn};
 
+#[cfg(feature = "codemode")]
+use super::codemode::ToolkitRegistry;
 use super::tools::ToolsRegistry;
+#[cfg(feature = "codemode")]
+use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpToolkit;
 
 pub const MCP_TOOL_TYPE_URL: &str = "type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.Tool";
 pub const MCP_DYNAMIC_SERVER_TYPE_URL: &str =
@@ -47,11 +53,17 @@ const SUPPORTED_TYPE_URLS: &[&str] = &[MCP_TOOL_TYPE_URL, MCP_DYNAMIC_SERVER_TYP
 #[derive(Clone, Debug)]
 struct RegistrySubscription {
     tools: Weak<ToolsRegistry>,
+    #[cfg(feature = "codemode")]
+    toolkits: Option<Weak<ToolkitRegistry>>,
 }
 
 impl From<&StdArc<ToolsRegistry>> for RegistrySubscription {
     fn from(tools: &StdArc<ToolsRegistry>) -> Self {
-        Self { tools: StdArc::downgrade(tools) }
+        Self {
+            tools: StdArc::downgrade(tools),
+            #[cfg(feature = "codemode")]
+            toolkits: None,
+        }
     }
 }
 
@@ -74,8 +86,16 @@ pub fn get_mcp_xds_handler() -> Option<&'static StdArc<McpXdsHandler>> {
     MCP_XDS_HANDLER.get()
 }
 
-pub fn subscribe_for_updates(scope: SmolStr, registry: &StdArc<ToolsRegistry>) {
-    let subscription = RegistrySubscription { tools: StdArc::downgrade(registry) };
+pub fn subscribe_for_updates(
+    scope: SmolStr,
+    registry: &StdArc<ToolsRegistry>,
+    #[cfg(feature = "codemode")] toolkits: Option<&StdArc<ToolkitRegistry>>,
+) {
+    let subscription = RegistrySubscription {
+        tools: StdArc::downgrade(registry),
+        #[cfg(feature = "codemode")]
+        toolkits: toolkits.map(StdArc::downgrade),
+    };
     if let Some(handler) = get_mcp_xds_handler() {
         handler.register(scope, subscription);
     } else {
@@ -305,7 +325,30 @@ impl XdsExtensionHandler for McpXdsHandler {
                     }
                     debug!(target: "mcp_gateway", "xDS: added/updated dynamic namespace '{}' in scope '{scope}' ({} registries)", server.namespace, subscriptions.len());
                 },
-                MCP_TOOLKIT_TYPE_URL => {},
+                MCP_TOOLKIT_TYPE_URL => {
+                    #[cfg(feature = "codemode")]
+                    {
+                        let registries = subscriptions
+                            .iter()
+                            .filter_map(|subscription| subscription.toolkits.as_ref())
+                            .filter_map(Weak::upgrade)
+                            .collect::<Vec<_>>();
+                        if registries.is_empty() {
+                            debug!(target: "mcp_gateway", "xDS: ignoring Toolkit '{name}' for non-CodeMode scope '{scope}'");
+                            return Ok(());
+                        }
+                        let proto = decode_proto::<ArionToolkit>(&payload, "MCP Toolkit")?;
+                        let mut toolkit: McpToolkit = convert(proto, "MCP Toolkit")?;
+                        if toolkit.name.as_str() != name {
+                            toolkit.name = name.into();
+                        }
+                        for registry in registries {
+                            registry.add(toolkit.clone()).map_err(|error| {
+                                XdsExtensionError::HandlerError(format!("Failed to add toolkit '{name}': {error}"))
+                            })?;
+                        }
+                    }
+                },
                 other => {
                     return Err(XdsExtensionError::HandlerError(format!("unsupported type_url: {other}")));
                 },
@@ -357,7 +400,16 @@ impl XdsExtensionHandler for McpXdsHandler {
                         warn!(target: "mcp_gateway", "xDS: dynamic server '{name}' not found in scope '{scope}' for removal");
                     }
                 },
-                MCP_TOOLKIT_TYPE_URL => {},
+                MCP_TOOLKIT_TYPE_URL => {
+                    #[cfg(feature = "codemode")]
+                    for registry in subscriptions
+                        .iter()
+                        .filter_map(|subscription| subscription.toolkits.as_ref())
+                        .filter_map(Weak::upgrade)
+                    {
+                        registry.remove(name);
+                    }
+                },
                 other => {
                     return Err(XdsExtensionError::HandlerError(format!("unsupported type_url: {other}")));
                 },
@@ -430,6 +482,21 @@ mod tests {
             rbac: None,
             embedding: Vec::new(),
             disclosure_mode: 0,
+        }
+    }
+
+    #[cfg(feature = "codemode")]
+    fn toolkit_proto(description: &str) -> ArionToolkit {
+        use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::ToolkitToolRef;
+
+        ArionToolkit {
+            name: "support".to_owned(),
+            description: description.to_owned(),
+            instructions: "Use both support tools.".to_owned(),
+            tools: vec![
+                ToolkitToolRef { namespace: "test".to_owned(), name: "one".to_owned() },
+                ToolkitToolRef { namespace: "test".to_owned(), name: "two".to_owned() },
+            ],
         }
     }
 
@@ -614,6 +681,45 @@ mod tests {
         assert!(res.is_ok(), "embeddings failure should not NACK the update: {res:?}");
         let entry = registry.get_tool_by_name("test.needs_embedding").expect("tool should be inserted");
         assert!(entry.embedding.load_full().is_none(), "tool should remain unembedded after embeddings failure");
+    }
+
+    #[cfg(feature = "codemode")]
+    #[tokio::test]
+    async fn toolkit_update_replaces_static_entry_and_remove_has_no_fallback() {
+        use crate::listeners::http_connection_manager::mcp_gateway::codemode::ToolkitRegistry;
+
+        let handler = stub_handler();
+        let tools = empty_registry();
+        for name in ["one", "two"] {
+            let tool: McpTool = rest_tool_proto(name).try_into().unwrap();
+            tools.add_tool(tool).await.unwrap();
+        }
+        let static_toolkit: McpToolkit = toolkit_proto("static description").try_into().unwrap();
+        let toolkits = StdArc::new(ToolkitRegistry::with_config(vec![static_toolkit]).unwrap());
+        handler.register(
+            "srv/cfg".into(),
+            RegistrySubscription { tools: StdArc::downgrade(&tools), toolkits: Some(StdArc::downgrade(&toolkits)) },
+        );
+
+        handler
+            .handle_update(MCP_TOOLKIT_TYPE_URL, "srv/cfg/support", &toolkit_proto("live description").encode_to_vec())
+            .await
+            .unwrap();
+        let updated = toolkits.get(&tools, &http::Extensions::new(), "support").unwrap();
+        assert_eq!(updated.description, "live description");
+
+        handler.handle_remove(MCP_TOOLKIT_TYPE_URL, "srv/cfg/support").await.unwrap();
+        assert!(toolkits.get(&tools, &http::Extensions::new(), "support").is_none());
+    }
+
+    #[cfg(feature = "codemode")]
+    #[tokio::test]
+    async fn normal_mode_ignores_toolkit_payloads_without_decoding_them() {
+        let handler = stub_handler();
+        let tools = empty_registry();
+        handler.register("srv/cfg".into(), &tools);
+
+        assert!(handler.handle_update(MCP_TOOLKIT_TYPE_URL, "srv/cfg/support", b"not protobuf").await.is_ok());
     }
 
     async fn drain_subscribes(rx: &mut mpsc::Receiver<SubscriptionEvent>) -> Vec<String> {
