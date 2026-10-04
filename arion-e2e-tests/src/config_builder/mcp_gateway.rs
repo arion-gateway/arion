@@ -19,10 +19,10 @@ use std::time::Duration;
 
 use arion_data_plane_api::envoy_data_plane_api::{
     arion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        mcp_gateway, mcp_server_backend, permission::PermissionType, tool, tool_rbac, DisclosureMode, DynamicMcpServer,
-        FunctionGraphBackend, HttpUpstreamPolicy, JwtClaimMatcher, JwtHeaderMatcher, McpGateway, McpServerBackend,
-        Permission, QueryParam, RemoteEmbeddings, RestBackend, ServerInfo, TdsSpecifier, Tool, ToolRbac, ToolSearch,
-        ToolsMode,
+        mcp_gateway, mcp_server_backend, permission::PermissionType, tool, tool_rbac, CodeMode, DisclosureMode,
+        DynamicMcpServer, FunctionGraphBackend, HttpUpstreamPolicy, JwtClaimMatcher, JwtHeaderMatcher, McpGateway,
+        McpServerBackend, Permission, QueryParam, RemoteEmbeddings, RestBackend, ServerInfo, TdsSpecifier, Tool,
+        ToolRbac, ToolSearch, Toolkit, ToolkitToolRef, ToolsMode,
     },
     envoy::{
         config::core::v3::{data_source::Specifier, DataSource},
@@ -53,6 +53,7 @@ pub const MCP_GATEWAY_TYPE_URL: &str =
 pub const MCP_TOOL_TYPE_URL: &str = "type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.Tool";
 pub const MCP_DYNAMIC_SERVER_TYPE_URL: &str =
     "type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.DynamicMcpServer";
+pub const MCP_TOOLKIT_TYPE_URL: &str = "type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.Toolkit";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum McpTransport {
@@ -144,6 +145,12 @@ impl McpGatewayBuilder {
     }
 
     #[must_use]
+    pub fn code_mode(mut self, code_mode: impl Into<CodeMode>) -> Self {
+        self.proto.mode = Some(mcp_gateway::Mode::CodeMode(code_mode.into()));
+        self
+    }
+
+    #[must_use]
     pub fn with_proto<F: FnOnce(&mut McpGateway)>(mut self, f: F) -> Self {
         f(&mut self.proto);
         self
@@ -168,14 +175,15 @@ pub struct McpToolBuilder {
 
 impl McpToolBuilder {
     #[must_use]
-    pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
-        Self { proto: Tool { name: name.into(), description: description.into(), ..Default::default() } }
-    }
-
-    #[must_use]
-    pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
-        self.proto.namespace = namespace.into();
-        self
+    pub fn new(namespace: impl Into<String>, name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            proto: Tool {
+                namespace: namespace.into(),
+                name: name.into(),
+                description: description.into(),
+                ..Default::default()
+            },
+        }
     }
 
     #[must_use]
@@ -372,10 +380,10 @@ pub struct DynamicMcpServerBuilder {
 
 impl DynamicMcpServerBuilder {
     #[must_use]
-    pub fn new(name: impl Into<String>, description: impl Into<String>, url: impl Into<String>) -> Self {
+    pub fn new(namespace: impl Into<String>, description: impl Into<String>, url: impl Into<String>) -> Self {
         Self {
             proto: DynamicMcpServer {
-                namespace: name.into(),
+                namespace: namespace.into(),
                 description: description.into(),
                 transport: McpTransport::StreamableHttp.to_proto(),
                 url: url.into(),
@@ -435,6 +443,87 @@ impl DynamicMcpServerBuilder {
 
 impl From<DynamicMcpServerBuilder> for DynamicMcpServer {
     fn from(builder: DynamicMcpServerBuilder) -> Self {
+        builder.build()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct McpCodeModeBuilder {
+    proto: CodeMode,
+}
+
+impl McpCodeModeBuilder {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn toolkit(mut self, toolkit: impl Into<Toolkit>) -> Self {
+        self.proto.toolkits.push(toolkit.into());
+        self
+    }
+
+    #[must_use]
+    pub fn toolkits<I, T>(mut self, toolkits: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Toolkit>,
+    {
+        self.proto.toolkits.extend(toolkits.into_iter().map(Into::into));
+        self
+    }
+
+    #[must_use]
+    pub fn with_proto<F: FnOnce(&mut CodeMode)>(mut self, f: F) -> Self {
+        f(&mut self.proto);
+        self
+    }
+
+    #[must_use]
+    pub fn build(self) -> CodeMode {
+        self.proto
+    }
+}
+
+impl From<McpCodeModeBuilder> for CodeMode {
+    fn from(builder: McpCodeModeBuilder) -> Self {
+        builder.build()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct McpToolkitBuilder {
+    proto: Toolkit,
+}
+
+impl McpToolkitBuilder {
+    #[must_use]
+    pub fn new(name: impl Into<String>, description: impl Into<String>, instructions: impl Into<String>) -> Self {
+        Self {
+            proto: Toolkit {
+                name: name.into(),
+                description: description.into(),
+                instructions: instructions.into(),
+                tools: Vec::new(),
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn tool(mut self, namespace: impl Into<String>, name: impl Into<String>) -> Self {
+        self.proto.tools.push(ToolkitToolRef { namespace: namespace.into(), name: name.into() });
+        self
+    }
+
+    #[must_use]
+    pub fn build(self) -> Toolkit {
+        self.proto
+    }
+}
+
+impl From<McpToolkitBuilder> for Toolkit {
+    fn from(builder: McpToolkitBuilder) -> Self {
         builder.build()
     }
 }
@@ -713,5 +802,11 @@ pub fn mcp_tool_xds_resource(resource_id: impl Into<String>, tool: &Tool) -> Xds
 #[must_use]
 pub fn dynamic_mcp_server_xds_resource(resource_id: impl Into<String>, server: &DynamicMcpServer) -> XdsResource {
     let any = Any { type_url: MCP_DYNAMIC_SERVER_TYPE_URL.to_owned(), value: server.encode_to_vec() };
+    XdsResource { name: resource_id.into(), resource: Some(any), ..Default::default() }
+}
+
+#[must_use]
+pub fn mcp_toolkit_xds_resource(resource_id: impl Into<String>, toolkit: &Toolkit) -> XdsResource {
+    let any = Any { type_url: MCP_TOOLKIT_TYPE_URL.to_owned(), value: toolkit.encode_to_vec() };
     XdsResource { name: resource_id.into(), resource: Some(any), ..Default::default() }
 }

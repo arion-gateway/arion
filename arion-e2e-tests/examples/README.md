@@ -19,7 +19,7 @@ Semantic search uses one stateless flow:
 2. The client calls `tool_search`.
 3. Arion returns the matching full tool definitions directly in the `tool_search` result.
 
-Discovered tools remain callable by name even though they are omitted from `tools/list`.
+Discovered tools remain callable by their exact qualified `namespace.name` even though they are omitted from `tools/list`.
 
 ## Run
 
@@ -45,13 +45,13 @@ cargo run -p arion-e2e-tests --example mcp_semantic_search -- --keep-config
 cargo run -p arion-e2e-tests --example mcp_semantic_search -- --verbose-arion
 ```
 
-The example prints the generated config path, backend addresses, the MCP endpoint, a copy-pasteable `curl` smoke test, and the result of a sample semantic-search call. The manual `curl` flow must reuse the real `mcp-session-id` returned by `initialize`.
+The example prints the generated config path, backend addresses, the MCP endpoint, a copy-pasteable `curl` smoke test, and the result of a sample `tool_search` call. The manual `curl` flow must reuse the real `mcp-session-id` returned by `initialize`.
 
 ## CLI Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--max-allowable-results` | `2` | Maximum number of search results a caller may request. |
+| `--max-allowable-results` | `2` | Maximum number of tool definitions returned by one search. |
 | `--verbose-arion` | `false` | Print Arion subprocess logs. |
 | `--keep-config` | `false` | Leave the generated YAML config in `/tmp` after exit. |
 

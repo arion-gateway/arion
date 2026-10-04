@@ -71,8 +71,7 @@ async fn start_harness_with_mcp_listener() -> (XdsEnabledHarness, SocketAddr) {
 }
 
 fn rest_tool_proto(name: &str, description: &str, cluster: &str, path: &str) -> ArionMcpTool {
-    McpToolBuilder::new(name, description)
-        .namespace(TEST_TOOL_NAMESPACE)
+    McpToolBuilder::new(TEST_TOOL_NAMESPACE, name, description)
         .input_schema(inline_string_data_source(r#"{"type":"object","properties":{}}"#))
         .rest_backend(McpRestBackendBuilder::new(cluster, "GET", path))
         .eager()
@@ -221,8 +220,7 @@ async fn test_mcp_gateway_xds_rbac_on_xds_pushed_tool() {
     harness.push_listener(&listener).await.expect("Failed to push MCP listener");
     harness.arion_mut().wait_for_listener_at(listener_addr, LISTENER_WAIT).await.expect("Listener not ready");
 
-    let tool = McpToolBuilder::new("secure_tool", "Admin-only tool")
-        .namespace(TEST_TOOL_NAMESPACE)
+    let tool = McpToolBuilder::new(TEST_TOOL_NAMESPACE, "secure_tool", "Admin-only tool")
         .input_schema(inline_string_data_source(r#"{"type":"object","properties":{}}"#))
         .rest_backend(McpRestBackendBuilder::new("secure_cluster", "GET", "/secure"))
         .rbac(McpToolRbacBuilder::allow().jwt_claim("role", "admin"))

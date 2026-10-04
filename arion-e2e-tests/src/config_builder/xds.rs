@@ -19,7 +19,7 @@ use std::{net::SocketAddr, time::Duration};
 
 use arion_data_plane_api::envoy_data_plane_api::{
     arion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        DynamicMcpServer as ArionDynamicMcpServer, Tool as ArionTool,
+        DynamicMcpServer as ArionDynamicMcpServer, Tool as ArionTool, Toolkit as ArionToolkit,
     },
     envoy::{
         config::endpoint::v3::{ClusterLoadAssignment, LocalityLbEndpoints},
@@ -32,7 +32,8 @@ use arion_data_plane_api::envoy_data_plane_api::{
 use arion_xds::xds::model::TypeUrl;
 
 use crate::config_builder::mcp_gateway::{
-    MCP_DYNAMIC_SERVER_TYPE_URL, MCP_TOOL_TYPE_URL, dynamic_mcp_server_xds_resource, mcp_tool_xds_resource,
+    dynamic_mcp_server_xds_resource, mcp_tool_xds_resource, mcp_toolkit_xds_resource, MCP_DYNAMIC_SERVER_TYPE_URL,
+    MCP_TOOLKIT_TYPE_URL, MCP_TOOL_TYPE_URL,
 };
 use pingora_timeout::timeout as fast_timeout;
 use thiserror::Error;
@@ -257,6 +258,21 @@ impl ConfigPusher {
 
     pub async fn remove_mcp_tool(&self, resource_id: &str, timeout: Duration) -> Result<PushResult, XdsError> {
         let resource = create_removal_resource(resource_id, &TypeUrl::Extension(MCP_TOOL_TYPE_URL.to_owned()));
+        self.send(ServerAction::Remove(resource), timeout).await
+    }
+
+    pub async fn push_mcp_toolkit(
+        &self,
+        resource_id: &str,
+        toolkit: &ArionToolkit,
+        timeout: Duration,
+    ) -> Result<PushResult, XdsError> {
+        let resource = mcp_toolkit_xds_resource(resource_id, toolkit);
+        self.send(ServerAction::Add(resource), timeout).await
+    }
+
+    pub async fn remove_mcp_toolkit(&self, resource_id: &str, timeout: Duration) -> Result<PushResult, XdsError> {
+        let resource = create_removal_resource(resource_id, &TypeUrl::Extension(MCP_TOOLKIT_TYPE_URL.to_owned()));
         self.send(ServerAction::Remove(resource), timeout).await
     }
 

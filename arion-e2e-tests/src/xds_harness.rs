@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::{
-    DynamicMcpServer as ArionDynamicMcpServer, Tool as ArionTool,
+    DynamicMcpServer as ArionDynamicMcpServer, Tool as ArionTool, Toolkit as ArionToolkit,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -161,6 +161,16 @@ impl XdsEnabledHarness {
 
     pub async fn remove_mcp_tool(&self, resource_id: &str) -> Result<(), HarnessError> {
         let result = self.pusher.remove_mcp_tool(resource_id, self.timeouts.push).await?;
+        Self::check_result(result)
+    }
+
+    pub async fn push_mcp_toolkit(&self, resource_id: &str, toolkit: &ArionToolkit) -> Result<(), HarnessError> {
+        let result = self.pusher.push_mcp_toolkit(resource_id, toolkit, self.timeouts.push).await?;
+        Self::check_result(result)
+    }
+
+    pub async fn remove_mcp_toolkit(&self, resource_id: &str) -> Result<(), HarnessError> {
+        let result = self.pusher.remove_mcp_toolkit(resource_id, self.timeouts.push).await?;
         Self::check_result(result)
     }
 
