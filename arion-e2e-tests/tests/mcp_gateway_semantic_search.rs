@@ -69,8 +69,7 @@ impl TestTool {
     }
 
     fn into_config(self) -> ArionMcpTool {
-        let mut builder = McpToolBuilder::new(self.name, self.description)
-            .namespace(TEST_TOOL_NAMESPACE)
+        let mut builder = McpToolBuilder::new(TEST_TOOL_NAMESPACE, self.name, self.description)
             .input_schema(inline_string_data_source(r#"{"type":"object","properties":{}}"#))
             .rest_backend(McpRestBackendBuilder::new(BACKEND_CLUSTER, self.method, self.path));
 
