@@ -37,6 +37,7 @@ use crate::{body::instrumented_body::InstrumentedBody, listeners::http_connectio
 use super::{Embedding, EmbeddingError, normalise_in_place};
 
 const DEFAULT_EMBEDDINGS_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_EMBEDDINGS_MAX_BATCH: usize = 64;
 
 #[derive(Debug)]
 pub struct EmbeddingsClient {
@@ -45,6 +46,7 @@ pub struct EmbeddingsClient {
     model_id: SmolStr,
     path: SmolStr,
     timeout: Duration,
+    max_batch_size: usize,
     description: String,
     dimensions: AtomicUsize,
     #[cfg(test)]
@@ -53,16 +55,7 @@ pub struct EmbeddingsClient {
 
 impl EmbeddingsClient {
     pub fn from_config(config: RemoteEmbeddings) -> Self {
-        Self::new(config.cluster, config.model_id, config.path, config.timeout, config.dimensions)
-    }
-
-    pub fn new(
-        cluster: SmolStr,
-        model_id: SmolStr,
-        path: SmolStr,
-        timeout: Option<Duration>,
-        dimensions: usize,
-    ) -> Self {
+        let RemoteEmbeddings { cluster, model_id, path, timeout, dimensions, max_batch_size } = config;
         let description = format!("remote://{cluster}{path} ({model_id})");
         let dimensions = AtomicUsize::new(dimensions);
         let cluster_id = cluster.as_str().to_interned_str();
@@ -72,11 +65,17 @@ impl EmbeddingsClient {
             model_id,
             path,
             timeout: timeout.unwrap_or(DEFAULT_EMBEDDINGS_TIMEOUT),
+            max_batch_size: max_batch_size.unwrap_or(DEFAULT_EMBEDDINGS_MAX_BATCH),
             description,
             dimensions,
             #[cfg(test)]
             test_mode: None,
         }
+    }
+
+    /// Maximum inputs per embeddings request; larger catalogs are chunked.
+    pub fn max_batch_size(&self) -> usize {
+        self.max_batch_size
     }
 
     async fn post_for_embeddings(
@@ -208,6 +207,25 @@ impl EmbeddingsClient {
         Arc::new(Self::new_test("test://flaky", TestMode::Flaky { attempts: AtomicUsize::new(0) }))
     }
 
+    /// Records the input count of every batch request; embeds like `OneHot`.
+    #[cfg(test)]
+    pub fn test_counting() -> Arc<Self> {
+        Arc::new(Self::new_test(
+            "test://counting",
+            TestMode::Counting { batch_sizes: std::sync::Mutex::new(Vec::new()) },
+        ))
+    }
+
+    #[cfg(test)]
+    pub fn recorded_batch_sizes(&self) -> Vec<usize> {
+        match &self.test_mode {
+            Some(TestMode::Counting { batch_sizes }) => {
+                batch_sizes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+            },
+            _ => Vec::new(),
+        }
+    }
+
     #[cfg(test)]
     fn new_test(description: &str, test_mode: TestMode) -> Self {
         use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::REMOTE_EMBEDDINGS_PATH;
@@ -218,6 +236,7 @@ impl EmbeddingsClient {
             model_id: "test-model".into(),
             path: SmolStr::new_inline(REMOTE_EMBEDDINGS_PATH),
             timeout: DEFAULT_EMBEDDINGS_TIMEOUT,
+            max_batch_size: DEFAULT_EMBEDDINGS_MAX_BATCH,
             description: description.to_owned(),
             dimensions: AtomicUsize::new(3),
             test_mode: Some(test_mode),
@@ -227,7 +246,7 @@ impl EmbeddingsClient {
     #[cfg(test)]
     fn test_embed_query(mode: &TestMode, text: &str) -> Result<Embedding, EmbeddingError> {
         match mode {
-            TestMode::OneHot => Ok(Arc::new(one_hot_for(text))),
+            TestMode::OneHot | TestMode::Counting { .. } => Ok(Arc::new(one_hot_for(text))),
             TestMode::Failing => Err(EmbeddingError::Service("boom".into())),
             TestMode::Flaky { .. } => Err(EmbeddingError::Service("never used".into())),
         }
@@ -243,6 +262,10 @@ impl EmbeddingsClient {
                     return Err(EmbeddingError::Service("first call fails".into()));
                 }
                 Ok(texts.iter().map(|_| Arc::new(vec![1.0_f32, 0.0, 0.0])).collect())
+            },
+            TestMode::Counting { batch_sizes } => {
+                batch_sizes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(texts.len());
+                Ok(texts.iter().map(|text| Arc::new(one_hot_for(text))).collect())
             },
         }
     }
@@ -272,6 +295,7 @@ enum TestMode {
     OneHot,
     Failing,
     Flaky { attempts: AtomicUsize },
+    Counting { batch_sizes: std::sync::Mutex<Vec<usize>> },
 }
 
 #[cfg(test)]

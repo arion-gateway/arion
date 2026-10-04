@@ -49,6 +49,7 @@ const SERVER_VERSION: &str = "1.0.0";
 const TDS_CONFIG: &str = "main";
 const LISTENER_WAIT: Duration = Duration::from_secs(10);
 const JWT_AUDIENCE: &str = "mcp-gateway";
+const TEST_TOOL_NAMESPACE: &str = "test";
 
 async fn start_harness_with_mcp_listener() -> (XdsEnabledHarness, SocketAddr) {
     let mut harness = XdsEnabledHarness::start().await.expect("Failed to start harness");
@@ -71,10 +72,15 @@ async fn start_harness_with_mcp_listener() -> (XdsEnabledHarness, SocketAddr) {
 
 fn rest_tool_proto(name: &str, description: &str, cluster: &str, path: &str) -> ArionMcpTool {
     McpToolBuilder::new(name, description)
+        .namespace(TEST_TOOL_NAMESPACE)
         .input_schema(inline_string_data_source(r#"{"type":"object","properties":{}}"#))
         .rest_backend(McpRestBackendBuilder::new(cluster, "GET", path))
         .eager()
         .build()
+}
+
+fn tool_resource_id(server_name: &str, config_name: &str, name: &str) -> String {
+    mcp_resource_id(server_name, config_name, &format!("{TEST_TOOL_NAMESPACE}.{name}"))
 }
 
 fn mcp_gateway_using_xds(server_name: &str, tds_config: &str, static_tools: Vec<ArionMcpTool>) -> McpGatewayBuilder {
@@ -102,12 +108,12 @@ async fn test_mcp_gateway_xds_tool_add_appears_in_list_tools() {
     let client = new_initialized_client(listener_addr).await;
 
     let tool = rest_tool_proto("weather", "Weather lookup", "weather_cluster", "/weather");
-    let resource_id = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "weather");
+    let resource_id = tool_resource_id(SERVER_NAME, TDS_CONFIG, "weather");
     harness.push_mcp_tool(&resource_id, &tool).await.expect("Failed to push MCP tool");
 
     let tools = client.list_tools().await.expect("Failed to list tools");
     let names: Vec<&str> = tools.tools.iter().map(|t| t.name.as_str()).collect();
-    assert!(names.contains(&"weather"), "expected 'weather' in {names:?}");
+    assert!(names.contains(&"test.weather"), "expected 'test.weather' in {names:?}");
 
     harness.shutdown();
 }
@@ -119,17 +125,17 @@ async fn test_mcp_gateway_xds_tool_remove_disappears_from_list() {
     let client = new_initialized_client(listener_addr).await;
 
     let tool = rest_tool_proto("weather", "Weather lookup", "weather_cluster", "/weather");
-    let resource_id = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "weather");
+    let resource_id = tool_resource_id(SERVER_NAME, TDS_CONFIG, "weather");
     harness.push_mcp_tool(&resource_id, &tool).await.expect("Failed to push MCP tool");
 
     let before = client.list_tools().await.expect("Failed to list tools");
-    assert!(before.tools.iter().any(|t| t.name == "weather"));
+    assert!(before.tools.iter().any(|t| t.name == "test.weather"));
 
     harness.remove_mcp_tool(&resource_id).await.expect("Failed to remove MCP tool");
 
     let after = client.list_tools().await.expect("Failed to list tools");
     assert!(
-        !after.tools.iter().any(|t| t.name == "weather"),
+        !after.tools.iter().any(|t| t.name == "test.weather"),
         "tool should be gone from list after remove, got {:?}",
         after.tools.iter().map(|t| &t.name).collect::<Vec<_>>()
     );
@@ -143,20 +149,20 @@ async fn test_mcp_gateway_xds_tool_update_replaces_definition() {
     let (harness, listener_addr) = start_harness_with_mcp_listener().await;
     let client = new_initialized_client(listener_addr).await;
 
-    let resource_id = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "weather");
+    let resource_id = tool_resource_id(SERVER_NAME, TDS_CONFIG, "weather");
 
     let v1 = rest_tool_proto("weather", "Original description", "weather_cluster", "/weather");
     harness.push_mcp_tool(&resource_id, &v1).await.expect("Failed to push v1");
 
     let v1_tools = client.list_tools().await.expect("Failed to list tools v1");
-    let v1_tool = v1_tools.tools.iter().find(|t| t.name == "weather").expect("weather tool missing");
+    let v1_tool = v1_tools.tools.iter().find(|t| t.name == "test.weather").expect("weather tool missing");
     assert_eq!(v1_tool.description, "Original description");
 
     let v2 = rest_tool_proto("weather", "Updated description", "weather_cluster", "/weather");
     harness.push_mcp_tool(&resource_id, &v2).await.expect("Failed to push v2");
 
     let v2_tools = client.list_tools().await.expect("Failed to list tools v2");
-    let v2_tool = v2_tools.tools.iter().find(|t| t.name == "weather").expect("weather tool missing after update");
+    let v2_tool = v2_tools.tools.iter().find(|t| t.name == "test.weather").expect("weather tool missing after update");
     assert_eq!(v2_tool.description, "Updated description");
 
     harness.shutdown();
@@ -176,10 +182,10 @@ async fn test_mcp_gateway_xds_tool_call_end_to_end_after_xds_push() {
     harness.push_cluster(&weather_cluster).await.expect("Failed to push weather cluster");
 
     let tool = rest_tool_proto("weather", "Weather lookup", "weather_cluster", "/weather");
-    let resource_id = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "weather");
+    let resource_id = tool_resource_id(SERVER_NAME, TDS_CONFIG, "weather");
     harness.push_mcp_tool(&resource_id, &tool).await.expect("Failed to push MCP tool");
 
-    let result = client.call_tool("weather", json!({})).await.expect("Failed to call tool");
+    let result = client.call_tool("test.weather", json!({})).await.expect("Failed to call tool");
     assert!(!result.is_error.unwrap_or(false), "tool call returned error: {:?}", result.content);
 
     let captured = backend.await_request().await.expect("Backend did not receive request");
@@ -216,18 +222,19 @@ async fn test_mcp_gateway_xds_rbac_on_xds_pushed_tool() {
     harness.arion_mut().wait_for_listener_at(listener_addr, LISTENER_WAIT).await.expect("Listener not ready");
 
     let tool = McpToolBuilder::new("secure_tool", "Admin-only tool")
+        .namespace(TEST_TOOL_NAMESPACE)
         .input_schema(inline_string_data_source(r#"{"type":"object","properties":{}}"#))
         .rest_backend(McpRestBackendBuilder::new("secure_cluster", "GET", "/secure"))
         .rbac(McpToolRbacBuilder::allow().jwt_claim("role", "admin"))
         .build();
-    let resource_id = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "secure_tool");
+    let resource_id = tool_resource_id(SERVER_NAME, TDS_CONFIG, "secure_tool");
     harness.push_mcp_tool(&resource_id, &tool).await.expect("Failed to push RBAC tool");
 
     let admin_token = generate_jwt_token(&TestJwtClaims::new("alice", "admin"), &jwt_keys.private_key)
         .expect("Failed to generate admin token");
     let mut admin_client = McpTestClient::new(listener_addr).with_jwt(admin_token);
     admin_client.initialize().await.expect("Failed to initialize admin session");
-    let admin_result = admin_client.call_tool("secure_tool", json!({})).await.expect("admin call failed");
+    let admin_result = admin_client.call_tool("test.secure_tool", json!({})).await.expect("admin call failed");
     assert!(
         !admin_result.is_error.unwrap_or(false),
         "admin call should succeed, got: {:?}",
@@ -238,7 +245,7 @@ async fn test_mcp_gateway_xds_rbac_on_xds_pushed_tool() {
         .expect("Failed to generate user token");
     let mut user_client = McpTestClient::new(listener_addr).with_jwt(user_token);
     user_client.initialize().await.expect("Failed to initialize user session");
-    let user_result = user_client.call_tool("secure_tool", json!({})).await;
+    let user_result = user_client.call_tool("test.secure_tool", json!({})).await;
     match user_result {
         Ok(result) => assert!(result.is_error.unwrap_or(false), "non-admin call should be denied, got {result:?}"),
         Err(_) => {},
@@ -261,11 +268,11 @@ async fn test_mcp_gateway_xds_malformed_resource_id_is_rejected() {
     let err = harness.push_mcp_tool("srv/cfg/", &tool).await.expect_err("push with empty resource name must be NACKed");
     assert!(matches!(err, HarnessError::Nack { .. }), "expected Nack, got {err:?}");
 
-    let ok_id = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "probe");
+    let ok_id = tool_resource_id(SERVER_NAME, TDS_CONFIG, "probe");
     harness.push_mcp_tool(&ok_id, &tool).await.expect("valid push must still succeed after prior NACKs");
 
     let tools = client.list_tools().await.expect("Failed to list tools");
-    assert!(tools.tools.iter().any(|t| t.name == "probe"));
+    assert!(tools.tools.iter().any(|t| t.name == "test.probe"));
 
     harness.shutdown();
 }
@@ -301,15 +308,15 @@ async fn test_mcp_gateway_xds_two_listeners_scope_isolation() {
     let client_b = new_initialized_client(addr_b).await;
 
     let tool = rest_tool_proto("only_in_a", "tool", "some_cluster", "/only_in_a");
-    let id_a = mcp_resource_id("server_a", "main", "only_in_a");
+    let id_a = tool_resource_id("server_a", "main", "only_in_a");
     harness.push_mcp_tool(&id_a, &tool).await.expect("Failed to push tool to scope A");
 
     let tools_a = client_a.list_tools().await.expect("Failed to list tools A");
-    assert!(tools_a.tools.iter().any(|t| t.name == "only_in_a"), "scope A should have tool");
+    assert!(tools_a.tools.iter().any(|t| t.name == "test.only_in_a"), "scope A should have tool");
 
     let tools_b = client_b.list_tools().await.expect("Failed to list tools B");
     assert!(
-        !tools_b.tools.iter().any(|t| t.name == "only_in_a"),
+        !tools_b.tools.iter().any(|t| t.name == "test.only_in_a"),
         "scope B must not see scope A's tool, got {:?}",
         tools_b.tools.iter().map(|t| &t.name).collect::<Vec<_>>()
     );
@@ -332,23 +339,23 @@ async fn test_mcp_gateway_xds_two_listeners_independent_lifecycles() {
 
     let tool_a = rest_tool_proto("tool_a", "tool", "some_cluster", "/tool_a");
     let tool_b = rest_tool_proto("tool_b", "tool", "some_cluster", "/tool_b");
-    let id_a = mcp_resource_id("server_a", "main", "tool_a");
-    let id_b = mcp_resource_id("server_b", "main", "tool_b");
+    let id_a = tool_resource_id("server_a", "main", "tool_a");
+    let id_b = tool_resource_id("server_b", "main", "tool_b");
 
     harness.push_mcp_tool(&id_a, &tool_a).await.expect("push A failed");
     harness.push_mcp_tool(&id_b, &tool_b).await.expect("push B failed");
 
     let before_a = client_a.list_tools().await.expect("list A failed");
     let before_b = client_b.list_tools().await.expect("list B failed");
-    assert!(before_a.tools.iter().any(|t| t.name == "tool_a"));
-    assert!(before_b.tools.iter().any(|t| t.name == "tool_b"));
+    assert!(before_a.tools.iter().any(|t| t.name == "test.tool_a"));
+    assert!(before_b.tools.iter().any(|t| t.name == "test.tool_b"));
 
     harness.remove_mcp_tool(&id_a).await.expect("remove A failed");
 
     let after_a = client_a.list_tools().await.expect("list A after remove failed");
     let after_b = client_b.list_tools().await.expect("list B after remove failed");
-    assert!(!after_a.tools.iter().any(|t| t.name == "tool_a"), "scope A tool should be removed");
-    assert!(after_b.tools.iter().any(|t| t.name == "tool_b"), "scope B tool must remain");
+    assert!(!after_a.tools.iter().any(|t| t.name == "test.tool_a"), "scope A tool should be removed");
+    assert!(after_b.tools.iter().any(|t| t.name == "test.tool_b"), "scope B tool must remain");
 
     harness.shutdown();
 }
@@ -412,23 +419,23 @@ async fn test_mcp_gateway_xds_static_and_xds_coexist() {
     let client = new_initialized_client(addr).await;
 
     let before = client.list_tools().await.expect("list before");
-    assert!(before.tools.iter().any(|t| t.name == "static_a"), "static_a should be present from bootstrap");
+    assert!(before.tools.iter().any(|t| t.name == "test.static_a"), "static_a should be present from bootstrap");
 
     let tool_b = rest_tool_proto("xds_b", "xDS-pushed tool", "xds_cluster", "/b");
-    let id_b = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "xds_b");
+    let id_b = tool_resource_id(SERVER_NAME, TDS_CONFIG, "xds_b");
     harness.push_mcp_tool(&id_b, &tool_b).await.expect("push xds_b");
 
     let after = client.list_tools().await.expect("list after xds_b");
     let names: Vec<&str> = after.tools.iter().map(|t| t.name.as_str()).collect();
-    assert!(names.contains(&"static_a"), "static_a must still be present, got {names:?}");
-    assert!(names.contains(&"xds_b"), "xds_b must be present, got {names:?}");
+    assert!(names.contains(&"test.static_a"), "static_a must still be present, got {names:?}");
+    assert!(names.contains(&"test.xds_b"), "xds_b must be present, got {names:?}");
 
     let overwrite = rest_tool_proto("static_a", "overwritten via xDS", "other_cluster", "/other");
-    let id_a = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "static_a");
+    let id_a = tool_resource_id(SERVER_NAME, TDS_CONFIG, "static_a");
     harness.push_mcp_tool(&id_a, &overwrite).await.expect("xDS may overwrite Provided tool");
 
     let final_tools = client.list_tools().await.expect("list after overwrite");
-    let static_a = final_tools.tools.iter().find(|t| t.name == "static_a").expect("static_a still present");
+    let static_a = final_tools.tools.iter().find(|t| t.name == "test.static_a").expect("static_a still present");
     assert_eq!(static_a.description, "overwritten via xDS");
 
     harness.shutdown();
@@ -449,8 +456,8 @@ async fn test_mcp_gateway_xds_dynamic_server_add_materializes_tools() {
 
     let tools = client.list_tools().await.expect("list tools");
     let names: Vec<&str> = tools.tools.iter().map(|t| t.name.as_str()).collect();
-    assert!(names.contains(&"dyn_srv__mock_echo"), "expected dyn_srv__mock_echo, got {names:?}");
-    assert!(names.contains(&"dyn_srv__mock_add"), "expected dyn_srv__mock_add, got {names:?}");
+    assert!(names.contains(&"dyn_srv.mock_echo"), "expected dyn_srv.mock_echo, got {names:?}");
+    assert!(names.contains(&"dyn_srv.mock_add"), "expected dyn_srv.mock_add, got {names:?}");
 
     harness.shutdown();
 }
@@ -469,7 +476,7 @@ async fn test_mcp_gateway_xds_dynamic_server_remove_evicts_tools() {
     harness.push_dynamic_mcp_server(&resource_id, &server_proto).await.expect("push dyn server");
 
     assert!(
-        client.list_tools().await.expect("list tools").tools.iter().any(|t| t.name.starts_with("dyn_srv__")),
+        client.list_tools().await.expect("list tools").tools.iter().any(|t| t.name.starts_with("dyn_srv.")),
         "tools should be materialized before removal"
     );
 
@@ -477,7 +484,7 @@ async fn test_mcp_gateway_xds_dynamic_server_remove_evicts_tools() {
 
     let tools = client.list_tools().await.expect("list tools after remove");
     assert!(
-        !tools.tools.iter().any(|t| t.name.starts_with("dyn_srv__")),
+        !tools.tools.iter().any(|t| t.name.starts_with("dyn_srv.")),
         "dynamic tools should be evicted after server removal, got {:?}",
         tools.tools.iter().map(|t| &t.name).collect::<Vec<_>>()
     );
@@ -500,9 +507,9 @@ async fn test_mcp_gateway_xds_dynamic_server_replaces_tools_on_update() {
 
     let names_before: Vec<String> =
         client.list_tools().await.expect("list").tools.iter().map(|t| t.name.clone()).collect();
-    assert!(names_before.iter().any(|n| n == "dyn_srv__mock_echo"));
-    assert!(names_before.iter().any(|n| n == "dyn_srv__mock_add"));
-    assert!(!names_before.iter().any(|n| n == "dyn_srv__mock_new"));
+    assert!(names_before.iter().any(|n| n == "dyn_srv.mock_echo"));
+    assert!(names_before.iter().any(|n| n == "dyn_srv.mock_add"));
+    assert!(!names_before.iter().any(|n| n == "dyn_srv.mock_new"));
 
     mock.clear_tools().await;
     mock.add_tool(McpTool {
@@ -517,9 +524,9 @@ async fn test_mcp_gateway_xds_dynamic_server_replaces_tools_on_update() {
 
     let names_after: Vec<String> =
         client.list_tools().await.expect("list").tools.iter().map(|t| t.name.clone()).collect();
-    assert!(names_after.iter().any(|n| n == "dyn_srv__mock_new"), "new tool should appear, got {names_after:?}");
-    assert!(!names_after.iter().any(|n| n == "dyn_srv__mock_echo"), "old tools should be evicted, got {names_after:?}");
-    assert!(!names_after.iter().any(|n| n == "dyn_srv__mock_add"), "old tools should be evicted, got {names_after:?}");
+    assert!(names_after.iter().any(|n| n == "dyn_srv.mock_new"), "new tool should appear, got {names_after:?}");
+    assert!(!names_after.iter().any(|n| n == "dyn_srv.mock_echo"), "old tools should be evicted, got {names_after:?}");
+    assert!(!names_after.iter().any(|n| n == "dyn_srv.mock_add"), "old tools should be evicted, got {names_after:?}");
 
     harness.shutdown();
 }
@@ -532,17 +539,17 @@ async fn test_mcp_gateway_xds_unknown_scope_is_noop() {
 
     let tool = rest_tool_proto("ghost", "ghost", "ghost_cluster", "/ghost");
 
-    let unknown_id = mcp_resource_id("other_server", "other_cfg", "ghost");
+    let unknown_id = tool_resource_id("other_server", "other_cfg", "ghost");
     harness.push_mcp_tool(&unknown_id, &tool).await.expect("push to unknown scope should be ACKed as a no-op");
 
     let tools = client.list_tools().await.expect("Failed to list tools");
     assert!(tools.tools.is_empty(), "no tools should be registered from unknown-scope push, got {:?}", tools.tools);
 
-    let ok_id = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "ghost");
+    let ok_id = tool_resource_id(SERVER_NAME, TDS_CONFIG, "ghost");
     harness.push_mcp_tool(&ok_id, &tool).await.expect("subsequent valid push must succeed");
 
     let tools = client.list_tools().await.expect("Failed to list tools");
-    assert!(tools.tools.iter().any(|t| t.name == "ghost"));
+    assert!(tools.tools.iter().any(|t| t.name == "test.ghost"));
 
     harness.shutdown();
 }
