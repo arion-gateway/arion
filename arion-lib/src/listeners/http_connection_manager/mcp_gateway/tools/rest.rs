@@ -12,96 +12,166 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::borrow::Cow;
+//! Compiled REST tool backend: request rendering, upstream I/O, and response interpretation.
 
-use super::{CompiledTemplate, RestTranscoder, Transcoder, TranscoderError};
-use crate::{
-    ArionRequestBody,
-    body::{
-        instrumented_body::InstrumentedBody, poly_body::PolyBody, response_flags::BodyKind, timeout_body::TimeoutBody,
+use std::{borrow::Cow, time::Duration};
+
+use arion_configuration::config::{
+    cluster::ClusterSpecifier,
+    network_filters::http_connection_manager::{
+        http_filters::mcp_gateway::{HttpUpstreamPolicy, McpRestQueryParams, UpstreamLimits},
+        RetryPolicy,
     },
 };
+use arion_http_header::X_REQUEST_ID;
 use bytes::Bytes;
-use http::StatusCode;
+use http::{header::HOST, HeaderValue, Request, Response, StatusCode};
 use http_body_util::Full;
-use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
-use rmcp::model::Request;
-use serde_json::Value;
+use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
+use rmcp::model::{CallToolResult, ContentBlock};
+use serde_json::{Map, Value};
+use smol_str::SmolStr;
+use tracing::warn;
+use upon::Engine;
 
-pub const DEFAULT_USER_AGENT: &str = concat!("arion/", env!("CARGO_PKG_VERSION"));
-pub const PATH_TEMPLATE_NAME: &str = "path";
-pub const BODY_TEMPLATE_NAME: &str = "body";
+use super::{
+    entry::ToolEntry,
+    errors::{CallToolError, ToolBuilderError, ToolInvocationErrorCode, ToolInvocationFailure, ToolInvocationOutcome},
+    invoke::{Invocation, ToolCallContext},
+};
+use crate::{
+    body::{
+        instrumented_body::InstrumentedBody,
+        poly_body::{PolyBody, PolyBodyError},
+        response_flags::BodyKind,
+        timeout_body::{TimeoutBody, TimeoutBodyError},
+    },
+    clusters::{
+        clusters_manager::RoutingContextError,
+        http_upstream::{acquire_http_upstream, AcquireHttpUpstreamError, AcquireHttpUpstreamErrorKind},
+        RoutingPriority,
+    },
+    event_error::UpstreamError,
+    listeners::http_connection_manager::{http_modifiers, RequestHandler},
+    ArionRequestBody, ArionResponseBody, UpstreamCallOpts,
+};
 
-static EMPTY_MAP: std::sync::LazyLock<serde_json::Map<String, Value>> = std::sync::LazyLock::new(serde_json::Map::new);
-
-/// Set of characters that are "unreserved" according to RFC 3986.
+pub(super) const DEFAULT_USER_AGENT: &str = concat!("arion/", env!("CARGO_PKG_VERSION"));
+const PATH_TEMPLATE_NAME: &str = "path";
+const BODY_TEMPLATE_NAME: &str = "body";
 const QUERY_SET: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(b'.').remove(b'~');
 
-impl RestTranscoder {
-    /// Compile path/body templates once. Templates without `{{...}}` become
-    /// `Static` (reused verbatim, engine never touched); the rest become
-    /// `Dynamic` and are registered in the engine.
-    pub fn new(
+#[derive(Debug)]
+enum CompiledTemplate<T> {
+    Static(T),
+    Dynamic,
+}
+
+#[derive(Debug)]
+pub(super) struct RestBackend {
+    method: http::Method,
+    query_params: Vec<McpRestQueryParams>,
+    path: CompiledTemplate<SmolStr>,
+    body: Option<CompiledTemplate<Bytes>>,
+    template_engine: Engine<'static>,
+    cluster: SmolStr,
+    authority: Option<HeaderValue>,
+    timeout: Duration,
+    retry_policy: Option<RetryPolicy>,
+    max_response_bytes: usize,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum RequestBuildError {
+    #[error("template render error: {0}")]
+    Template(#[from] upon::Error),
+    #[error("HTTP request error: {0}")]
+    Http(#[from] http::Error),
+}
+
+impl RestBackend {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn compile(
         method: http::Method,
-        query_params: Vec<super::McpRestQueryParams>,
-        path: String,
-        body_template: Option<String>,
-    ) -> Result<Self, upon::Error> {
-        let mut template_engine: upon::Engine<'static> = upon::Engine::new();
+        path: SmolStr,
+        query_params: Vec<McpRestQueryParams>,
+        cluster: SmolStr,
+        policy: HttpUpstreamPolicy,
+        body_template: Option<SmolStr>,
+        limits: &UpstreamLimits,
+    ) -> Result<Self, ToolBuilderError> {
+        let mut template_engine = Engine::new();
         let path = if path.contains("{{") {
-            template_engine.add_template(PATH_TEMPLATE_NAME, path)?;
+            template_engine.add_template(PATH_TEMPLATE_NAME, path.to_string())?;
             CompiledTemplate::Dynamic
         } else if path.starts_with('/') {
             CompiledTemplate::Static(path)
         } else {
-            CompiledTemplate::Static(format!("/{path}"))
+            CompiledTemplate::Static(format!("/{path}").into())
         };
         let body = match body_template {
             None => None,
             Some(template) if template.contains("{{") => {
-                template_engine.add_template(BODY_TEMPLATE_NAME, template)?;
+                template_engine.add_template(BODY_TEMPLATE_NAME, template.to_string())?;
                 Some(CompiledTemplate::Dynamic)
             },
-            Some(template) => Some(CompiledTemplate::Static(Bytes::from(template))),
+            Some(template) => Some(CompiledTemplate::Static(Bytes::copy_from_slice(template.as_bytes()))),
         };
-        Ok(Self { method, query_params, path, body, template_engine })
+        let authority = policy
+            .authority
+            .map(|authority| HeaderValue::from_str(authority.as_str()))
+            .transpose()
+            .map_err(ToolBuilderError::InvalidUpstreamAuthority)?;
+
+        Ok(Self {
+            method,
+            query_params,
+            path,
+            body,
+            template_engine,
+            cluster,
+            authority,
+            timeout: policy.timeout.unwrap_or(limits.timeout),
+            retry_policy: policy.retry_policy,
+            max_response_bytes: limits.max_response_bytes,
+        })
     }
 
-    /// Renders a dynamic template by substituting variables with values from the arguments map.
-    /// Variables are in the format {{`variable_name`}}.
-    ///
-    /// Note: Missing variables in templates should be caught by input schema validation.
-    /// Null values are properly rendered as "null" for JSON compatibility.
-    fn render_template(
+    pub(super) async fn invoke(
         &self,
-        template_name: &str,
-        arguments: &serde_json::Map<String, Value>,
-    ) -> Result<String, TranscoderError> {
-        Ok(self.template_engine.template(template_name).render(arguments).to_string()?)
-    }
-}
+        entry: &ToolEntry,
+        arguments: Value,
+        cx: ToolCallContext<'_>,
+    ) -> Result<CallToolResult, CallToolError> {
+        let empty_arguments = Map::new();
+        let request =
+            self.build_request(cx.headers, arguments.as_object().unwrap_or(&empty_arguments)).map_err(|error| {
+                CallToolError::RequestEncoding { tool: entry.id.qualified_name(), reason: error.to_string() }
+            })?;
 
-impl Transcoder for RestTranscoder {
-    fn encode(
+        let tool_name = entry.tool.name.as_ref();
+        let mut invocation = Invocation::start(cx.request, tool_name, "rest", &self.cluster);
+        let outcome = match self.invoke_upstream(request, cx, &mut invocation, tool_name).await {
+            Ok(response) => self.interpret_response(entry, response, &mut invocation).await,
+            Err(failure) => Err(failure),
+        };
+        Ok(invocation.complete(outcome))
+    }
+
+    fn build_request(
         &self,
         http_headers: &http::HeaderMap,
-        mcp_request: &Request,
-    ) -> Result<http::Request<ArionRequestBody>, TranscoderError> {
-        // Build a path-only URI (no authority/scheme) - Arion will route to the correct
-        // upstream cluster based on configuration. Including authority without scheme
-        // causes "invalid format" error in http::Uri parser.
-        let arguments = mcp_request.params.get("arguments").and_then(|v| v.as_object()).unwrap_or_else(|| &EMPTY_MAP);
-
-        // Path: static version has priority (no engine), dynamic renders via upon.
+        arguments: &Map<String, Value>,
+    ) -> Result<Request<ArionRequestBody>, RequestBuildError> {
         let mut uri = String::with_capacity(
             match &self.path {
-                CompiledTemplate::Static(p) => p.len(),
+                CompiledTemplate::Static(path) => path.len(),
                 CompiledTemplate::Dynamic => 64,
             } + self.query_params.len() * 32
                 + 2,
         );
         match &self.path {
-            CompiledTemplate::Static(static_path) => uri.push_str(static_path),
+            CompiledTemplate::Static(path) => uri.push_str(path),
             CompiledTemplate::Dynamic => {
                 let rendered_path = self.render_template(PATH_TEMPLATE_NAME, arguments)?;
                 if !rendered_path.starts_with('/') {
@@ -110,62 +180,235 @@ impl Transcoder for RestTranscoder {
                 uri.push_str(&rendered_path);
             },
         }
-
-        if !self.query_params.is_empty() {
-            append_query_string(&mut uri, &self.query_params, arguments);
-        }
-
-        // Arion will override the authority with the correct upstream endpoint.
-        // This is required for the match_virtual_host to work properly.
+        append_query_string(&mut uri, &self.query_params, arguments);
 
         let user_agent =
             http_headers.get(http::header::USER_AGENT).and_then(|ua| ua.to_str().ok()).unwrap_or(DEFAULT_USER_AGENT);
-
-        let mut builder =
-            http::Request::builder().method(&self.method).uri(uri).header(http::header::USER_AGENT, user_agent);
-
-        // Build the body based on body template or empty body.
-        // Static version has priority (cheap refcount clone), dynamic renders via upon.
+        let mut builder = Request::builder().method(&self.method).uri(uri).header(http::header::USER_AGENT, user_agent);
         let body = match &self.body {
             None => InstrumentedBody::default(),
-            Some(CompiledTemplate::Static(static_body)) => {
+            Some(CompiledTemplate::Static(body)) => {
                 builder = builder.header(http::header::CONTENT_TYPE, "application/json");
-                let poly_body = PolyBody::from(Full::new(static_body.clone()));
-                let timeout_body = TimeoutBody::new(None, poly_body);
-                InstrumentedBody::new(BodyKind::Request, timeout_body, None, |_, _, _, _| {})
+                InstrumentedBody::new(
+                    BodyKind::Request,
+                    TimeoutBody::new(None, PolyBody::from(Full::new(body.clone()))),
+                    None,
+                    |_, _, _, _| {},
+                )
             },
             Some(CompiledTemplate::Dynamic) => {
-                let rendered = self.render_template(BODY_TEMPLATE_NAME, arguments)?;
                 builder = builder.header(http::header::CONTENT_TYPE, "application/json");
-                let poly_body = PolyBody::from(Full::new(Bytes::from(rendered)));
-                let timeout_body = TimeoutBody::new(None, poly_body);
-                InstrumentedBody::new(BodyKind::Request, timeout_body, None, |_, _, _, _| {})
+                let rendered = self.render_template(BODY_TEMPLATE_NAME, arguments)?;
+                InstrumentedBody::new(
+                    BodyKind::Request,
+                    TimeoutBody::new(None, PolyBody::from(Full::new(Bytes::from(rendered)))),
+                    None,
+                    |_, _, _, _| {},
+                )
             },
         };
-
         Ok(builder.body(body)?)
     }
 
-    fn decode(&self, upstream_body: Bytes, upstream_status: StatusCode) -> Result<Value, TranscoderError> {
-        if !upstream_status.is_success() {
-            let body_str = String::from_utf8_lossy(&upstream_body);
-            return Err(TranscoderError::UpstreamError(format!(
-                "Upstream returned error status {}: {}",
-                upstream_status.as_u16(),
-                body_str
-            )));
+    async fn invoke_upstream(
+        &self,
+        mut request: Request<ArionRequestBody>,
+        cx: ToolCallContext<'_>,
+        invocation: &mut Invocation<'_>,
+        tool_name: &str,
+    ) -> Result<Response<ArionResponseBody>, ToolInvocationFailure> {
+        match &self.authority {
+            Some(authority) => {
+                request.headers_mut().insert(HOST, authority.clone());
+            },
+            None => {
+                request.headers_mut().remove(HOST);
+            },
+        }
+        match cx.request.propagated_request_id() {
+            Some(request_id) => {
+                request.headers_mut().insert(X_REQUEST_ID, request_id.clone());
+            },
+            None => {
+                request.headers_mut().remove(X_REQUEST_ID);
+            },
         }
 
-        // Parse the response body as JSON
-        let response_value: Value = if upstream_body.is_empty() {
+        let cluster = ClusterSpecifier::Cluster(self.cluster.clone());
+        let acquired = acquire_http_upstream(
+            &cluster,
+            &request,
+            &[],
+            cx.request.conn.downstream_peer_address(),
+            RoutingPriority::Default,
+        )
+        .map_err(|error| map_acquisition_failure(tool_name, &error))?;
+
+        if self.authority.is_none() {
+            let authority = acquired.channels().upstream_authority().as_str();
+            let host = HeaderValue::from_str(authority).map_err(|_invalid_authority| ToolInvocationFailure {
+                code: ToolInvocationErrorCode::UpstreamError,
+                message: "The selected upstream endpoint is invalid".to_owned(),
+                status: None,
+                retryable: false,
+            })?;
+            request.headers_mut().insert(HOST, host);
+        }
+        *request.version_mut() = acquired.channels().http_version().into();
+        invocation.span().set_http_request(&request);
+        invocation.span().set_endpoint(acquired.cluster_id(), acquired.channels().upstream_authority().as_str());
+        invocation.span().inject_headers(request.headers_mut());
+
+        if let Some(response) = http_modifiers::apply_preflight_functions(&mut request) {
+            return Ok(response);
+        }
+
+        let response = acquired
+            .channels()
+            .to_response(
+                cx.request,
+                request,
+                UpstreamCallOpts {
+                    route_timeout: Some(self.timeout),
+                    retry_policy: self.retry_policy.as_ref(),
+                    priority: RoutingPriority::Default,
+                },
+            )
+            .await;
+        drop(acquired);
+
+        response.map_err(|error| match error.as_upstream_error() {
+            Some(UpstreamError::RouteTimeout | UpstreamError::PerTryTimeout) => {
+                ToolInvocationFailure::upstream_timeout()
+            },
+            _ => ToolInvocationFailure::upstream_error(),
+        })
+    }
+
+    async fn interpret_response(
+        &self,
+        entry: &ToolEntry,
+        response: Response<ArionResponseBody>,
+        invocation: &mut Invocation<'_>,
+    ) -> ToolInvocationOutcome {
+        let status = response.status();
+        invocation.span().set_http_status(status);
+        let body = collect_response_body(response, self.max_response_bytes).await?;
+        invocation.record_response_bytes(body.len());
+
+        if !status.is_success() {
+            return Err(ToolInvocationFailure {
+                code: if status == StatusCode::GATEWAY_TIMEOUT {
+                    ToolInvocationErrorCode::UpstreamTimeout
+                } else {
+                    ToolInvocationErrorCode::UpstreamError
+                },
+                message: response_text(body, status),
+                status: Some(status),
+                retryable: status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS,
+            });
+        }
+
+        if entry.output_schema_validator.is_none() {
+            let content = ContentBlock::text(response_text(body, status));
+            return Ok(CallToolResult::success(vec![content]));
+        }
+
+        let value = if body.is_empty() {
             Value::Null
         } else {
-            serde_json::from_slice(&upstream_body).map_err(|e| {
-                TranscoderError::JsonParseError(format!("Failed to parse upstream response as JSON: {e}"))
+            serde_json::from_slice(&body).map_err(|error| ToolInvocationFailure {
+                code: ToolInvocationErrorCode::InvalidOutput,
+                message: format!(
+                    "Failed to decode upstream response: Failed to parse upstream response as JSON: {error}"
+                ),
+                status: Some(status),
+                retryable: false,
             })?
         };
+        entry.validate_against_output_schema(&value).map_err(|error| ToolInvocationFailure {
+            code: ToolInvocationErrorCode::InvalidOutput,
+            message: format!("Failed to validate upstream response against output schema: {error}"),
+            status: Some(status),
+            retryable: false,
+        })?;
+        Ok(CallToolResult::structured(value))
+    }
 
-        Ok(response_value)
+    fn render_template(&self, name: &str, arguments: &Map<String, Value>) -> Result<String, upon::Error> {
+        self.template_engine.template(name).render(arguments).to_string()
+    }
+}
+
+async fn collect_response_body(
+    response: Response<ArionResponseBody>,
+    max_bytes: usize,
+) -> Result<Bytes, ToolInvocationFailure> {
+    use http_body_util::{BodyExt, LengthLimitError, Limited};
+
+    let status = response.status();
+    match Limited::new(response.into_body(), max_bytes).collect().await {
+        Ok(body) => Ok(body.to_bytes()),
+        Err(error) if error.downcast_ref::<LengthLimitError>().is_some() => {
+            Err(ToolInvocationFailure::response_too_large(max_bytes))
+        },
+        Err(error) if response_body_timed_out(error.as_ref()) => Err(ToolInvocationFailure::upstream_timeout()),
+        Err(_) => Err(ToolInvocationFailure {
+            code: ToolInvocationErrorCode::UpstreamError,
+            message: "The upstream tool response could not be read".to_owned(),
+            status: Some(status),
+            retryable: true,
+        }),
+    }
+}
+
+fn map_acquisition_failure(tool_name: &str, error: &AcquireHttpUpstreamError) -> ToolInvocationFailure {
+    match error.kind() {
+        AcquireHttpUpstreamErrorKind::CircuitBreakerOverflow => ToolInvocationFailure {
+            code: ToolInvocationErrorCode::Overflow,
+            message: "The upstream tool is temporarily at capacity".to_owned(),
+            status: Some(StatusCode::SERVICE_UNAVAILABLE),
+            retryable: true,
+        },
+        AcquireHttpUpstreamErrorKind::RoutingContext => {
+            if let AcquireHttpUpstreamError::RoutingContext {
+                cluster_id,
+                source: RoutingContextError::MissingAuthority,
+            } = &error
+            {
+                warn!(
+                    target: "mcp_gateway",
+                    "tool '{tool_name}' call failed: cluster '{cluster_id}' requires a request authority \
+                     (ORIGINAL_DST routing) but none was set; configure `upstream_policy.authority` for this tool"
+                );
+            }
+            ToolInvocationFailure::upstream_error()
+        },
+        AcquireHttpUpstreamErrorKind::ClusterNotFound | AcquireHttpUpstreamErrorKind::Connection => {
+            ToolInvocationFailure::upstream_error()
+        },
+    }
+}
+
+fn response_body_timed_out(error: &(dyn std::error::Error + Send + Sync + 'static)) -> bool {
+    matches!(
+        error.downcast_ref::<TimeoutBodyError<PolyBodyError>>(),
+        Some(TimeoutBodyError::TimedOut | TimeoutBodyError::BodyError(PolyBodyError::TimedOut))
+    )
+}
+
+#[inline]
+fn response_text(body: Bytes, status: StatusCode) -> String {
+    if body.is_empty() {
+        return if status == StatusCode::OK {
+            "OK".to_owned()
+        } else {
+            format!("Upstream Error: {}", status.canonical_reason().unwrap_or("Unknown"))
+        };
+    }
+    match String::from_utf8(body.into()) {
+        Ok(text) => text,
+        Err(error) => String::from_utf8_lossy(error.as_bytes()).into_owned(),
     }
 }
 
@@ -195,7 +438,7 @@ fn resolve_variable<'a>(path: &str, arguments: &'a serde_json::Map<String, Value
 /// Appends a query string from query params configuration with variable substitution.
 fn append_query_string(
     uri: &mut String,
-    query_params: &[super::McpRestQueryParams],
+    query_params: &[McpRestQueryParams],
     arguments: &serde_json::Map<String, Value>,
 ) {
     let mut first = true;
@@ -218,37 +461,46 @@ fn append_query_string(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rmcp::model::CallToolRequestParams;
     use serde_json::json;
-    use upon::Engine;
-
-    fn create_test_request(arguments: Option<serde_json::Map<String, Value>>) -> Request {
-        let params = if let Some(args) = arguments {
-            CallToolRequestParams::new("test_tool").with_arguments(args)
-        } else {
-            CallToolRequestParams::new("test_tool")
-        };
-
-        let request_json = serde_json::json!({
-            "method": "tools/call",
-            "params": serde_json::to_value(&params).expect("Failed to serialize params")
-        });
-
-        serde_json::from_value(request_json).expect("Failed to create test request")
-    }
 
     fn create_http_request() -> http::Request<ArionRequestBody> {
         http::Request::builder().method(http::Method::GET).uri("/test").body(ArionRequestBody::default()).unwrap()
     }
 
-    fn create_transcoder(
+    fn create_backend(
         method: http::Method,
         path: String,
-        query_params: Vec<super::super::McpRestQueryParams>,
+        query_params: Vec<McpRestQueryParams>,
         _has_body_template: bool,
         body_template: Option<String>,
-    ) -> RestTranscoder {
-        RestTranscoder::new(method, query_params, path, body_template).unwrap()
+    ) -> RestBackend {
+        RestBackend::compile(
+            method,
+            path.into(),
+            query_params,
+            "test_cluster".into(),
+            HttpUpstreamPolicy::default(),
+            body_template.map(Into::into),
+            &UpstreamLimits::default(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn response_body_timeout_is_reported_as_upstream_timeout() {
+        let (body, _bridge) = crate::body::channel_body::ChannelBody::new(
+            http_body_util::Empty::<Bytes>::new(),
+            None,
+            std::num::NonZeroUsize::new(1).unwrap(),
+        );
+        let response = Response::builder()
+            .status(StatusCode::OK)
+            .body(TimeoutBody::new(Some(Duration::from_millis(1)), PolyBody::from(body)).into())
+            .unwrap();
+
+        let failure = collect_response_body(response, 1024).await.unwrap_err();
+        assert_eq!(failure.code, ToolInvocationErrorCode::UpstreamTimeout);
+        assert_eq!(failure.status, Some(StatusCode::GATEWAY_TIMEOUT));
     }
 
     #[test]
@@ -257,15 +509,14 @@ mod tests {
         let mut args = serde_json::Map::new();
         args.insert("username".to_owned(), json!("john_doe"));
         args.insert("age".to_owned(), json!(30));
-        let mcp_request = create_test_request(Some(args));
         let http_request = create_http_request();
-        let query_params: Vec<super::super::McpRestQueryParams> = vec![];
+        let query_params: Vec<McpRestQueryParams> = vec![];
 
         let body_template = r#"{"name": "{{username}}", "years": {{age}}}"#.to_owned();
-        let transcoder =
-            create_transcoder(http::Method::POST, "/api/users".to_owned(), query_params, true, Some(body_template));
+        let backend =
+            create_backend(http::Method::POST, "/api/users".to_owned(), query_params, true, Some(body_template));
 
-        let result = transcoder.encode(http_request.headers(), &mcp_request);
+        let result = backend.build_request(http_request.headers(), &args);
         assert!(result.is_ok(), "Expected successful encoding but got: {result:?}");
 
         let request = result.unwrap();
@@ -282,15 +533,14 @@ mod tests {
         user.insert("name".to_owned(), json!("john"));
         user.insert("email".to_owned(), json!("john@example.com"));
         args.insert("user".to_owned(), Value::Object(user));
-        let mcp_request = create_test_request(Some(args));
         let http_request = create_http_request();
-        let query_params: Vec<super::super::McpRestQueryParams> = vec![];
+        let query_params: Vec<McpRestQueryParams> = vec![];
 
         let body_template = r#"{"username": "{{user.name}}", "contact": "{{user.email}}}"#.to_owned();
-        let transcoder =
-            create_transcoder(http::Method::POST, "/api/users".to_owned(), query_params, true, Some(body_template));
+        let backend =
+            create_backend(http::Method::POST, "/api/users".to_owned(), query_params, true, Some(body_template));
 
-        let result = transcoder.encode(http_request.headers(), &mcp_request);
+        let result = backend.build_request(http_request.headers(), &args);
         assert!(result.is_ok(), "Expected successful encoding but got: {result:?}");
     }
 
@@ -299,16 +549,15 @@ mod tests {
         // Test that missing variables are replaced with "null" in JSON template
         let mut args = serde_json::Map::new();
         args.insert("username".to_owned(), json!("john_doe"));
-        let mcp_request = create_test_request(Some(args));
         let http_request = create_http_request();
-        let query_params: Vec<super::super::McpRestQueryParams> = vec![];
+        let query_params: Vec<McpRestQueryParams> = vec![];
 
         let body_template = r#"{"name": "{{username}}", "missing": {{nonexistent}}}"#.to_owned();
-        let transcoder =
-            create_transcoder(http::Method::POST, "/api/users".to_owned(), query_params, true, Some(body_template));
+        let backend =
+            create_backend(http::Method::POST, "/api/users".to_owned(), query_params, true, Some(body_template));
 
         // Missing variables now cause template render errors (schema validation should catch these)
-        let result = transcoder.encode(http_request.headers(), &mcp_request);
+        let result = backend.build_request(http_request.headers(), &args);
         assert!(result.is_err(), "Expected error for missing variable but got: {result:?}");
     }
 
@@ -321,18 +570,17 @@ mod tests {
         let mut metadata = serde_json::Map::new();
         metadata.insert("version".to_owned(), json!("1.0"));
         args.insert("meta".to_owned(), Value::Object(metadata));
-        let mcp_request = create_test_request(Some(args));
         let http_request = create_http_request();
-        let query_params: Vec<super::super::McpRestQueryParams> = vec![];
+        let query_params: Vec<McpRestQueryParams> = vec![];
 
         // upon doesn't have a json filter - complex types need to be handled differently
         // This test verifies that the template engine is strict about type formatting
         let body_template = r#"{"tags": {{tags}}, "metadata": {{meta}}}"#.to_owned();
-        let transcoder =
-            create_transcoder(http::Method::POST, "/api/data".to_owned(), query_params, true, Some(body_template));
+        let backend =
+            create_backend(http::Method::POST, "/api/data".to_owned(), query_params, true, Some(body_template));
 
         // Complex types without proper formatting will cause render errors
-        let result = transcoder.encode(http_request.headers(), &mcp_request);
+        let result = backend.build_request(http_request.headers(), &args);
         assert!(result.is_err(), "Expected error for unformatted complex types: {result:?}");
     }
 
@@ -461,14 +709,13 @@ mod tests {
         let mut args = serde_json::Map::new();
         args.insert("user_id".to_owned(), json!("12345"));
         args.insert("action".to_owned(), json!("profile"));
-        let mcp_request = create_test_request(Some(args));
         let http_request = create_http_request();
 
         let path_template = "/api/users/{{user_id}}/{{action}}";
-        let query_params: Vec<super::super::McpRestQueryParams> = vec![];
-        let transcoder = create_transcoder(http::Method::GET, path_template.to_owned(), query_params, false, None);
+        let query_params: Vec<McpRestQueryParams> = vec![];
+        let backend = create_backend(http::Method::GET, path_template.to_owned(), query_params, false, None);
 
-        let result = transcoder.encode(http_request.headers(), &mcp_request);
+        let result = backend.build_request(http_request.headers(), &args);
         assert!(result.is_ok(), "Expected successful encoding but got: {result:?}");
 
         let request = result.unwrap();
@@ -482,14 +729,13 @@ mod tests {
         let mut location = serde_json::Map::new();
         location.insert("city".to_owned(), json!("dublin"));
         args.insert("location".to_owned(), Value::Object(location));
-        let mcp_request = create_test_request(Some(args));
         let http_request = create_http_request();
 
         let path_template = "/api/weather/{{location.city}}";
-        let query_params: Vec<super::super::McpRestQueryParams> = vec![];
-        let transcoder = create_transcoder(http::Method::GET, path_template.to_owned(), query_params, false, None);
+        let query_params: Vec<McpRestQueryParams> = vec![];
+        let backend = create_backend(http::Method::GET, path_template.to_owned(), query_params, false, None);
 
-        let result = transcoder.encode(http_request.headers(), &mcp_request);
+        let result = backend.build_request(http_request.headers(), &args);
         assert!(result.is_ok(), "Expected successful encoding but got: {result:?}");
 
         let request = result.unwrap();
@@ -502,16 +748,15 @@ mod tests {
         let mut args = serde_json::Map::new();
         args.insert("search".to_owned(), json!("rust language"));
         args.insert("limit".to_owned(), json!(10));
-        let mcp_request = create_test_request(Some(args));
         let http_request = create_http_request();
 
         let query_params = vec![
-            super::super::McpRestQueryParams { name: "q".into(), source: "search".into() },
-            super::super::McpRestQueryParams { name: "limit".into(), source: "limit".into() },
+            McpRestQueryParams { name: "q".into(), source: "search".into() },
+            McpRestQueryParams { name: "limit".into(), source: "limit".into() },
         ];
-        let transcoder = create_transcoder(http::Method::GET, "/api/search".to_owned(), query_params, false, None);
+        let backend = create_backend(http::Method::GET, "/api/search".to_owned(), query_params, false, None);
 
-        let result = transcoder.encode(http_request.headers(), &mcp_request);
+        let result = backend.build_request(http_request.headers(), &args);
         assert!(result.is_ok(), "Expected successful encoding but got: {result:?}");
 
         let request = result.unwrap();
@@ -530,17 +775,16 @@ mod tests {
         coords.insert("lon".to_owned(), json!("-0.1278"));
         args.insert("coordinates".to_owned(), Value::Object(coords));
         args.insert("forecast_days".to_owned(), json!(5));
-        let mcp_request = create_test_request(Some(args));
         let http_request = create_http_request();
 
         let query_params = vec![
-            super::super::McpRestQueryParams { name: "latitude".into(), source: "coordinates.lat".into() },
-            super::super::McpRestQueryParams { name: "longitude".into(), source: "coordinates.lon".into() },
-            super::super::McpRestQueryParams { name: "days".into(), source: "forecast_days".into() },
+            McpRestQueryParams { name: "latitude".into(), source: "coordinates.lat".into() },
+            McpRestQueryParams { name: "longitude".into(), source: "coordinates.lon".into() },
+            McpRestQueryParams { name: "days".into(), source: "forecast_days".into() },
         ];
-        let transcoder = create_transcoder(http::Method::GET, "/api/weather".to_owned(), query_params, false, None);
+        let backend = create_backend(http::Method::GET, "/api/weather".to_owned(), query_params, false, None);
 
-        let result = transcoder.encode(http_request.headers(), &mcp_request);
+        let result = backend.build_request(http_request.headers(), &args);
         assert!(result.is_ok(), "Expected successful encoding but got: {result:?}");
 
         let request = result.unwrap();
@@ -556,16 +800,15 @@ mod tests {
         let mut args = serde_json::Map::new();
         args.insert("city".to_owned(), json!("London"));
         // "country" is not set, so it should be skipped
-        let mcp_request = create_test_request(Some(args));
         let http_request = create_http_request();
 
         let query_params = vec![
-            super::super::McpRestQueryParams { name: "city".into(), source: "city".into() },
-            super::super::McpRestQueryParams { name: "country".into(), source: "missing_country".into() },
+            McpRestQueryParams { name: "city".into(), source: "city".into() },
+            McpRestQueryParams { name: "country".into(), source: "missing_country".into() },
         ];
-        let transcoder = create_transcoder(http::Method::GET, "/api/locations".to_owned(), query_params, false, None);
+        let backend = create_backend(http::Method::GET, "/api/locations".to_owned(), query_params, false, None);
 
-        let result = transcoder.encode(http_request.headers(), &mcp_request);
+        let result = backend.build_request(http_request.headers(), &args);
         assert!(result.is_ok(), "Expected successful encoding but got: {result:?}");
 
         let request = result.unwrap();
@@ -581,15 +824,13 @@ mod tests {
         let mut filters = serde_json::Map::new();
         filters.insert("status".to_owned(), json!("active"));
         args.insert("filters".to_owned(), Value::Object(filters));
-        let mcp_request = create_test_request(Some(args));
         let http_request = create_http_request();
 
-        let query_params =
-            vec![super::super::McpRestQueryParams { name: "status".into(), source: "filters.status".into() }];
-        let transcoder =
-            create_transcoder(http::Method::GET, "/api/users/{{user_id}}/orders".to_owned(), query_params, false, None);
+        let query_params = vec![McpRestQueryParams { name: "status".into(), source: "filters.status".into() }];
+        let backend =
+            create_backend(http::Method::GET, "/api/users/{{user_id}}/orders".to_owned(), query_params, false, None);
 
-        let result = transcoder.encode(http_request.headers(), &mcp_request);
+        let result = backend.build_request(http_request.headers(), &args);
         assert!(result.is_ok(), "Expected successful encoding but got: {result:?}");
 
         let request = result.unwrap();
@@ -615,8 +856,8 @@ mod tests {
         args.insert("lon".to_owned(), json!("-6.2603"));
 
         let query_params = vec![
-            super::super::McpRestQueryParams { name: "lat".into(), source: "lat".into() },
-            super::super::McpRestQueryParams { name: "lon".into(), source: "lon".into() },
+            McpRestQueryParams { name: "lat".into(), source: "lat".into() },
+            McpRestQueryParams { name: "lon".into(), source: "lon".into() },
         ];
 
         let mut result = String::new();
@@ -635,10 +876,10 @@ mod tests {
         args.insert("slash".to_owned(), json!("test/value"));
 
         let query_params = vec![
-            super::super::McpRestQueryParams { name: "space".into(), source: "space".into() },
-            super::super::McpRestQueryParams { name: "amp".into(), source: "amp".into() },
-            super::super::McpRestQueryParams { name: "equal".into(), source: "equal".into() },
-            super::super::McpRestQueryParams { name: "slash".into(), source: "slash".into() },
+            McpRestQueryParams { name: "space".into(), source: "space".into() },
+            McpRestQueryParams { name: "amp".into(), source: "amp".into() },
+            McpRestQueryParams { name: "equal".into(), source: "equal".into() },
+            McpRestQueryParams { name: "slash".into(), source: "slash".into() },
         ];
 
         let mut result = String::new();
@@ -656,8 +897,8 @@ mod tests {
         args.insert("emoji".to_owned(), json!("🚀"));
 
         let query_params = vec![
-            super::super::McpRestQueryParams { name: "city name".into(), source: "city".into() },
-            super::super::McpRestQueryParams { name: "emoji param".into(), source: "emoji".into() },
+            McpRestQueryParams { name: "city name".into(), source: "city".into() },
+            McpRestQueryParams { name: "emoji param".into(), source: "emoji".into() },
         ];
 
         let mut result = String::new();
@@ -678,9 +919,9 @@ mod tests {
         args.insert("special".to_owned(), json!("-_.~"));
 
         let query_params = vec![
-            super::super::McpRestQueryParams { name: "alpha".into(), source: "alpha".into() },
-            super::super::McpRestQueryParams { name: "numeric".into(), source: "numeric".into() },
-            super::super::McpRestQueryParams { name: "special".into(), source: "special".into() },
+            McpRestQueryParams { name: "alpha".into(), source: "alpha".into() },
+            McpRestQueryParams { name: "numeric".into(), source: "numeric".into() },
+            McpRestQueryParams { name: "special".into(), source: "special".into() },
         ];
 
         let mut result = String::new();

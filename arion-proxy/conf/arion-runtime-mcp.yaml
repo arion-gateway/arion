@@ -163,19 +163,21 @@ envoy_bootstrap:
                           # also allows per-tool rbac, whereas the rbac block of
                           # a dynamic_mcp_servers entry covers every tool of
                           # that server.
-                          - name: "echo"
+                          - namespace: "pinned"
+                            name: "echo"
                             description: "Echo back the supplied message"
                             mcp_server_backend:
                               transport: StreamableHttp
                               url: http://127.0.0.1:3001/mcp
-                          - name: "add"
+                          - namespace: "pinned"
+                            name: "add"
                             description: "Add two numbers"
                             mcp_server_backend:
                               transport: StreamableHttp
                               url: http://127.0.0.1:3001/mcp
                         # Upstream MCP servers whose tools are discovered at
                         # runtime. Each server materialises one registry entry
-                        # per tool it exposes, namespaced as `{namespace}__{tool}`.
+                        # per tool it exposes, named `{namespace}.{tool}`.
                         dynamic_mcp_servers:
                           - namespace: "everything"
                             description: "everything mcp server"

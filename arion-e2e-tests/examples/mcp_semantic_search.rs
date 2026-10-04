@@ -35,6 +35,7 @@ use serde_json::{Value, json};
 
 const LISTENER_NAME: &str = "mcp_semantic_search_demo";
 const SAMPLE_QUERY: &str = "I need the weather forecast and temperature";
+const DEMO_TOOL_NAMESPACE: &str = "demo";
 
 const WEATHER_CLUSTER: &str = "weather_backend";
 const USERS_CLUSTER: &str = "users_backend";
@@ -171,22 +172,26 @@ fn json_response(body: &'static str) -> PreConfiguredResponse {
 fn demo_tools() -> Vec<ArionMcpTool> {
     vec![
         McpToolBuilder::new("get_weather", "Get weather forecast, temperature, and sky condition information")
+            .namespace(DEMO_TOOL_NAMESPACE)
             .input_schema(inline_string_data_source(r#"{"type":"object","properties":{}}"#))
             .rest_backend(McpRestBackendBuilder::new(WEATHER_CLUSTER, "GET", "/api/weather"))
             .build(),
         McpToolBuilder::new("get_user", "Retrieve user profile, account plan, and status information")
+            .namespace(DEMO_TOOL_NAMESPACE)
             .input_schema(inline_string_data_source(
                 r#"{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}"#,
             ))
             .rest_backend(McpRestBackendBuilder::new(USERS_CLUSTER, "GET", "/api/users/{{id}}"))
             .build(),
         McpToolBuilder::new("process_payment", "Process payment transactions, billing requests, and invoices")
+            .namespace(DEMO_TOOL_NAMESPACE)
             .input_schema(inline_string_data_source(
                 r#"{"type":"object","properties":{"amount":{"type":"number"},"currency":{"type":"string"}},"required":["amount","currency"]}"#,
             ))
             .rest_backend(McpRestBackendBuilder::new(PAYMENTS_CLUSTER, "POST", "/api/payments"))
             .build(),
         McpToolBuilder::new("admin_delete_user", "Delete a user account as an administrator and write an audit record")
+            .namespace(DEMO_TOOL_NAMESPACE)
             .input_schema(inline_string_data_source(
                 r#"{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}"#,
             ))

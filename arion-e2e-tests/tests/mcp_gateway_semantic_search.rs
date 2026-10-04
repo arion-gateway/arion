@@ -51,6 +51,7 @@ const EMBEDDINGS_CLUSTER: &str = "embedding_cluster";
 const TEST_EMBEDDINGS_MODEL: &str = "test-embedding-model";
 const TEST_EMBEDDINGS_PATH: &str = "/v1/embeddings";
 const TEST_EMBEDDINGS_DIMENSIONS: u32 = 3;
+const TEST_TOOL_NAMESPACE: &str = "test";
 
 #[derive(Clone, Copy)]
 struct TestTool {
@@ -69,6 +70,7 @@ impl TestTool {
 
     fn into_config(self) -> ArionMcpTool {
         let mut builder = McpToolBuilder::new(self.name, self.description)
+            .namespace(TEST_TOOL_NAMESPACE)
             .input_schema(inline_string_data_source(r#"{"type":"object","properties":{}}"#))
             .rest_backend(McpRestBackendBuilder::new(BACKEND_CLUSTER, self.method, self.path));
 
@@ -141,14 +143,15 @@ async fn test_mcp_gateway_semantic_search_with_explicit_embeddings() {
     assert!(returned_tools[0].get("description").is_some());
     assert!(returned_tools[0].get("inputSchema").is_some());
     let names = semantic_result_tool_names(&result);
-    assert_eq!(names, vec!["get_weather"]);
+    assert_eq!(names, vec!["test.get_weather"]);
 
     let query_request = embeddings.await_request().await.expect("No query embedding request received");
     assert_embedding_request(&query_request);
     assert_eq!(query_request.input, vec!["I need to check the weather forecast"]);
     assert!(embeddings.try_recv_request().is_none(), "semantic search should only embed the query");
 
-    let call_result = client.call_tool("process_payment", json!({})).await.expect("Failed to call process_payment");
+    let call_result =
+        client.call_tool("test.process_payment", json!({})).await.expect("Failed to call process_payment");
     assert!(!call_result.is_error.unwrap_or(false), "unlisted tools should remain callable by name");
     let request = backend.await_request().await.expect("No request to REST backend");
     assert_eq!(request.path(), "/api/payment");
@@ -198,7 +201,7 @@ async fn test_mcp_gateway_semantic_search_with_remote_embeddings() {
     assert_eq!(query_request.input, vec!["I need to check the weather forecast"]);
 
     let names = semantic_result_tool_names(&result);
-    assert_eq!(names, vec!["get_weather"]);
+    assert_eq!(names, vec!["test.get_weather"]);
 
     arion.shutdown();
     embeddings.shutdown();
@@ -230,7 +233,7 @@ async fn test_rest_search_is_sessionless_includes_both_modes_and_validates_http(
         .send(
             RequestBuilder::post("/mcp/search")
                 .header("content-type", "application/json")
-                .body(r#"{"query":"weather or user","max_results":20}"#),
+                .body(r#"{"query":"weather or user","limit":20}"#),
         )
         .await
         .unwrap();
@@ -241,7 +244,7 @@ async fn test_rest_search_is_sessionless_includes_both_modes_and_validates_http(
     assert_eq!(tools.len(), 2);
     assert!(tools.iter().all(|tool| tool.get("inputSchema").is_some()));
 
-    for body in [r#"{"query":""}"#, r#"{"query":"x","max_results":0}"#, "not-json"] {
+    for body in [r#"{"query":""}"#, r#"{"query":"x","limit":0}"#, "not-json"] {
         let response = client
             .send(RequestBuilder::post("/mcp/search").header("content-type", "application/json").body(body))
             .await

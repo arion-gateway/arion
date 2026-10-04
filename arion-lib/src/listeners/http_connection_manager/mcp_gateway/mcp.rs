@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-    DisclosureMode, McpGateway as McpGatewayConfig, McpGatewayMode,
+    McpGateway as McpGatewayConfig, McpGatewayMode as ConfigGatewayMode, McpServerInfo,
 };
 use arion_http_header::MCP_SESSION_ID;
 use atomic_time::AtomicInstant;
@@ -27,7 +27,7 @@ use smallvec::{smallvec, SmallVec};
 use smol_str::{format_smolstr, SmolStr, ToSmolStr};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc as StdArc,
+    Arc as StdArc, LazyLock,
 };
 use tracing::{debug, info};
 use uuid::Uuid;
@@ -36,7 +36,7 @@ use rmcp::{
     model::{
         self, CallToolRequestMethod, ConstString, Implementation, InitializeRequestParams, InitializeResult,
         InitializeResultMethod, InitializedNotificationMethod, ListToolsRequestMethod, NumberOrString,
-        PingRequestMethod, ServerCapabilities,
+        PingRequestMethod, ServerCapabilities, Tool,
     },
     service::RunningService,
     RoleClient,
@@ -48,7 +48,10 @@ use crate::{
         http_connection_manager::{
             mcp_gateway::{
                 embeddings,
-                tools::{CallToolError, ToolBuilderError, ToolSearchRequest, ToolsRegistry},
+                tools::{
+                    call_tool_result_into_value, CallToolError, ToolBuilderError, ToolCallContext, ToolId,
+                    ToolSearchRequest, ToolSearchScope, ToolsRegistry, TOOL_SEARCH_TOOL_NAME,
+                },
                 transport::{AcceptedMime, RequestExt, SessionId, MIME_APPLICATION_JSON},
             },
             RequestCtx,
@@ -62,6 +65,32 @@ use crate::{
 const MCP_MESSAGE_ENDPOINT: &str = "/mcp";
 const MCP_SEARCH_ENDPOINT: &str = "/mcp/search";
 const SESSION_IDLE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(300);
+const TOOL_SEARCH_DESCRIPTION_NAME_LIMIT: usize = 256;
+
+static TOOL_SEARCH_INPUT_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
+    json!({
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Natural-language description of the capability to find."
+            },
+            "namespace": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Optional namespace to search within."
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Optional requested result count; values above the configured maximum are clamped."
+            }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+    })
+});
 
 #[allow(clippy::struct_field_names)]
 pub struct Session {
@@ -171,9 +200,119 @@ impl Default for McpGatewayListenerContext {
 
 #[derive(Debug)]
 pub struct McpGatewayInner {
-    config: McpGatewayConfig,
+    server_info: McpServerInfo,
     tools: StdArc<ToolsRegistry>,
+    mode: GatewayMode,
     tds_registration: Option<TdsRegistration>,
+}
+
+#[derive(Debug)]
+struct ToolsMode;
+
+#[derive(Debug)]
+enum GatewayMode {
+    Tools(ToolsMode),
+}
+
+impl GatewayMode {
+    fn exposes_rest_search(&self) -> bool {
+        match self {
+            Self::Tools(_) => true,
+        }
+    }
+
+    async fn list_tools(
+        &self,
+        tools: &StdArc<ToolsRegistry>,
+        req_ext: &http::Extensions,
+        req_ctx: &RequestCtx,
+    ) -> Result<model::ListToolsResult, CallToolError> {
+        match self {
+            Self::Tools(mode) => mode.list_tools(tools, req_ext, req_ctx).await,
+        }
+    }
+
+    async fn call_tool(
+        &self,
+        tools: &StdArc<ToolsRegistry>,
+        cx: ToolCallContext<'_>,
+        name: &str,
+        arguments: Value,
+    ) -> Result<model::CallToolResult, CallToolError> {
+        match self {
+            Self::Tools(mode) => mode.call_tool(tools, cx, name, arguments).await,
+        }
+    }
+}
+
+impl ToolsMode {
+    async fn list_tools(
+        &self,
+        registry: &ToolsRegistry,
+        req_ext: &http::Extensions,
+        req_ctx: &RequestCtx,
+    ) -> Result<model::ListToolsResult, CallToolError> {
+        registry.ensure_tools_current(req_ctx).await?;
+        let (mut tools, progressive_names) = registry.list_disclosed_tools(req_ext);
+        if !progressive_names.is_empty() {
+            let Value::Object(input_schema) = &*TOOL_SEARCH_INPUT_SCHEMA else { unreachable!() };
+            tools.push(Tool::new(
+                TOOL_SEARCH_TOOL_NAME,
+                Self::tool_search_description(progressive_names),
+                StdArc::new(input_schema.clone()),
+            ));
+            tools.sort_by(|left, right| left.name.cmp(&right.name));
+        }
+        Ok(model::ListToolsResult {
+            tools,
+            next_cursor: None,
+            meta: None,
+            ttl_ms: None,
+            result_type: None,
+            cache_scope: None,
+        })
+    }
+
+    fn tool_search_description(mut names: Vec<SmolStr>) -> String {
+        let total = names.len();
+        names.truncate(TOOL_SEARCH_DESCRIPTION_NAME_LIMIT);
+        let names_json = serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_owned());
+        let availability = if total > names.len() {
+            format!(
+                "Available tool names (truncated; showing {} of {total}; more are available, try searching by describing what you need): {names_json}",
+                names.len()
+            )
+        } else {
+            format!("Available tool names: {names_json}")
+        };
+        format!(
+            "Search for additional tools using `query`, optionally filter by `namespace`, and limit the returned results with `limit`. Returns full MCP tool definitions. When you find a relevant tool, use the exact returned `name` and follow its `inputSchema`; never invent or normalize names. {availability}"
+        )
+    }
+
+    async fn call_tool(
+        &self,
+        registry: &ToolsRegistry,
+        cx: ToolCallContext<'_>,
+        name: &str,
+        arguments: Value,
+    ) -> Result<model::CallToolResult, CallToolError> {
+        if name == TOOL_SEARCH_TOOL_NAME {
+            registry.ensure_tools_current(cx.request).await?;
+            if !registry.has_progressive_tools(cx.extensions) {
+                return Err(CallToolError::ToolNotFound(TOOL_SEARCH_TOOL_NAME.to_owned()));
+            }
+            let request: ToolSearchRequest = serde_json::from_value(arguments)
+                .map_err(|error| CallToolError::ValidationError(format!("invalid tool_search arguments: {error}")))?;
+            let tools = registry.search_tools(cx.extensions, cx.request, request, ToolSearchScope::Progressive).await?;
+            let text = serde_json::to_string_pretty(&tools).unwrap_or_else(|_| "[]".to_owned());
+            let content = model::ContentBlock::text(text);
+            return Ok(model::CallToolResult::success(vec![content]));
+        }
+
+        let id = ToolId::parse_qualified(name).ok_or_else(|| CallToolError::ToolNotFound(name.to_owned()))?;
+        registry.invoke_tool(cx, &id, arguments).await
+    }
 }
 
 // Drop-tied so listener removal/replacement releases the uniqueness claim and
@@ -226,10 +365,14 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
     type Error = ToolBuilderError;
 
     fn try_from(config: McpGatewayConfig) -> Result<Self, Self::Error> {
-        if matches!(config.mode, McpGatewayMode::Code(_)) {
-            return Err(ToolBuilderError::CodeModeUnavailable);
+        if matches!(&config.mode, ConfigGatewayMode::Code(_)) {
+            return Err(ToolBuilderError::CodeModeFeatureDisabled);
         }
 
+        let mode = match &config.mode {
+            ConfigGatewayMode::Tools(_) => GatewayMode::Tools(ToolsMode),
+            ConfigGatewayMode::Code(_) => unreachable!("codemode configuration was rejected above"),
+        };
         let embeddings_client = match config.search.embeddings.clone() {
             Some(cfg) => {
                 let cfg = cfg.normalized().map_err(ToolBuilderError::InvalidEmbeddingsConfig)?;
@@ -238,12 +381,14 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
             None => None,
         };
 
-        let tools = StdArc::new(ToolsRegistry::with_config(
+        let tools = ToolsRegistry::with_config(
             config.tools.clone(),
             config.dynamic_mcp_servers.clone(),
-            Some(config.search.clone()),
+            config.search.clone(),
+            config.upstream_limits.clone(),
             embeddings_client,
-        )?);
+        )?;
+        let tools = StdArc::new(tools);
 
         let tds_registration = if let Some(tds) = &config.tds {
             let runtime_id = crate::runtime_context::get_runtime_id();
@@ -256,7 +401,12 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
             None
         };
 
-        Ok(Self::with_inner(StdArc::new(McpGatewayInner { config, tools, tds_registration })))
+        Ok(Self::with_inner(StdArc::new(McpGatewayInner {
+            server_info: config.server_info,
+            tools,
+            mode,
+            tds_registration,
+        })))
     }
 }
 
@@ -285,6 +435,9 @@ impl McpGateway {
         ctx.start_cleanup_task();
 
         match (request.method(), request.uri().path()) {
+            (_, MCP_SEARCH_ENDPOINT) if !self.inner.mode.exposes_rest_search() => {
+                FilterDecision::no_route_found("Route not found", request.version())
+            },
             (&Method::POST, MCP_SEARCH_ENDPOINT) => self.handle_search_post_endpoint(request, req_ctx).await,
             (_, MCP_SEARCH_ENDPOINT) => FilterDecision::method_not_allowed("Method not allowed", request.version()),
             (&Method::GET, MCP_MESSAGE_ENDPOINT) => {
@@ -324,10 +477,14 @@ impl McpGateway {
             },
         };
 
+        if let Err(error) = self.inner.tools.ensure_tools_current(req_ctx).await {
+            debug!(target: "mcp_gateway", "/mcp/search registry refresh failed: {error:#}");
+            return FilterDecision::internal_server_error("Tool search failed", request.version());
+        }
         let tools = match self
             .inner
             .tools
-            .search_tools(request.extensions(), req_ctx, search_request, DisclosureMode::Eager)
+            .search_tools(request.extensions(), req_ctx, search_request, ToolSearchScope::All)
             .await
         {
             Ok(tools) => tools,
@@ -580,7 +737,7 @@ impl McpGateway {
             let capabilities = ServerCapabilities::builder().enable_tools().enable_tool_list_changed().build();
 
             let server_info = {
-                let info = &self.inner.config.server_info;
+                let info = &self.inner.server_info;
                 Implementation::new(info.name.to_string(), info.version.to_string())
             };
 
@@ -595,11 +752,7 @@ impl McpGateway {
 
             debug!(target: "mcp_gateway", "handle_rpc_json_request: new session: {new_session:?}");
 
-            let response = model::JsonRpcResponse {
-                jsonrpc: model::JsonRpcVersion2_0,
-                id: self.request_id.clone(),
-                result: serde_json::to_value(result).unwrap_or(serde_json::Value::Null),
-            };
+            let response = self.build_json_rpc_response(serde_json::to_value(result).unwrap_or(Value::Null));
 
             return Ok(MessageResult::JsonRpcResponseNewSession(response, new_session));
         }
@@ -620,17 +773,11 @@ impl McpGateway {
             },
             PingRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: 'ping' received");
-                let response = model::JsonRpcResponse {
-                    jsonrpc: model::JsonRpcVersion2_0,
-                    id: self.request_id.clone(),
-                    result: json!({}),
-                };
-
-                Ok(MessageResult::JsonRpcResponse(response))
+                Ok(MessageResult::JsonRpcResponse(self.build_json_rpc_response(json!({}))))
             },
             ListToolsRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: 'tools/list'");
-                let tools = match self.inner.tools.build_list_tools(req_ext, req_ctx).await {
+                let tools = match self.inner.mode.list_tools(&self.inner.tools, req_ext, req_ctx).await {
                     Ok(tools) => tools,
                     Err(err) => {
                         debug!(target: "mcp_gateway", "handle_rpc_json_request: 'tools/list' failed: {err:#}");
@@ -639,24 +786,26 @@ impl McpGateway {
                         ));
                     },
                 };
-                let response = model::JsonRpcResponse {
-                    jsonrpc: model::JsonRpcVersion2_0,
-                    id: self.request_id.clone(),
-                    result: serde_json::to_value(tools).unwrap_or(serde_json::Value::Null),
-                };
-
-                Ok(MessageResult::JsonRpcResponse(response))
+                Ok(MessageResult::JsonRpcResponse(
+                    self.build_json_rpc_response(serde_json::to_value(tools).unwrap_or(Value::Null)),
+                ))
             },
             CallToolRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: 'tools/call'");
 
-                match self
-                    .inner
-                    .tools
-                    .call(req_ext, req_headers, req_ctx, &rpc, &self.inner.config.upstream_limits, session)
-                    .await
-                {
-                    Ok(result) => Ok(result),
+                let mut params = rpc.request.params;
+                let Some(name) = params.get("name").and_then(Value::as_str).map(str::to_owned) else {
+                    return Ok(MessageResult::JsonRpcError(
+                        self.build_json_rpc_error(CallToolError::NameNotString.into()),
+                    ));
+                };
+                let arguments = params.remove("arguments").unwrap_or(Value::Null);
+
+                let cx = ToolCallContext { extensions: req_ext, headers: req_headers, request: req_ctx, session };
+                let result = self.inner.mode.call_tool(&self.inner.tools, cx, &name, arguments).await;
+
+                match result.and_then(|result| call_tool_result_into_value(result).map_err(CallToolError::from)) {
+                    Ok(result) => Ok(MessageResult::JsonRpcResponse(self.build_json_rpc_response(result))),
                     Err(err) => {
                         debug!(target: "mcp_gateway", "handle_rpc_json_request: 'tools/call' failed: {err:#}");
                         Ok(MessageResult::JsonRpcError(self.build_json_rpc_error(err.into())))
@@ -754,7 +903,114 @@ impl McpGateway {
     }
 
     #[inline]
+    fn build_json_rpc_response(&self, result: Value) -> model::JsonRpcResponse<Value> {
+        model::JsonRpcResponse { jsonrpc: model::JsonRpcVersion2_0, id: self.request_id.clone(), result }
+    }
+
+    #[inline]
     pub fn get_current_session_id(&self) -> Option<&SessionId> {
         self.current_session.as_deref().map(|s| &s.session_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::tools::{TestCallContext, CODEMODE_EXECUTE_TOOL_NAME};
+    use super::*;
+    use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
+        DisclosureMode, EmbeddingVector, HttpUpstreamPolicy, McpCodeMode, McpGatewayMode, McpTool, McpToolSearch,
+        McpToolsMode, UpstreamBackend, UpstreamLimits,
+    };
+
+    fn config_with_codemode() -> McpGatewayConfig {
+        McpGatewayConfig {
+            server_info: McpServerInfo { name: "test".into(), version: "1".into() },
+            tools: Vec::new(),
+            dynamic_mcp_servers: Vec::new(),
+            tds: None,
+            search: McpToolSearch::default(),
+            mode: McpGatewayMode::Code(McpCodeMode::default()),
+            upstream_limits: UpstreamLimits::default(),
+        }
+    }
+
+    #[test]
+    fn enabled_codemode_requires_the_build_feature() {
+        assert!(matches!(McpGateway::try_from(config_with_codemode()), Err(ToolBuilderError::CodeModeFeatureDisabled)));
+    }
+
+    fn config_with_tools_mode() -> McpGatewayConfig {
+        McpGatewayConfig {
+            server_info: McpServerInfo { name: "test".into(), version: "1".into() },
+            tools: Vec::new(),
+            dynamic_mcp_servers: Vec::new(),
+            tds: None,
+            search: McpToolSearch::default(),
+            mode: McpGatewayMode::Tools(McpToolsMode),
+            upstream_limits: UpstreamLimits::default(),
+        }
+    }
+
+    fn actual_tool(name: &str, disclosure_mode: DisclosureMode) -> McpTool {
+        McpTool {
+            namespace: "test".into(),
+            name: name.into(),
+            description: format!("{name} description").into(),
+            input_schema: serde_json::Map::new(),
+            output_schema: serde_json::Map::new(),
+            backend: UpstreamBackend::Rest {
+                method: Method::GET,
+                path: format!("/{name}").into(),
+                query_params: Vec::new(),
+                cluster: "test".into(),
+                upstream_policy: Box::new(HttpUpstreamPolicy::default()),
+                body_template: None,
+            },
+            rbac: None,
+            embedding: EmbeddingVector::default(),
+            disclosure_mode,
+        }
+    }
+
+    #[tokio::test]
+    async fn tools_mode_listing_is_controlled_only_by_disclosure() {
+        let cases = [
+            (vec![actual_tool("progressive_a", DisclosureMode::Progressive)], vec![TOOL_SEARCH_TOOL_NAME]),
+            (
+                vec![
+                    actual_tool("progressive", DisclosureMode::Progressive),
+                    actual_tool("eager", DisclosureMode::Eager),
+                ],
+                vec!["test.eager", TOOL_SEARCH_TOOL_NAME],
+            ),
+            (
+                vec![actual_tool("eager_a", DisclosureMode::Eager), actual_tool("eager_b", DisclosureMode::Eager)],
+                vec!["test.eager_a", "test.eager_b"],
+            ),
+        ];
+
+        for (tools, expected) in cases {
+            let mut config = config_with_tools_mode();
+            config.tools = tools;
+            let gateway = McpGateway::try_from(config).expect("tools-mode gateway");
+            let GatewayMode::Tools(mode) = &gateway.inner.mode;
+            let listed = mode
+                .list_tools(&gateway.inner.tools, &http::Extensions::new(), &RequestCtx::default())
+                .await
+                .expect("tools/list");
+            let names = listed.tools.iter().map(|tool| tool.name.as_ref()).collect::<Vec<_>>();
+            assert_eq!(names, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn tools_mode_does_not_accept_execute() {
+        let gateway = McpGateway::try_from(config_with_tools_mode()).expect("tools-mode gateway");
+        let GatewayMode::Tools(mode) = &gateway.inner.mode;
+        let cx = TestCallContext::default();
+        let result = mode
+            .call_tool(&gateway.inner.tools, cx.context(), CODEMODE_EXECUTE_TOOL_NAME, json!({ "code": "42" }))
+            .await;
+        assert!(matches!(result, Err(CallToolError::ToolNotFound(name)) if name == CODEMODE_EXECUTE_TOOL_NAME));
     }
 }

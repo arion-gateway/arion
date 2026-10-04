@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::{
+    future::Future,
     pin::Pin,
     sync::{Arc as StdArc, Once, OnceLock, Weak},
 };
@@ -39,15 +40,26 @@ use super::tools::ToolsRegistry;
 pub const MCP_TOOL_TYPE_URL: &str = "type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.Tool";
 pub const MCP_DYNAMIC_SERVER_TYPE_URL: &str =
     "type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.DynamicMcpServer";
+pub const MCP_TOOLKIT_TYPE_URL: &str = "type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.Toolkit";
 
-const SUPPORTED_TYPE_URLS: &[&str] = &[MCP_TOOL_TYPE_URL, MCP_DYNAMIC_SERVER_TYPE_URL];
+const SUPPORTED_TYPE_URLS: &[&str] = &[MCP_TOOL_TYPE_URL, MCP_DYNAMIC_SERVER_TYPE_URL, MCP_TOOLKIT_TYPE_URL];
 
-// papaya values are immutable `&V`: the per-scope subscriber list needs interior
-// mutability, hence the `Mutex<Vec<...>>`. The outer `StdArc` lets `drain` clone
-// the list holder before removing the key, so concurrent `register` calls racing
-// with a drain are not lost.
+#[derive(Clone, Debug)]
+struct RegistrySubscription {
+    tools: Weak<ToolsRegistry>,
+}
+
+impl From<&StdArc<ToolsRegistry>> for RegistrySubscription {
+    fn from(tools: &StdArc<ToolsRegistry>) -> Self {
+        Self { tools: StdArc::downgrade(tools) }
+    }
+}
+
+// Papaya values are immutable references. Keep each subscription list behind
+// a mutex and clone its holder before removing a scope so racing registrations
+// cannot be lost while pending subscriptions are drained.
 type SubscriptionsByScope =
-    PapayaMap<SmolStr, StdArc<parking_lot::Mutex<Vec<Weak<ToolsRegistry>>>>, ahash::RandomState>;
+    PapayaMap<SmolStr, StdArc<parking_lot::Mutex<Vec<RegistrySubscription>>>, ahash::RandomState>;
 
 static MCP_XDS_HANDLER: OnceLock<StdArc<McpXdsHandler>> = OnceLock::new();
 static PENDING_MCP_XDS_SUBSCRIPTIONS: OnceLock<SubscriptionsByScope> = OnceLock::new();
@@ -63,11 +75,12 @@ pub fn get_mcp_xds_handler() -> Option<&'static StdArc<McpXdsHandler>> {
 }
 
 pub fn subscribe_for_updates(scope: SmolStr, registry: &StdArc<ToolsRegistry>) {
+    let subscription = RegistrySubscription { tools: StdArc::downgrade(registry) };
     if let Some(handler) = get_mcp_xds_handler() {
-        handler.register(scope, registry);
+        handler.register(scope, subscription);
     } else {
         debug!(target: "mcp_gateway", "xDS handler not initialized; queuing MCP filter TDS subscription for '{scope}'");
-        queue_subscription(pending_subscriptions(), scope, registry);
+        queue_subscription(pending_subscriptions(), scope, subscription);
         if let Some(handler) = get_mcp_xds_handler() {
             drain_pending_subscriptions(pending_subscriptions(), handler);
         }
@@ -85,22 +98,26 @@ fn pending_subscriptions() -> &'static SubscriptionsByScope {
     PENDING_MCP_XDS_SUBSCRIPTIONS.get_or_init(|| PapayaMap::with_hasher(ahash::RandomState::new()))
 }
 
-fn queue_subscription(subscriptions: &SubscriptionsByScope, scope: SmolStr, registry: &StdArc<ToolsRegistry>) {
+fn queue_subscription(
+    subscriptions: &SubscriptionsByScope,
+    scope: SmolStr,
+    subscription: impl Into<RegistrySubscription>,
+) {
     let pinned = subscriptions.pin();
-    let subscribers = pinned.get_or_insert_with(scope, || StdArc::new(parking_lot::Mutex::new(Vec::new())));
-    subscribers.lock().push(StdArc::downgrade(registry));
+    let entries = pinned.get_or_insert_with(scope, || StdArc::new(parking_lot::Mutex::new(Vec::new())));
+    entries.lock().push(subscription.into());
 }
 
 fn remove_subscription(subscriptions: &SubscriptionsByScope, scope: &str, registry: &StdArc<ToolsRegistry>) {
     let empty = {
         let pinned = subscriptions.pin();
-        let Some(subscribers) = pinned.get(scope) else { return };
-        let mut guard = subscribers.lock();
-        guard.retain(|weak| match weak.upgrade() {
+        let Some(entries) = pinned.get(scope) else { return };
+        let mut entries = entries.lock();
+        entries.retain(|subscription| match subscription.tools.upgrade() {
             Some(arc) => !StdArc::ptr_eq(&arc, registry),
             None => false,
         });
-        guard.is_empty()
+        entries.is_empty()
     };
     if empty {
         subscriptions.pin().remove(scope);
@@ -113,13 +130,13 @@ fn drain_pending_subscriptions(subscriptions: &SubscriptionsByScope, handler: &M
         pinned.iter().map(|(scope, _)| scope.clone()).collect()
     };
     for scope in scopes {
-        let subscribers: Option<StdArc<parking_lot::Mutex<Vec<Weak<ToolsRegistry>>>>> =
-            subscriptions.pin().get(scope.as_str()).map(StdArc::clone);
-        let Some(subscribers) = subscribers else { continue };
+        let entries = subscriptions.pin().get(scope.as_str()).map(StdArc::clone);
+        let Some(entries) = entries else { continue };
         subscriptions.pin().remove(scope.as_str());
-        let registries = std::mem::take(&mut *subscribers.lock());
-        for registry in registries.into_iter().filter_map(|weak| weak.upgrade()) {
-            handler.register(scope.clone(), &registry);
+        for subscription in std::mem::take(&mut *entries.lock()) {
+            if subscription.tools.strong_count() > 0 {
+                handler.register(scope.clone(), subscription);
+            }
         }
     }
 }
@@ -141,11 +158,11 @@ impl McpXdsHandler {
         }
     }
 
-    pub fn register(&self, scope: SmolStr, registry: &StdArc<ToolsRegistry>) {
+    fn register(&self, scope: SmolStr, subscription: impl Into<RegistrySubscription>) {
         debug!(target: "mcp_gateway", "Registering TDS registry for scope: {scope}");
         let pinned = self.subscriptions_by_scope.pin();
-        let subscribers = pinned.get_or_insert_with(scope, || StdArc::new(parking_lot::Mutex::new(Vec::new())));
-        subscribers.lock().push(StdArc::downgrade(registry));
+        let entries = pinned.get_or_insert_with(scope, || StdArc::new(parking_lot::Mutex::new(Vec::new())));
+        entries.lock().push(subscription.into());
         self.try_subscribe();
     }
 
@@ -190,19 +207,24 @@ impl McpXdsHandler {
         Ok((&resource_id[..scope_len], name))
     }
 
-    fn live_registries(&self, scope: &str) -> Vec<StdArc<ToolsRegistry>> {
-        let pinned = self.subscriptions_by_scope.pin();
-        let Some(subscribers) = pinned.get(scope) else { return Vec::new() };
-        let mut guard = subscribers.lock();
+    fn live_subscriptions(&self, scope: &str) -> Vec<RegistrySubscription> {
+        let entries = self.subscriptions_by_scope.pin().get(scope).map(StdArc::clone);
+        let Some(entries) = entries else { return Vec::new() };
+        let mut entries = entries.lock();
         let mut out = Vec::new();
-        guard.retain(|weak| match weak.upgrade() {
-            Some(arc) => {
-                out.push(arc);
-                true
-            },
-            None => false,
+        entries.retain(|subscription| {
+            if subscription.tools.strong_count() == 0 {
+                return false;
+            }
+            out.push(subscription.clone());
+            true
         });
         out
+    }
+
+    #[cfg(test)]
+    fn live_registries(&self, scope: &str) -> Vec<StdArc<ToolsRegistry>> {
+        self.live_subscriptions(scope).into_iter().filter_map(|subscription| subscription.tools.upgrade()).collect()
     }
 }
 
@@ -233,8 +255,8 @@ impl XdsExtensionHandler for McpXdsHandler {
         let payload = payload.to_vec();
         Box::pin(async move {
             let (scope, name) = Self::split_resource_id(&resource_id)?;
-            let registries = self.live_registries(scope);
-            if registries.is_empty() {
+            let subscriptions = self.live_subscriptions(scope);
+            if subscriptions.is_empty() {
                 debug!(target: "mcp_gateway", "xDS: no live registry for scope '{scope}', dropping update for '{name}'");
                 return Ok(());
             }
@@ -243,31 +265,47 @@ impl XdsExtensionHandler for McpXdsHandler {
                 MCP_TOOL_TYPE_URL => {
                     let proto = decode_proto::<ArionTool>(&payload, "MCP Tool")?;
                     let mut tool: McpTool = convert(proto, "MCP Tool")?;
-                    if tool.name.as_str() != name {
+                    let resource_id = super::tools::ToolId::parse_qualified(name).ok_or_else(|| {
+                        XdsExtensionError::HandlerError(format!(
+                            "Invalid MCP Tool resource name '{name}': expected namespace.name"
+                        ))
+                    })?;
+                    if tool.namespace != resource_id.namespace || tool.name != resource_id.name {
                         warn!(
                             target: "mcp_gateway",
-                            "xDS: Tool payload name '{}' does not match resource name '{name}' in scope '{scope}'; using resource name",
-                            tool.name
+                            "xDS: Tool payload identity '{}.{}' does not match resource name '{name}' in scope '{scope}'; using resource name",
+                            tool.namespace,
+                            tool.name,
                         );
-                        tool.name = name.into();
+                        tool.namespace = resource_id.namespace;
+                        tool.name = resource_id.name;
                     }
-                    for registry in &registries {
-                        registry.add_tool(tool.clone()).map_err(|e| {
+                    for registry in subscriptions.iter().filter_map(|subscription| subscription.tools.upgrade()) {
+                        registry.add_tool(tool.clone()).await.map_err(|e| {
                             XdsExtensionError::HandlerError(format!("Failed to add tool '{name}': {e}"))
                         })?;
                     }
-                    debug!(target: "mcp_gateway", "xDS: added/updated tool '{name}' in scope '{scope}' ({} registries)", registries.len());
+                    debug!(target: "mcp_gateway", "xDS: added/updated tool '{name}' in scope '{scope}' ({} registries)", subscriptions.len());
                 },
                 MCP_DYNAMIC_SERVER_TYPE_URL => {
                     let proto = decode_proto::<ArionDynamicMcpServer>(&payload, "MCP DynamicMcpServer")?;
-                    let server: DynamicMcpServer = convert(proto, "MCP DynamicMcpServer")?;
-                    for registry in &registries {
+                    let mut server: DynamicMcpServer = convert(proto, "MCP DynamicMcpServer")?;
+                    if server.namespace.as_str() != name {
+                        warn!(
+                            target: "mcp_gateway",
+                            "xDS: DynamicMcpServer payload namespace '{}' does not match resource name '{name}' in scope '{scope}'; using resource name",
+                            server.namespace,
+                        );
+                        server.namespace = name.into();
+                    }
+                    for registry in subscriptions.iter().filter_map(|subscription| subscription.tools.upgrade()) {
                         registry.add_dynamic_server(server.clone()).await.map_err(|e| {
                             XdsExtensionError::HandlerError(format!("Failed to add dynamic server '{name}': {e}"))
                         })?;
                     }
-                    debug!(target: "mcp_gateway", "xDS: added/updated dynamic server '{name}' in scope '{scope}' ({} registries)", registries.len());
+                    debug!(target: "mcp_gateway", "xDS: added/updated dynamic namespace '{}' in scope '{scope}' ({} registries)", server.namespace, subscriptions.len());
                 },
+                MCP_TOOLKIT_TYPE_URL => {},
                 other => {
                     return Err(XdsExtensionError::HandlerError(format!("unsupported type_url: {other}")));
                 },
@@ -285,17 +323,22 @@ impl XdsExtensionHandler for McpXdsHandler {
         let resource_id = resource_id.to_owned();
         Box::pin(async move {
             let (scope, name) = Self::split_resource_id(&resource_id)?;
-            let registries = self.live_registries(scope);
-            if registries.is_empty() {
+            let subscriptions = self.live_subscriptions(scope);
+            if subscriptions.is_empty() {
                 debug!(target: "mcp_gateway", "xDS: no live registry for scope '{scope}', dropping remove for '{name}'");
                 return Ok(());
             }
 
             match type_url.as_str() {
                 MCP_TOOL_TYPE_URL => {
+                    let id = super::tools::ToolId::parse_qualified(name).ok_or_else(|| {
+                        XdsExtensionError::HandlerError(format!(
+                            "Invalid MCP Tool resource name '{name}': expected namespace.name"
+                        ))
+                    })?;
                     let mut any = false;
-                    for registry in &registries {
-                        any |= registry.remove_tool(name);
+                    for registry in subscriptions.iter().filter_map(|subscription| subscription.tools.upgrade()) {
+                        any |= registry.remove_tool(&id);
                     }
                     if any {
                         debug!(target: "mcp_gateway", "xDS: removed tool '{name}' from scope '{scope}'");
@@ -305,7 +348,7 @@ impl XdsExtensionHandler for McpXdsHandler {
                 },
                 MCP_DYNAMIC_SERVER_TYPE_URL => {
                     let mut any = false;
-                    for registry in &registries {
+                    for registry in subscriptions.iter().filter_map(|subscription| subscription.tools.upgrade()) {
                         any |= registry.remove_dynamic_server(name);
                     }
                     if any {
@@ -314,6 +357,7 @@ impl XdsExtensionHandler for McpXdsHandler {
                         warn!(target: "mcp_gateway", "xDS: dynamic server '{name}' not found in scope '{scope}' for removal");
                     }
                 },
+                MCP_TOOLKIT_TYPE_URL => {},
                 other => {
                     return Err(XdsExtensionError::HandlerError(format!("unsupported type_url: {other}")));
                 },
@@ -328,14 +372,26 @@ mod tests {
     #![allow(clippy::indexing_slicing, clippy::assertions_on_result_states)]
     use super::*;
     use crate::listeners::http_connection_manager::mcp_gateway::embeddings;
+    use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
+        McpToolSearch, UpstreamLimits,
+    };
     use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        RestBackend as ArionRestBackend, tool::UpstreamBackend as ArionUpstreamBackend,
+        tool::UpstreamBackend as ArionUpstreamBackend, RestBackend as ArionRestBackend,
     };
     use arion_xds::xds::client::SubscriptionEvent;
     use tokio::sync::mpsc;
 
     fn empty_registry() -> StdArc<ToolsRegistry> {
-        StdArc::new(ToolsRegistry::with_config(Vec::new(), Vec::new(), None, None).unwrap())
+        StdArc::new(
+            ToolsRegistry::with_config(
+                Vec::new(),
+                Vec::new(),
+                McpToolSearch::default(),
+                UpstreamLimits::default(),
+                None,
+            )
+            .unwrap(),
+        )
     }
 
     fn test_sub_mgr() -> (StdArc<DeltaDiscoverySubscriptionManager>, mpsc::Receiver<SubscriptionEvent>) {
@@ -349,7 +405,7 @@ mod tests {
     }
 
     fn scope_len(handler: &McpXdsHandler, scope: &str) -> usize {
-        handler.subscriptions_by_scope.pin().get(scope).map_or(0, |subscribers| subscribers.lock().len())
+        handler.subscriptions_by_scope.pin().get(scope).map_or(0, |entries| entries.lock().len())
     }
 
     fn subscription_map() -> SubscriptionsByScope {
@@ -358,7 +414,7 @@ mod tests {
 
     fn rest_tool_proto(name: &str) -> ArionTool {
         ArionTool {
-            namespace: String::new(),
+            namespace: "test".into(),
             name: name.into(),
             description: "A test tool".into(),
             input_schema: None,
@@ -411,9 +467,10 @@ mod tests {
         queue_subscription(&subscriptions, scope.clone(), &r2);
         remove_subscription(&subscriptions, &scope, &r1);
 
-        let queued = subscriptions.pin().get(&scope).map(|m| m.lock().clone()).expect("scope should remain queued");
+        let queued =
+            subscriptions.pin().get(&scope).map(|entries| entries.lock().clone()).expect("scope should remain queued");
         assert_eq!(queued.len(), 1);
-        assert!(queued[0].upgrade().is_some_and(|arc| StdArc::ptr_eq(&arc, &r2)));
+        assert!(queued[0].tools.upgrade().is_some_and(|arc| StdArc::ptr_eq(&arc, &r2)));
     }
 
     #[tokio::test]
@@ -487,11 +544,36 @@ mod tests {
         let proto = rest_tool_proto("payload_name");
         let payload = proto.encode_to_vec();
 
-        handler.handle_update(MCP_TOOL_TYPE_URL, "srv/cfg/resource_name", &payload).await.unwrap();
+        handler.handle_update(MCP_TOOL_TYPE_URL, "srv/cfg/test.resource_name", &payload).await.unwrap();
 
-        assert!(registry.get_tool_by_name("resource_name").is_some());
-        assert!(registry.get_tool_by_name("payload_name").is_none());
-        assert!(registry.remove_tool("resource_name"));
+        assert!(registry.get_tool_by_name("test.resource_name").is_some());
+        assert!(registry.get_tool_by_name("test.payload_name").is_none());
+        assert!(registry.remove_tool(&super::super::tools::ToolId::new("test", "resource_name").unwrap()));
+    }
+
+    #[tokio::test]
+    async fn tool_update_replaces_static_entry_and_remove_has_no_fallback() {
+        let handler = stub_handler();
+        let static_tool: McpTool = rest_tool_proto("same").try_into().unwrap();
+        let registry = StdArc::new(
+            ToolsRegistry::with_config(
+                vec![static_tool],
+                Vec::new(),
+                McpToolSearch::default(),
+                UpstreamLimits::default(),
+                None,
+            )
+            .unwrap(),
+        );
+        handler.register("srv/cfg".into(), &registry);
+
+        let mut update = rest_tool_proto("same");
+        update.description = "live description".to_owned();
+        handler.handle_update(MCP_TOOL_TYPE_URL, "srv/cfg/test.same", &update.encode_to_vec()).await.unwrap();
+        assert_eq!(registry.get_tool_by_name("test.same").unwrap().description, "live description");
+
+        handler.handle_remove(MCP_TOOL_TYPE_URL, "srv/cfg/test.same").await.unwrap();
+        assert!(registry.get_tool_by_name("test.same").is_none());
     }
 
     #[tokio::test]
@@ -504,28 +586,33 @@ mod tests {
         let mut proto = rest_tool_proto("eager_tool");
         proto.disclosure_mode = 1;
 
-        handler.handle_update(MCP_TOOL_TYPE_URL, "srv/cfg/eager_tool", &proto.encode_to_vec()).await.unwrap();
+        handler.handle_update(MCP_TOOL_TYPE_URL, "srv/cfg/test.eager_tool", &proto.encode_to_vec()).await.unwrap();
 
-        let entry = registry.get_tool_by_name("eager_tool").unwrap();
+        let entry = registry.get_tool_by_name("test.eager_tool").unwrap();
         assert_eq!(entry.disclosure_mode, DisclosureMode::Eager);
     }
 
     #[tokio::test]
     async fn tool_update_embedding_failure_still_inserts_tool() {
-        use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpToolSearch;
-
         let handler = stub_handler();
         let client = embeddings::EmbeddingsClient::test_failing();
         let registry = StdArc::new(
-            ToolsRegistry::with_config(Vec::new(), Vec::new(), Some(McpToolSearch::default()), Some(client)).unwrap(),
+            ToolsRegistry::with_config(
+                Vec::new(),
+                Vec::new(),
+                McpToolSearch::default(),
+                UpstreamLimits::default(),
+                Some(client),
+            )
+            .unwrap(),
         );
         handler.register("srv/cfg".into(), &registry);
 
         let payload = rest_tool_proto("needs_embedding").encode_to_vec();
-        let res = handler.handle_update(MCP_TOOL_TYPE_URL, "srv/cfg/needs_embedding", &payload).await;
+        let res = handler.handle_update(MCP_TOOL_TYPE_URL, "srv/cfg/test.needs_embedding", &payload).await;
 
         assert!(res.is_ok(), "embeddings failure should not NACK the update: {res:?}");
-        let entry = registry.get_tool_by_name("needs_embedding").expect("tool should be inserted");
+        let entry = registry.get_tool_by_name("test.needs_embedding").expect("tool should be inserted");
         assert!(entry.embedding.load_full().is_none(), "tool should remain unembedded after embeddings failure");
     }
 
