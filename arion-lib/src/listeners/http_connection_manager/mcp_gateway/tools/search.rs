@@ -45,7 +45,7 @@ impl ToolsRegistry {
         }
         let _refresh = self.embedding_refresh.lock().await;
 
-        let mut ids: Vec<super::ToolId> = Vec::new();
+        let mut entries: Vec<StdArc<ToolEntry>> = Vec::new();
         let mut texts: Vec<String> = Vec::new();
         {
             let pinned = self.tools.pin();
@@ -53,8 +53,8 @@ impl ToolsRegistry {
                 if tool.embedding.load_full().is_some() {
                     continue;
                 }
-                ids.push(id.clone());
                 texts.push(embeddings::build_search_text(&id.qualified_name(), &tool.description, &tool.input_schema));
+                entries.push(StdArc::clone(tool));
             }
         }
 
@@ -65,22 +65,20 @@ impl ToolsRegistry {
         // One bounded request per chunk, storing each chunk's vectors as soon
         // as it succeeds so a later failure never discards completed work.
         let batch_size = client.max_batch_size();
-        for (chunk_ids, chunk_texts) in ids.chunks(batch_size).zip(texts.chunks(batch_size)) {
+        for (chunk_entries, chunk_texts) in entries.chunks(batch_size).zip(texts.chunks(batch_size)) {
             match client.embed_batch(chunk_texts, req_ctx).await {
                 Ok(vectors) => {
-                    for (id, vec) in chunk_ids.iter().zip(vectors) {
-                        if let Some(entry) = self.tools.pin().get(id) {
-                            entry.embedding.store(Some(vec));
-                        }
+                    for (entry, vec) in chunk_entries.iter().zip(vectors) {
+                        entry.embedding.store(Some(vec));
                     }
-                    debug!(target: "mcp_gateway", "Embedded {} tools via {}", chunk_ids.len(), client.description());
+                    debug!(target: "mcp_gateway", "Embedded {} tools via {}", chunk_entries.len(), client.description());
                 },
                 Err(err) => {
                     self.embeddings_pending.store(true, Ordering::Release);
                     warn!(
                         target: "mcp_gateway",
                         "embed_batch failed for {} tools: {err}; tool_search will use BM25 fallback",
-                        chunk_ids.len()
+                        chunk_entries.len()
                     );
                     #[cfg(feature = "metrics")]
                     let shard_id = get_shard_id!();

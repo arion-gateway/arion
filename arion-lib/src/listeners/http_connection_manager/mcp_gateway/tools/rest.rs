@@ -32,7 +32,7 @@ use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{Map, Value};
 use smol_str::SmolStr;
 use tracing::warn;
-use upon::Engine;
+use upon::{Engine, Value as TemplateValue};
 
 use super::{
     entry::ToolEntry,
@@ -59,7 +59,7 @@ use crate::{
 pub(super) const DEFAULT_USER_AGENT: &str = concat!("arion/", env!("CARGO_PKG_VERSION"));
 const PATH_TEMPLATE_NAME: &str = "path";
 const BODY_TEMPLATE_NAME: &str = "body";
-const QUERY_SET: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(b'.').remove(b'~');
+const URI_COMPONENT_SET: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(b'.').remove(b'~');
 
 #[derive(Debug)]
 enum CompiledTemplate<T> {
@@ -73,6 +73,7 @@ pub(super) struct RestBackend {
     query_params: Vec<McpRestQueryParams>,
     path: CompiledTemplate<SmolStr>,
     body: Option<CompiledTemplate<Bytes>>,
+    body_json: Option<SmolStr>,
     template_engine: Engine<'static>,
     cluster: SmolStr,
     authority: Option<HeaderValue>,
@@ -98,9 +99,14 @@ impl RestBackend {
         cluster: SmolStr,
         policy: HttpUpstreamPolicy,
         body_template: Option<SmolStr>,
+        body_json: Option<SmolStr>,
         limits: &UpstreamLimits,
     ) -> Result<Self, ToolBuilderError> {
+        if body_template.is_some() && body_json.is_some() {
+            return Err(ToolBuilderError::ConflictingBodyModes);
+        }
         let mut template_engine = Engine::new();
+        template_engine.add_filter("encode_path_segment", encode_path_segment);
         let path = if path.contains("{{") {
             template_engine.add_template(PATH_TEMPLATE_NAME, path.to_string())?;
             CompiledTemplate::Dynamic
@@ -128,6 +134,7 @@ impl RestBackend {
             query_params,
             path,
             body,
+            body_json,
             template_engine,
             cluster,
             authority,
@@ -185,27 +192,26 @@ impl RestBackend {
         let user_agent =
             http_headers.get(http::header::USER_AGENT).and_then(|ua| ua.to_str().ok()).unwrap_or(DEFAULT_USER_AGENT);
         let mut builder = Request::builder().method(&self.method).uri(uri).header(http::header::USER_AGENT, user_agent);
-        let body = match &self.body {
+        let rendered = match &self.body {
+            Some(CompiledTemplate::Static(body)) => Some(body.clone()),
+            Some(CompiledTemplate::Dynamic) => Some(Bytes::from(self.render_template(BODY_TEMPLATE_NAME, arguments)?)),
+            None => self
+                .body_json
+                .as_ref()
+                .and_then(|source| resolve_variable(source, arguments))
+                .map(|value| Bytes::from(value.to_string())),
+        };
+        let body = match rendered {
+            Some(rendered) => {
+                builder = builder.header(http::header::CONTENT_TYPE, "application/json");
+                InstrumentedBody::new(
+                    BodyKind::Request,
+                    TimeoutBody::new(None, PolyBody::from(Full::new(rendered))),
+                    None,
+                    |_, _, _, _| {},
+                )
+            },
             None => InstrumentedBody::default(),
-            Some(CompiledTemplate::Static(body)) => {
-                builder = builder.header(http::header::CONTENT_TYPE, "application/json");
-                InstrumentedBody::new(
-                    BodyKind::Request,
-                    TimeoutBody::new(None, PolyBody::from(Full::new(body.clone()))),
-                    None,
-                    |_, _, _, _| {},
-                )
-            },
-            Some(CompiledTemplate::Dynamic) => {
-                builder = builder.header(http::header::CONTENT_TYPE, "application/json");
-                let rendered = self.render_template(BODY_TEMPLATE_NAME, arguments)?;
-                InstrumentedBody::new(
-                    BodyKind::Request,
-                    TimeoutBody::new(None, PolyBody::from(Full::new(Bytes::from(rendered)))),
-                    None,
-                    |_, _, _, _| {},
-                )
-            },
         };
         Ok(builder.body(body)?)
     }
@@ -412,9 +418,20 @@ fn response_text(body: Bytes, status: StatusCode) -> String {
     }
 }
 
+fn encode_path_segment(value: &TemplateValue) -> Result<String, &'static str> {
+    let value = match value {
+        TemplateValue::None => Cow::Borrowed("null"),
+        TemplateValue::Bool(value) => Cow::Owned(value.to_string()),
+        TemplateValue::Integer(value) => Cow::Owned(value.to_string()),
+        TemplateValue::Float(value) => Cow::Owned(value.to_string()),
+        TemplateValue::String(value) => Cow::Borrowed(value.as_str()),
+        TemplateValue::List(_) | TemplateValue::Map(_) => return Err("path parameters must be scalar values"),
+    };
+    Ok(utf8_percent_encode(&value, URI_COMPONENT_SET).to_string())
+}
+
 /// Resolves a variable path like "user.name" against the arguments map.
-/// Returns the JSON value as a string, or None if not found.
-fn resolve_variable<'a>(path: &str, arguments: &'a serde_json::Map<String, Value>) -> Option<Cow<'a, str>> {
+fn resolve_variable<'a>(path: &str, arguments: &'a serde_json::Map<String, Value>) -> Option<&'a Value> {
     let mut parts = path.split('.');
 
     // Get the first part directly from the map to avoid cloning the entire arguments object
@@ -425,14 +442,18 @@ fn resolve_variable<'a>(path: &str, arguments: &'a serde_json::Map<String, Value
         current = current.and_then(|v| v.as_object()).and_then(|map| map.get(part));
     }
 
+    current
+}
+
+fn format_variable(value: &Value) -> Cow<'_, str> {
     // Format output: avoid quotes for strings, use default to_string() for other JSON types
-    current.map(|value| match value {
+    match value {
         Value::String(s) => Cow::Borrowed(s.as_str()),
         Value::Null => Cow::Borrowed("null"),
         Value::Bool(true) => Cow::Borrowed("true"),
         Value::Bool(false) => Cow::Borrowed("false"),
         v => Cow::Owned(v.to_string()),
-    })
+    }
 }
 
 /// Appends a query string from query params configuration with variable substitution.
@@ -444,16 +465,21 @@ fn append_query_string(
     let mut first = true;
 
     for param in query_params {
-        if let Some(value) = resolve_variable(&param.source, arguments) {
+        let values = match resolve_variable(&param.source, arguments) {
+            Some(Value::Array(values)) => values.as_slice(),
+            Some(value) => std::slice::from_ref(value),
+            None => continue,
+        };
+        for value in values {
             if first {
                 uri.push('?');
                 first = false;
             } else {
                 uri.push('&');
             }
-            uri.extend(utf8_percent_encode(&param.name, QUERY_SET));
+            uri.extend(utf8_percent_encode(&param.name, URI_COMPONENT_SET));
             uri.push('=');
-            uri.extend(utf8_percent_encode(&value, QUERY_SET));
+            uri.extend(utf8_percent_encode(&format_variable(value), URI_COMPONENT_SET));
         }
     }
 }
@@ -481,6 +507,7 @@ mod tests {
             "test_cluster".into(),
             HttpUpstreamPolicy::default(),
             body_template.map(Into::into),
+            None,
             &UpstreamLimits::default(),
         )
         .unwrap()
@@ -523,6 +550,51 @@ mod tests {
         assert_eq!(request.method(), http::Method::POST);
         assert_eq!(request.uri(), "/api/users");
         assert_eq!(request.headers().get(http::header::CONTENT_TYPE).unwrap(), "application/json");
+    }
+
+    #[tokio::test]
+    async fn body_json_serializes_the_resolved_argument() {
+        let mut args = serde_json::Map::new();
+        args.insert("body".to_owned(), json!({"user": {"name": "john"}, "tags": ["a", "b"], "count": 3}));
+        let http_request = create_http_request();
+
+        let mut backend = create_backend(http::Method::POST, "/api/users".to_owned(), vec![], false, None);
+        backend.body_json = Some("body".into());
+
+        let request = backend.build_request(http_request.headers(), &args).unwrap();
+        assert_eq!(request.headers().get(http::header::CONTENT_TYPE).unwrap(), "application/json");
+        let bytes = http_body_util::BodyExt::collect(request.into_body()).await.unwrap().to_bytes();
+        let sent: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(sent, args["body"]);
+    }
+
+    #[tokio::test]
+    async fn body_json_sends_no_body_when_the_argument_is_absent() {
+        let args = serde_json::Map::new();
+        let http_request = create_http_request();
+
+        let mut backend = create_backend(http::Method::POST, "/api/users".to_owned(), vec![], false, None);
+        backend.body_json = Some("body".into());
+
+        let request = backend.build_request(http_request.headers(), &args).unwrap();
+        assert!(request.headers().get(http::header::CONTENT_TYPE).is_none());
+        let bytes = http_body_util::BodyExt::collect(request.into_body()).await.unwrap().to_bytes();
+        assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn compile_rejects_body_template_and_body_json_together() {
+        let result = RestBackend::compile(
+            http::Method::POST,
+            "/api/users".into(),
+            vec![],
+            "test_cluster".into(),
+            HttpUpstreamPolicy::default(),
+            Some(r#"{"a": "{{a}}"}"#.into()),
+            Some("body".into()),
+            &UpstreamLimits::default(),
+        );
+        assert!(matches!(result.unwrap_err(), ToolBuilderError::ConflictingBodyModes));
     }
 
     #[test]
@@ -627,6 +699,17 @@ mod tests {
     }
 
     #[test]
+    fn test_render_template_sanitized_openapi_ident() {
+        // OpenAPI expansion sanitizes parameter names to [A-Za-z0-9_] with a
+        // '_' prefix for leading digits; upon must accept such identifiers.
+        let mut args = serde_json::Map::new();
+        args.insert("_5pet_id".to_owned(), json!("42"));
+
+        let template = "/api/{{_5pet_id}}".to_owned();
+        assert_eq!(render_template_with_engine(template, &args), "/api/42");
+    }
+
+    #[test]
     fn test_render_template_nested() {
         // Test nested variable access in JSON template
         let mut args = serde_json::Map::new();
@@ -674,7 +757,7 @@ mod tests {
         let mut args = serde_json::Map::new();
         args.insert("name".to_owned(), json!("Test"));
 
-        assert_eq!(resolve_variable("name", &args), Some(Cow::from("Test")));
+        assert_eq!(resolve_variable("name", &args), Some(&json!("Test")));
     }
 
     #[test]
@@ -684,7 +767,7 @@ mod tests {
         nested.insert("value".to_owned(), json!(42));
         args.insert("config".to_owned(), Value::Object(nested));
 
-        assert_eq!(resolve_variable("config.value", &args), Some(Cow::from("42")));
+        assert_eq!(resolve_variable("config.value", &args), Some(&json!(42)));
     }
 
     #[test]
@@ -720,6 +803,29 @@ mod tests {
 
         let request = result.unwrap();
         assert_eq!(request.uri(), "/api/users/12345/profile");
+    }
+
+    #[test]
+    fn path_segment_filter_prevents_values_from_changing_the_uri_structure() {
+        let mut args = serde_json::Map::new();
+        let http_request = create_http_request();
+        let backend = create_backend(
+            http::Method::GET,
+            "/api/pets/{{pet_id | encode_path_segment}}".to_owned(),
+            vec![],
+            false,
+            None,
+        );
+
+        for (value, expected) in [
+            (json!("../admin/records?all=true#top"), "..%2Fadmin%2Frecords%3Fall%3Dtrue%23top"),
+            (json!("München 🚀"), "M%C3%BCnchen%20%F0%9F%9A%80"),
+            (json!(42), "42"),
+        ] {
+            args.insert("pet_id".to_owned(), value);
+            let request = backend.build_request(http_request.headers(), &args).unwrap();
+            assert_eq!(request.uri().path(), format!("/api/pets/{expected}"));
+        }
     }
 
     #[test]
@@ -888,6 +994,17 @@ mod tests {
         assert!(result.contains("amp=foo%26bar"), "& should be encoded: {result}");
         assert!(result.contains("equal=a%3Db"), "= should be encoded: {result}");
         assert!(result.contains("slash=test%2Fvalue"), "/ should be encoded: {result}");
+    }
+
+    #[test]
+    fn query_arrays_use_repeated_parameters() {
+        let args = serde_json::Map::from_iter([("tag".to_owned(), json!(["rust", "mcp gateway"]))]);
+        let query_params = vec![McpRestQueryParams { name: "tag".into(), source: "tag".into() }];
+
+        let mut result = String::new();
+        append_query_string(&mut result, &query_params, &args);
+
+        assert_eq!(result, "?tag=rust&tag=mcp%20gateway");
     }
 
     #[test]

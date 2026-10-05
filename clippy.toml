@@ -11,3 +11,5 @@ allow-unwrap-in-tests = true
 allow-panic-in-tests = true
 allow-indexing-slicing-in-tests = true
 check-private-items = false
+# Proper nouns that rustdoc prose may use without backticks (".." keeps clippy's defaults).
+doc-valid-idents = ["OpenAPI", ".."]

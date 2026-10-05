@@ -18,7 +18,8 @@ use std::time::Duration;
 
 use arion_configuration::config::network_filters::{
     http_connection_manager::http_filters::mcp_gateway::{
-        EmbeddingVector, McpBackendTransportUpstream, McpRbacPermission, McpToolRbac, UpstreamBackend,
+        EmbeddingVector, McpBackendTransportUpstream, McpOpenApiToolSource, McpRbacPermission, McpToolRbac,
+        UpstreamBackend,
     },
     network_rbac::Action,
 };
@@ -44,6 +45,7 @@ fn create_test_tool_with_schemas(
             cluster: "test_cluster".into(),
             upstream_policy: Box::default(),
             body_template: None,
+            body_json: None,
         },
         rbac: None,
         embedding: EmbeddingVector::default(),
@@ -973,4 +975,88 @@ async fn embedding_refresh_retries_after_failure_without_latching() {
         registry.get_tool_by_name("test.flaky_tool").unwrap().embedding.load_full().is_some(),
         "embedding should be stored after a successful retry"
     );
+}
+
+fn empty_registry() -> ToolsRegistry {
+    ToolsRegistry::with_config(Vec::new(), Vec::new(), McpToolSearch::default(), UpstreamLimits::default(), None)
+        .unwrap()
+}
+
+fn open_api_source(namespace: &str, tool_names: &[&str]) -> McpOpenApiToolSource {
+    let tools = tool_names
+        .iter()
+        .map(|name| {
+            let mut tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
+            tool.namespace = namespace.into();
+            tool.name = (*name).into();
+            tool
+        })
+        .collect();
+    McpOpenApiToolSource { namespace: namespace.into(), tools }
+}
+
+#[test]
+fn open_api_source_add_replace_and_remove() {
+    let registry = empty_registry().with_open_api_sources(vec![open_api_source("api", &["a", "b"])]).unwrap();
+    assert!(registry.get_tool_by_name("api.a").is_some());
+    assert!(registry.get_tool_by_name("api.b").is_some());
+
+    // A TDS Tool removal must not delete OpenAPI-derived tools.
+    assert!(!registry.remove_tool(&ToolId::new("api", "a").unwrap()));
+    assert!(registry.get_tool_by_name("api.a").is_some());
+
+    registry.add_open_api_source(open_api_source("api", &["b", "c"])).unwrap();
+    assert!(registry.get_tool_by_name("api.a").is_none(), "replacing a source evicts its previous tools");
+    assert!(registry.get_tool_by_name("api.b").is_some());
+    assert!(registry.get_tool_by_name("api.c").is_some());
+
+    assert!(registry.remove_open_api_source("api"));
+    assert!(registry.get_tool_by_name("api.b").is_none());
+    assert!(!registry.remove_open_api_source("api"));
+}
+
+#[test]
+fn duplicate_open_api_sources_are_rejected() {
+    let result =
+        empty_registry().with_open_api_sources(vec![open_api_source("api", &["a"]), open_api_source("api", &["b"])]);
+    assert!(matches!(result, Err(ToolBuilderError::DuplicateOpenApiSource(_))));
+}
+
+#[tokio::test]
+async fn namespace_exclusivity_covers_all_three_source_kinds() {
+    let registry = registry_with_tool(create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new()));
+    registry.add_open_api_source(open_api_source("api", &["x"])).unwrap();
+
+    // OpenAPI source into a direct-tool namespace.
+    assert!(matches!(
+        registry.add_open_api_source(open_api_source("test", &["x"])),
+        Err(ToolBuilderError::SharedNamespace(_))
+    ));
+
+    // Direct tool into an OpenAPI namespace.
+    let mut tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
+    tool.namespace = "api".into();
+    assert!(matches!(registry.add_tool(tool).await, Err(ToolBuilderError::SharedNamespace(_))));
+
+    // Dynamic server into an OpenAPI namespace (rejected before any fetch).
+    let server = dynamic_server_entry("api").conf;
+    assert!(matches!(registry.add_dynamic_server(server).await, Err(ToolBuilderError::SharedNamespace(_))));
+
+    // OpenAPI source into a dynamic-server namespace.
+    registry.dynamic_mcp_servers.pin().insert("dyn".into(), StdArc::new(dynamic_server_entry("dyn")));
+    assert!(matches!(
+        registry.add_open_api_source(open_api_source("dyn", &["x"])),
+        Err(ToolBuilderError::SharedNamespace(_))
+    ));
+}
+
+#[test]
+fn failed_open_api_source_replacement_keeps_previous_tools() {
+    let registry = empty_registry();
+    registry.add_open_api_source(open_api_source("api", &["a"])).unwrap();
+
+    let mut bad = open_api_source("api", &["b"]);
+    bad.tools[0].name = "bad/name".into();
+    assert!(registry.add_open_api_source(bad).is_err());
+    assert!(registry.get_tool_by_name("api.a").is_some(), "a failed replacement must leave the registry unchanged");
 }

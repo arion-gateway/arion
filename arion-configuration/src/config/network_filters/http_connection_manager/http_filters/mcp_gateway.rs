@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod openapi;
+
 use std::time::Duration;
 
 use crate::config::core::DataSource;
@@ -32,6 +34,8 @@ pub struct McpGateway {
     #[serde(default)]
     pub upstream_limits: UpstreamLimits,
     pub dynamic_mcp_servers: Vec<DynamicMcpServer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_api_tool_sources: Vec<McpOpenApiToolSource>,
     pub tds: Option<TdsSpecifier>,
 }
 
@@ -260,6 +264,8 @@ pub enum UpstreamBackend {
         #[serde(default)]
         upstream_policy: Box<HttpUpstreamPolicy>,
         body_template: Option<SmolStr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        body_json: Option<SmolStr>,
     },
     McpServer {
         transport: McpBackendTransportUpstream,
@@ -334,6 +340,12 @@ pub struct DynamicMcpServer {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct McpOpenApiToolSource {
+    pub namespace: SmolStr,
+    pub tools: Vec<McpTool>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct TdsSpecifier {
     pub config_name: SmolStr,
 }
@@ -349,15 +361,16 @@ mod envoy_conversions {
     use super::*;
     use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::{
         mcp_gateway::Mode as ArionMcpGatewayMode, mcp_server_backend::TransportUpstream as ArionTransportUpstream,
-        permission, tool::UpstreamBackend as ArionUpstreamBackend, tool_rbac::Action as ArionAction,
-        CodeMode as ArionCodeMode, DisclosureMode as ArionDisclosureMode, DynamicMcpServer as ArionDynamicMcpServer,
-        HttpUpstreamPolicy as ArionHttpUpstreamPolicy, JwtClaimMatcher, JwtHeaderMatcher,
-        McpGateway as ArionMcpGateway, Permission as ArionPermission, QueryParam as ArionMcpQueryParams,
-        RemoteEmbeddings as ArionRemoteEmbeddings, ServerInfo as ArionMcpServerInfo, TdsSpecifier as ArionTdsSpecifier,
-        Tool as ArionTool, ToolRbac as ArionToolRbac, ToolSearch as ArionToolSearch, Toolkit as ArionToolkit,
+        permission, rest_backend::Body as ArionRestBody, tool::UpstreamBackend as ArionUpstreamBackend,
+        tool_rbac::Action as ArionAction, CodeMode as ArionCodeMode, DisclosureMode as ArionDisclosureMode,
+        DynamicMcpServer as ArionDynamicMcpServer, HttpUpstreamPolicy as ArionHttpUpstreamPolicy, JwtClaimMatcher,
+        JwtHeaderMatcher, McpGateway as ArionMcpGateway, OpenApiToolSource as ArionOpenApiToolSource,
+        Permission as ArionPermission, QueryParam as ArionMcpQueryParams, RemoteEmbeddings as ArionRemoteEmbeddings,
+        ServerInfo as ArionMcpServerInfo, TdsSpecifier as ArionTdsSpecifier, Tool as ArionTool,
+        ToolRbac as ArionToolRbac, ToolSearch as ArionToolSearch, Toolkit as ArionToolkit,
         ToolkitToolRef as ArionToolkitToolRef,
     };
-    use tracing::warn;
+    use tracing::{info, warn};
 
     impl From<ArionTransportUpstream> for McpBackendTransportUpstream {
         fn from(trans: ArionTransportUpstream) -> Self {
@@ -385,6 +398,7 @@ mod envoy_conversions {
                 mode,
                 search,
                 tools,
+                open_api_tool_sources,
                 upstream_timeout,
                 max_upstream_response_bytes,
                 dynamic_mcp_servers,
@@ -397,6 +411,8 @@ mod envoy_conversions {
             };
             let search = search.map(TryInto::try_into).transpose()?.unwrap_or_default();
             let tools = tools.into_iter().map(TryInto::try_into).collect::<Result<Vec<_>, _>>()?;
+            let open_api_tool_sources =
+                open_api_tool_sources.into_iter().map(TryInto::try_into).collect::<Result<Vec<_>, _>>()?;
             let upstream_limits = parse_upstream_limits(upstream_timeout, max_upstream_response_bytes)?;
             let dynamic_mcp_servers =
                 dynamic_mcp_servers.into_iter().map(TryInto::try_into).collect::<Result<Vec<_>, _>>()?;
@@ -409,6 +425,7 @@ mod envoy_conversions {
                 tools,
                 upstream_limits,
                 dynamic_mcp_servers,
+                open_api_tool_sources,
                 tds,
             })
         }
@@ -587,6 +604,47 @@ mod envoy_conversions {
         }
     }
 
+    impl TryFrom<ArionOpenApiToolSource> for McpOpenApiToolSource {
+        type Error = GenericError;
+        fn try_from(arion: ArionOpenApiToolSource) -> Result<Self, Self::Error> {
+            let tool_disclosure_mode = arion.tool_disclosure_mode().into();
+            let ArionOpenApiToolSource {
+                spec,
+                namespace,
+                cluster,
+                upstream_policy,
+                rbac,
+                path_prefix,
+                skip_unsupported_operations,
+                include_operations,
+                exclude_operations,
+                ..
+            } = arion;
+            let namespace = required!(namespace).with_node("OpenApiToolSource.namespace")?;
+            let cluster = required!(cluster).with_node("OpenApiToolSource.cluster")?;
+            let spec = TryInto::<DataSource>::try_into(required!(spec)?)?.to_bytes_blocking()?;
+            let params = openapi::OpenApiExpansionParams {
+                namespace: namespace.into(),
+                cluster: cluster.into(),
+                upstream_policy: upstream_policy.map(TryInto::try_into).transpose()?.unwrap_or_default(),
+                rbac: rbac.map(TryInto::try_into).transpose()?,
+                tool_disclosure_mode,
+                path_prefix,
+                skip_unsupported_operations,
+                include_operations,
+                exclude_operations,
+            };
+            let tools = openapi::openapi_to_tools(&spec, &params).with_node("OpenApiToolSource")?;
+            info!(
+                "Derived {} MCP tools from OpenAPI source '{}': [{}]",
+                tools.len(),
+                params.namespace,
+                tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>().join(", ")
+            );
+            Ok(McpOpenApiToolSource { namespace: params.namespace, tools })
+        }
+    }
+
     impl TryFrom<ArionTdsSpecifier> for TdsSpecifier {
         type Error = GenericError;
         fn try_from(arion: ArionTdsSpecifier) -> Result<Self, Self::Error> {
@@ -694,9 +752,18 @@ mod envoy_conversions {
                     let cluster = be.cluster;
                     let cluster = required!(cluster)?;
                     let path = validate_rest_path(be.path)?;
-                    let template_ds: Option<DataSource> = be.body_template.map(TryInto::try_into).transpose()?;
-                    let template_bytes = template_ds.map(|t| t.to_bytes_blocking()).transpose()?;
-                    let body_template = template_bytes.map(String::from_utf8).transpose()?.map(Into::into);
+                    let (body_template, body_json) = match be.body {
+                        Some(ArionRestBody::BodyTemplate(template)) => {
+                            let template: DataSource = template.try_into()?;
+                            let template = String::from_utf8(template.to_bytes_blocking()?)?.into();
+                            (Some(template), None)
+                        },
+                        Some(ArionRestBody::BodyJson(source)) => {
+                            let source = required!(source).with_node("RestBackend.body_json")?;
+                            (None, Some(source.into()))
+                        },
+                        None => (None, None),
+                    };
                     Ok(UpstreamBackend::Rest {
                         method: http::Method::from_str(&be.method)?,
                         path: path.into(),
@@ -706,6 +773,7 @@ mod envoy_conversions {
                             be.upstream_policy.map(TryInto::try_into).transpose()?.unwrap_or_default(),
                         ),
                         body_template,
+                        body_json,
                     })
                 },
                 ArionUpstreamBackend::McpServerBackend(be) => {
@@ -838,6 +906,9 @@ mod envoy_conversions {
         #![allow(clippy::assertions_on_result_states)]
         use super::*;
         use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::RestBackend as ArionRestBackend;
+        use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::{
+            data_source::Specifier as EnvoySpecifier, DataSource as EnvoyDataSource,
+        };
 
         fn rest_backend(path: &str, query_params: Vec<ArionMcpQueryParams>) -> ArionUpstreamBackend {
             ArionUpstreamBackend::RestBackend(ArionRestBackend {
@@ -1068,6 +1139,84 @@ mod envoy_conversions {
             assert!(remote("c", "", "/p", 384).normalized().is_err());
             assert!(remote("c", "m", "/p", 0).normalized().is_err());
             assert!(remote("c", "m", "/p", 384).normalized().is_ok());
+        }
+
+        fn inline_data_source(content: &str) -> EnvoyDataSource {
+            EnvoyDataSource { specifier: Some(EnvoySpecifier::InlineString(content.to_owned())), ..Default::default() }
+        }
+
+        fn open_api_source(spec: &str) -> ArionOpenApiToolSource {
+            ArionOpenApiToolSource {
+                spec: Some(inline_data_source(spec)),
+                namespace: "pets".to_owned(),
+                cluster: "backend".to_owned(),
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn open_api_source_conversion_expands_tools() {
+            let spec = "servers:\n  - url: /v1\npaths:\n  /pets/{id}:\n    get: { operationId: getPet }\n";
+            let converted: McpOpenApiToolSource = open_api_source(spec).try_into().unwrap();
+            assert_eq!(converted.namespace, "pets");
+            assert_eq!(converted.tools.len(), 1);
+            let tool = &converted.tools[0];
+            assert_eq!(tool.name, "getPet");
+            match &tool.backend {
+                UpstreamBackend::Rest { path, cluster, body_json, .. } => {
+                    assert_eq!(path, "/v1/pets/{{id | encode_path_segment}}");
+                    assert_eq!(cluster, "backend");
+                    assert_eq!(*body_json, None);
+                },
+                other => panic!("expected REST backend: {other:?}"),
+            }
+        }
+
+        #[test]
+        fn open_api_source_conversion_rejects_missing_fields() {
+            let valid = || open_api_source("paths:\n  /a:\n    get: { operationId: get_a }\n");
+            for (invalid, field) in [
+                (ArionOpenApiToolSource { spec: None, ..valid() }, "spec"),
+                (ArionOpenApiToolSource { namespace: String::new(), ..valid() }, "OpenApiToolSource.namespace"),
+                (ArionOpenApiToolSource { cluster: String::new(), ..valid() }, "OpenApiToolSource.cluster"),
+            ] {
+                let result: Result<McpOpenApiToolSource, _> = invalid.try_into();
+                assert!(result.unwrap_err().to_string().contains(field));
+            }
+        }
+
+        fn convert_rest_backend_body(body: Option<ArionRestBody>) -> Result<UpstreamBackend, GenericError> {
+            ArionUpstreamBackend::RestBackend(ArionRestBackend {
+                method: "POST".to_owned(),
+                path: "/a".to_owned(),
+                cluster: "upstream".to_owned(),
+                body,
+                ..Default::default()
+            })
+            .try_into()
+        }
+
+        #[test]
+        fn rest_backend_body_conversion_handles_each_mode() {
+            let converted =
+                convert_rest_backend_body(Some(ArionRestBody::BodyTemplate(inline_data_source(r#"{"a": "{{a}}"}"#))))
+                    .unwrap();
+            assert!(matches!(converted, UpstreamBackend::Rest { body_template: Some(_), body_json: None, .. }));
+
+            let converted = convert_rest_backend_body(Some(ArionRestBody::BodyJson("body".to_owned()))).unwrap();
+            assert!(matches!(
+                converted,
+                UpstreamBackend::Rest { body_template: None, body_json: Some(source), .. } if source == "body"
+            ));
+
+            let converted = convert_rest_backend_body(None).unwrap();
+            assert!(matches!(converted, UpstreamBackend::Rest { body_template: None, body_json: None, .. }));
+        }
+
+        #[test]
+        fn rest_backend_body_conversion_rejects_an_empty_json_path() {
+            let error = convert_rest_backend_body(Some(ArionRestBody::BodyJson(String::new()))).unwrap_err();
+            assert!(error.to_string().contains("RestBackend.body_json"));
         }
     }
 }

@@ -214,6 +214,7 @@ mod tests {
                 cluster: "test".into(),
                 upstream_policy: Box::new(HttpUpstreamPolicy::default()),
                 body_template: None,
+                body_json: None,
             },
             rbac: None,
             embedding: EmbeddingVector::default(),

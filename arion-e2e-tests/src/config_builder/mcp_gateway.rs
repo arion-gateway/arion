@@ -19,10 +19,10 @@ use std::time::Duration;
 
 use arion_data_plane_api::envoy_data_plane_api::{
     arion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        mcp_gateway, mcp_server_backend, permission::PermissionType, tool, tool_rbac, CodeMode, DisclosureMode,
-        DynamicMcpServer, FunctionGraphBackend, HttpUpstreamPolicy, JwtClaimMatcher, JwtHeaderMatcher, McpGateway,
-        McpServerBackend, Permission, QueryParam, RemoteEmbeddings, RestBackend, ServerInfo, TdsSpecifier, Tool,
-        ToolRbac, ToolSearch, Toolkit, ToolkitToolRef, ToolsMode,
+        mcp_gateway, mcp_server_backend, permission::PermissionType, rest_backend, tool, tool_rbac, CodeMode,
+        DisclosureMode, DynamicMcpServer, FunctionGraphBackend, HttpUpstreamPolicy, JwtClaimMatcher, JwtHeaderMatcher,
+        McpGateway, McpServerBackend, OpenApiToolSource, Permission, QueryParam, RemoteEmbeddings, RestBackend,
+        ServerInfo, TdsSpecifier, Tool, ToolRbac, ToolSearch, Toolkit, ToolkitToolRef, ToolsMode,
     },
     envoy::{
         config::core::v3::{data_source::Specifier, DataSource},
@@ -54,6 +54,8 @@ pub const MCP_TOOL_TYPE_URL: &str = "type.googleapis.com/arion.extensions.filter
 pub const MCP_DYNAMIC_SERVER_TYPE_URL: &str =
     "type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.DynamicMcpServer";
 pub const MCP_TOOLKIT_TYPE_URL: &str = "type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.Toolkit";
+pub const MCP_OPEN_API_SOURCE_TYPE_URL: &str =
+    "type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.OpenApiToolSource";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum McpTransport {
@@ -129,6 +131,12 @@ impl McpGatewayBuilder {
         S: Into<DynamicMcpServer>,
     {
         self.proto.dynamic_mcp_servers.extend(servers.into_iter().map(Into::into));
+        self
+    }
+
+    #[must_use]
+    pub fn open_api_tool_source(mut self, source: impl Into<OpenApiToolSource>) -> Self {
+        self.proto.open_api_tool_sources.push(source.into());
         self
     }
 
@@ -294,7 +302,13 @@ impl McpRestBackendBuilder {
 
     #[must_use]
     pub fn body_template(mut self, template: impl Into<DataSource>) -> Self {
-        self.proto.body_template = Some(template.into());
+        self.proto.body = Some(rest_backend::Body::BodyTemplate(template.into()));
+        self
+    }
+
+    #[must_use]
+    pub fn body_json(mut self, source: impl Into<String>) -> Self {
+        self.proto.body = Some(rest_backend::Body::BodyJson(source.into()));
         self
     }
 
@@ -443,6 +457,80 @@ impl DynamicMcpServerBuilder {
 
 impl From<DynamicMcpServerBuilder> for DynamicMcpServer {
     fn from(builder: DynamicMcpServerBuilder) -> Self {
+        builder.build()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct McpOpenApiToolSourceBuilder {
+    proto: OpenApiToolSource,
+}
+
+impl McpOpenApiToolSourceBuilder {
+    #[must_use]
+    pub fn new(namespace: impl Into<String>, cluster: impl Into<String>, spec: impl Into<DataSource>) -> Self {
+        Self {
+            proto: OpenApiToolSource {
+                namespace: namespace.into(),
+                cluster: cluster.into(),
+                spec: Some(spec.into()),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn skip_unsupported_operations(mut self) -> Self {
+        self.proto.skip_unsupported_operations = true;
+        self
+    }
+
+    #[must_use]
+    pub fn include_operations<I, S>(mut self, patterns: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.proto.include_operations.extend(patterns.into_iter().map(Into::into));
+        self
+    }
+
+    #[must_use]
+    pub fn exclude_operations<I, S>(mut self, patterns: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.proto.exclude_operations.extend(patterns.into_iter().map(Into::into));
+        self
+    }
+
+    #[must_use]
+    pub fn path_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.proto.path_prefix = Some(prefix.into());
+        self
+    }
+
+    #[must_use]
+    pub fn eager_tools(mut self) -> Self {
+        self.proto.tool_disclosure_mode = DisclosureMode::Eager.into();
+        self
+    }
+
+    #[must_use]
+    pub fn with_proto<F: FnOnce(&mut OpenApiToolSource)>(mut self, f: F) -> Self {
+        f(&mut self.proto);
+        self
+    }
+
+    #[must_use]
+    pub fn build(self) -> OpenApiToolSource {
+        self.proto
+    }
+}
+
+impl From<McpOpenApiToolSourceBuilder> for OpenApiToolSource {
+    fn from(builder: McpOpenApiToolSourceBuilder) -> Self {
         builder.build()
     }
 }
@@ -802,6 +890,12 @@ pub fn mcp_tool_xds_resource(resource_id: impl Into<String>, tool: &Tool) -> Xds
 #[must_use]
 pub fn dynamic_mcp_server_xds_resource(resource_id: impl Into<String>, server: &DynamicMcpServer) -> XdsResource {
     let any = Any { type_url: MCP_DYNAMIC_SERVER_TYPE_URL.to_owned(), value: server.encode_to_vec() };
+    XdsResource { name: resource_id.into(), resource: Some(any), ..Default::default() }
+}
+
+#[must_use]
+pub fn mcp_open_api_source_xds_resource(resource_id: impl Into<String>, source: &OpenApiToolSource) -> XdsResource {
+    let any = Any { type_url: MCP_OPEN_API_SOURCE_TYPE_URL.to_owned(), value: source.encode_to_vec() };
     XdsResource { name: resource_id.into(), resource: Some(any), ..Default::default() }
 }
 

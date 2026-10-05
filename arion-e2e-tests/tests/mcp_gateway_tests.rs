@@ -39,8 +39,8 @@ use arion_data_plane_api::envoy_data_plane_api::{
     google::protobuf::{Duration as ProstDuration, UInt32Value},
 };
 use arion_e2e_tests::config_builder::{
-    ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder, McpRestBackendBuilder,
-    McpServerBackendBuilder, McpToolBuilder, McpToolRbacBuilder, inline_string_data_source,
+    inline_string_data_source, ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder,
+    McpOpenApiToolSourceBuilder, McpRestBackendBuilder, McpServerBackendBuilder, McpToolBuilder, McpToolRbacBuilder,
 };
 use arion_e2e_tests::{
     ArionInstance, JwtKeyPair, McpTestClient, MockMcpServer, PreConfiguredResponse, SpawnOptions, TestBackend,
@@ -1022,6 +1022,87 @@ async fn test_mcp_gateway_mixed_backends() {
     assert!(mcp_content.contains("test"), "MCP response should echo the message");
 
     mock_mcp.shutdown();
+    arion.shutdown();
+    let _ = std::fs::remove_file(&config_path);
+}
+
+const OPENAPI_SPEC: &str = r#"
+servers:
+  - url: /api/v3
+paths:
+  /pets/{petId}:
+    get:
+      operationId: getPet
+      summary: Get one pet
+      parameters:
+        - { name: petId, in: path, required: true, schema: { type: string } }
+        - { name: verbose, in: query, schema: { type: boolean } }
+  /pets:
+    post:
+      operationId: createPet
+      summary: Create a pet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, properties: { name: { type: string } } }
+  /admin:
+    delete:
+      operationId: dropDatabase
+      summary: Dangerous admin operation
+"#;
+
+#[tokio::test]
+#[ignore]
+async fn test_mcp_gateway_open_api_source_derives_and_invokes_tools() {
+    let mut backend = TestBackend::start().await.expect("Failed to start test backend");
+    backend.set_default_response(PreConfiguredResponse::with_body(r#"{"status": "ok"}"#)).await;
+
+    let source =
+        McpOpenApiToolSourceBuilder::new("petstore", "backend_cluster", inline_string_data_source(OPENAPI_SPEC))
+            .exclude_operations(["dropDatabase"])
+            .eager_tools();
+    let gateway = McpGatewayBuilder::new(SERVER_NAME, SERVER_VERSION).open_api_tool_source(source);
+    let bootstrap = McpGatewayHttpConfigBuilder::new(gateway)
+        .build_bootstrap(vec![
+            ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+        ]);
+
+    let config_path = bootstrap.build_to_temp().expect("Failed to build config");
+    let arion = ArionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
+        .await
+        .expect("Failed to spawn Arion");
+
+    let mut client = McpTestClient::new(arion.listener_addr().unwrap());
+    client.initialize().await.expect("Failed to initialize");
+
+    let tools = client.list_tools().await.expect("Failed to list tools");
+    let names: Vec<&str> = tools.tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(names.contains(&"petstore.getPet"), "expected derived tool in {names:?}");
+    assert!(names.contains(&"petstore.createPet"), "expected derived tool in {names:?}");
+    assert!(!names.contains(&"petstore.dropDatabase"), "excluded operation must not be derived: {names:?}");
+
+    let result = client
+        .call_tool("petstore.getPet", json!({"petId": "42", "verbose": true}))
+        .await
+        .expect("Failed to call derived tool");
+    assert!(!result.is_error.unwrap_or(false), "derived tool call should succeed");
+    let request = backend.await_request().await.expect("No request received");
+    assert_eq!(request.method, "GET");
+    assert_eq!(request.path_and_query(), "/api/v3/pets/42?verbose=true");
+
+    let result = client
+        .call_tool("petstore.createPet", json!({"body": {"name": "Rex"}}))
+        .await
+        .expect("Failed to call derived tool");
+    assert!(!result.is_error.unwrap_or(false), "derived tool call should succeed");
+    let request = backend.await_request().await.expect("No request received");
+    assert_eq!(request.method, "POST");
+    assert_eq!(request.path(), "/api/v3/pets");
+    let body = request.body_str().expect("Request has no body");
+    let body_json: serde_json::Value = serde_json::from_str(body).expect("Invalid JSON body");
+    assert_eq!(body_json, json!({"name": "Rex"}), "the body argument is serialized as the JSON request body");
+
     arion.shutdown();
     let _ = std::fs::remove_file(&config_path);
 }

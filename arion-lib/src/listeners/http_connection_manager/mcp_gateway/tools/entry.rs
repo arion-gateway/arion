@@ -41,6 +41,7 @@ use crate::listeners::http_connection_manager::mcp_gateway::{
 pub enum ToolSource {
     Direct,
     Dynamic { upstream_tool_name: SmolStr },
+    OpenApi,
 }
 
 #[derive(Debug)]
@@ -191,7 +192,7 @@ pub(super) fn build_tool_entry(
         )
     };
     let backend = match backend {
-        UpstreamBackend::Rest { method, path, query_params, cluster, upstream_policy, body_template } => {
+        UpstreamBackend::Rest { method, path, query_params, cluster, upstream_policy, body_template, body_json } => {
             ToolBackend::Rest(RestBackend::compile(
                 method,
                 path,
@@ -199,12 +200,13 @@ pub(super) fn build_tool_entry(
                 cluster,
                 *upstream_policy,
                 body_template,
+                body_json,
                 upstream_limits,
             )?)
         },
         UpstreamBackend::McpServer { url, .. } => {
             let upstream_tool_name = match &source {
-                ToolSource::Direct => id.name.clone(),
+                ToolSource::Direct | ToolSource::OpenApi => id.name.clone(),
                 ToolSource::Dynamic { upstream_tool_name } => upstream_tool_name.clone(),
             };
             ToolBackend::McpServer(McpServerBackend {

@@ -20,12 +20,14 @@ use std::{
 
 use arion_configuration::config::{
     common::GenericError,
-    network_filters::http_connection_manager::http_filters::mcp_gateway::{DynamicMcpServer, McpTool},
+    network_filters::http_connection_manager::http_filters::mcp_gateway::{
+        DynamicMcpServer, McpOpenApiToolSource, McpTool,
+    },
 };
 #[cfg(feature = "codemode")]
 use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::Toolkit as ArionToolkit;
 use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::{
-    DynamicMcpServer as ArionDynamicMcpServer, Tool as ArionTool,
+    DynamicMcpServer as ArionDynamicMcpServer, OpenApiToolSource as ArionOpenApiToolSource, Tool as ArionTool,
 };
 use arion_xds::xds::{
     client::DeltaDiscoverySubscriptionManager,
@@ -47,8 +49,11 @@ pub const MCP_TOOL_TYPE_URL: &str = "type.googleapis.com/arion.extensions.filter
 pub const MCP_DYNAMIC_SERVER_TYPE_URL: &str =
     "type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.DynamicMcpServer";
 pub const MCP_TOOLKIT_TYPE_URL: &str = "type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.Toolkit";
+pub const MCP_OPEN_API_SOURCE_TYPE_URL: &str =
+    "type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.OpenApiToolSource";
 
-const SUPPORTED_TYPE_URLS: &[&str] = &[MCP_TOOL_TYPE_URL, MCP_DYNAMIC_SERVER_TYPE_URL, MCP_TOOLKIT_TYPE_URL];
+const SUPPORTED_TYPE_URLS: &[&str] =
+    &[MCP_TOOL_TYPE_URL, MCP_DYNAMIC_SERVER_TYPE_URL, MCP_TOOLKIT_TYPE_URL, MCP_OPEN_API_SOURCE_TYPE_URL];
 
 #[derive(Clone, Debug)]
 struct RegistrySubscription {
@@ -264,6 +269,7 @@ impl XdsExtensionHandler for McpXdsHandler {
         SUPPORTED_TYPE_URLS
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_update(
         &self,
         type_url: &str,
@@ -324,6 +330,24 @@ impl XdsExtensionHandler for McpXdsHandler {
                         })?;
                     }
                     debug!(target: "mcp_gateway", "xDS: added/updated dynamic namespace '{}' in scope '{scope}' ({} registries)", server.namespace, subscriptions.len());
+                },
+                MCP_OPEN_API_SOURCE_TYPE_URL => {
+                    let mut proto = decode_proto::<ArionOpenApiToolSource>(&payload, "MCP OpenApiToolSource")?;
+                    if proto.namespace != name {
+                        warn!(
+                            target: "mcp_gateway",
+                            "xDS: OpenApiToolSource payload namespace '{}' does not match resource name '{name}' in scope '{scope}'; using resource name",
+                            proto.namespace,
+                        );
+                        name.clone_into(&mut proto.namespace);
+                    }
+                    let source: McpOpenApiToolSource = convert(proto, "MCP OpenApiToolSource")?;
+                    for registry in subscriptions.iter().filter_map(|subscription| subscription.tools.upgrade()) {
+                        registry.add_open_api_source(source.clone()).map_err(|e| {
+                            XdsExtensionError::HandlerError(format!("Failed to add OpenAPI tool source '{name}': {e}"))
+                        })?;
+                    }
+                    debug!(target: "mcp_gateway", "xDS: added/updated OpenAPI namespace '{name}' with {} tools in scope '{scope}' ({} registries)", source.tools.len(), subscriptions.len());
                 },
                 MCP_TOOLKIT_TYPE_URL => {
                     #[cfg(feature = "codemode")]
@@ -398,6 +422,17 @@ impl XdsExtensionHandler for McpXdsHandler {
                         debug!(target: "mcp_gateway", "xDS: removed dynamic server '{name}' from scope '{scope}'");
                     } else {
                         warn!(target: "mcp_gateway", "xDS: dynamic server '{name}' not found in scope '{scope}' for removal");
+                    }
+                },
+                MCP_OPEN_API_SOURCE_TYPE_URL => {
+                    let mut any = false;
+                    for registry in subscriptions.iter().filter_map(|subscription| subscription.tools.upgrade()) {
+                        any |= registry.remove_open_api_source(name);
+                    }
+                    if any {
+                        debug!(target: "mcp_gateway", "xDS: removed OpenAPI tool source '{name}' from scope '{scope}'");
+                    } else {
+                        warn!(target: "mcp_gateway", "xDS: OpenAPI tool source '{name}' not found in scope '{scope}' for removal");
                     }
                 },
                 MCP_TOOLKIT_TYPE_URL => {
@@ -476,8 +511,8 @@ mod tests {
                 path: "/test".into(),
                 query_params: Vec::new(),
                 cluster: "test_cluster".into(),
-                body_template: None,
                 upstream_policy: None,
+                body: None,
             })),
             rbac: None,
             embedding: Vec::new(),
@@ -756,5 +791,68 @@ mod tests {
 
         handler.register("srv/cfg2".into(), &empty_registry());
         assert!(drain_subscribes(&mut rx).await.is_empty());
+    }
+
+    fn open_api_source_proto(spec: &str) -> ArionOpenApiToolSource {
+        use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::{data_source, DataSource};
+
+        ArionOpenApiToolSource {
+            spec: Some(DataSource {
+                specifier: Some(data_source::Specifier::InlineString(spec.to_owned())),
+                ..Default::default()
+            }),
+            // Deliberately wrong: the resource name must win.
+            namespace: "payload_ns".to_owned(),
+            cluster: "backend".to_owned(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn open_api_source_update_expands_replaces_and_removes() {
+        let handler = stub_handler();
+        let registry = empty_registry();
+        handler.register("srv/cfg".into(), &registry);
+
+        let spec = "paths: { /a: { get: { operationId: get_a } }, /b: { get: { operationId: get_b } } }";
+        handler
+            .handle_update(MCP_OPEN_API_SOURCE_TYPE_URL, "srv/cfg/api", &open_api_source_proto(spec).encode_to_vec())
+            .await
+            .unwrap();
+        assert!(registry.get_tool_by_name("api.get_a").is_some());
+        assert!(registry.get_tool_by_name("api.get_b").is_some());
+
+        // A plain TDS Tool removal must not delete derived tools.
+        handler.handle_remove(MCP_TOOL_TYPE_URL, "srv/cfg/api.get_a").await.unwrap();
+        assert!(registry.get_tool_by_name("api.get_a").is_some());
+
+        // Re-delivering the resource replaces the namespace's tools.
+        let spec = "paths: { /b: { get: { operationId: get_b } } }";
+        handler
+            .handle_update(MCP_OPEN_API_SOURCE_TYPE_URL, "srv/cfg/api", &open_api_source_proto(spec).encode_to_vec())
+            .await
+            .unwrap();
+        assert!(registry.get_tool_by_name("api.get_a").is_none());
+        assert!(registry.get_tool_by_name("api.get_b").is_some());
+
+        handler.handle_remove(MCP_OPEN_API_SOURCE_TYPE_URL, "srv/cfg/api").await.unwrap();
+        assert!(registry.get_tool_by_name("api.get_b").is_none());
+    }
+
+    #[tokio::test]
+    async fn invalid_open_api_source_is_rejected_without_touching_the_registry() {
+        let handler = stub_handler();
+        let registry = empty_registry();
+        handler.register("srv/cfg".into(), &registry);
+
+        // A required header parameter is unsupported and strict by default.
+        let spec =
+            "paths: { /a: { get: { operationId: get_a, parameters: [{ name: X-Key, in: header, required: true }] } } }";
+        let result = handler
+            .handle_update(MCP_OPEN_API_SOURCE_TYPE_URL, "srv/cfg/api", &open_api_source_proto(spec).encode_to_vec())
+            .await;
+        assert!(result.is_err());
+        assert!(registry.get_tool_by_name("api.get_a").is_none());
+        assert!(!registry.remove_open_api_source("api"));
     }
 }

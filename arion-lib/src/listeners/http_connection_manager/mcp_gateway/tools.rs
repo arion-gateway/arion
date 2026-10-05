@@ -25,6 +25,7 @@ mod dynamic;
 mod entry;
 mod errors;
 mod invoke;
+mod openapi;
 mod rest;
 mod search;
 #[cfg(test)]
@@ -52,7 +53,7 @@ use std::{
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
     DisclosureMode, DynamicMcpServer, McpTool, McpToolSearch, UpstreamLimits,
 };
-use papaya::HashMap as PapayaMap;
+use papaya::{HashMap as PapayaMap, HashSet as PapayaSet};
 use rmcp::model::Tool;
 use serde::{Deserialize, Serialize, Serializer};
 use smol_str::SmolStr;
@@ -143,6 +144,7 @@ pub enum ToolSearchScope {
 pub struct ToolsRegistry {
     tools: PapayaMap<ToolId, StdArc<ToolEntry>, ahash::RandomState>,
     dynamic_mcp_servers: PapayaMap<SmolStr, StdArc<DynamicMcpServerEntry>, ahash::RandomState>,
+    open_api_sources: PapayaSet<SmolStr, ahash::RandomState>,
     search: McpToolSearch,
     upstream_limits: UpstreamLimits,
     bootstrapped: OnceCell<()>,
@@ -162,6 +164,7 @@ impl ToolsRegistry {
         let registry = Self {
             tools: PapayaMap::with_hasher(ahash::RandomState::new()),
             dynamic_mcp_servers: PapayaMap::with_hasher(ahash::RandomState::new()),
+            open_api_sources: PapayaSet::with_hasher(ahash::RandomState::new()),
             search,
             upstream_limits,
             bootstrapped: OnceCell::new(),
@@ -275,7 +278,9 @@ impl ToolsRegistry {
     #[allow(clippy::unused_async)]
     pub async fn add_tool(&self, tool: McpTool) -> Result<(), ToolBuilderError> {
         let id = ToolId::from_tool(&tool)?;
-        if self.dynamic_mcp_servers.pin().contains_key(&id.namespace) {
+        if self.dynamic_mcp_servers.pin().contains_key(&id.namespace)
+            || self.open_api_sources.pin().contains(&id.namespace)
+        {
             return Err(ToolBuilderError::SharedNamespace(id.namespace));
         }
         self.validate_supplied_embedding(&tool)?;
