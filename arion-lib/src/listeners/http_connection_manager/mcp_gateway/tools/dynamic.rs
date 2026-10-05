@@ -251,7 +251,7 @@ impl ToolsRegistry {
         match transport {
             McpBackendTransportUpstream::StreamableHttp => {
                 let client = Self::get_mcp_client(url).await?;
-                let tools = client.list_tools(Option::default()).await?;
+                let tools = client.list_tools(Option::default()).await.map_err(Box::new)?;
                 Ok(tools.tools)
             },
             McpBackendTransportUpstream::Sse => Err(ListToolsError::UnsupportedTransport),
@@ -260,7 +260,7 @@ impl ToolsRegistry {
 
     pub(super) async fn get_mcp_client(
         url: &str,
-    ) -> Result<RunningService<RoleClient, InitializeRequestParams>, ClientInitializeError> {
+    ) -> Result<RunningService<RoleClient, InitializeRequestParams>, Box<ClientInitializeError>> {
         debug!(target: "mcp_gateway", "Creating MCP client for URL: {url}...");
         let transport = StreamableHttpClientTransport::with_client(
             upstream_http_client(),
@@ -268,7 +268,7 @@ impl ToolsRegistry {
         );
         let client_info =
             ClientConfig::new(ClientCapabilities::default(), Implementation::new(DEFAULT_USER_AGENT, "0.1.0"));
-        client_info.serve(transport).await.inspect_err(|e| {
+        client_info.serve(transport).await.map_err(Box::new).inspect_err(|e| {
             info!(target: "mcp_gateway", "get_mcp_client error: {}!", e);
         })
     }

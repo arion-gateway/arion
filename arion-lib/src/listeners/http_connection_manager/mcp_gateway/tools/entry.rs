@@ -46,7 +46,7 @@ pub enum ToolSource {
 
 #[derive(Debug)]
 pub(super) enum ToolBackend {
-    Rest(RestBackend),
+    Rest(Box<RestBackend>),
     McpServer(McpServerBackend),
     FunctionGraph,
 }
@@ -141,7 +141,6 @@ impl ToolEntry {
         }
     }
 
-    #[allow(clippy::result_large_err)]
     fn validate_json_against_schema(
         validator: Option<&jsonschema::Validator>,
         arguments: &Value,
@@ -155,13 +154,11 @@ impl ToolEntry {
     }
 
     #[inline]
-    #[allow(clippy::result_large_err)]
     pub fn validate_against_input_schema(&self, arguments: &Value) -> Result<(), CallToolError> {
         Self::validate_json_against_schema(self.input_schema_validator.as_ref(), arguments)
     }
 
     #[inline]
-    #[allow(clippy::result_large_err)]
     pub fn validate_against_output_schema(&self, arguments: &Value) -> Result<(), CallToolError> {
         Self::validate_json_against_schema(self.output_schema_validator.as_ref(), arguments)
     }
@@ -193,7 +190,7 @@ pub(super) fn build_tool_entry(
     };
     let backend = match backend {
         UpstreamBackend::Rest { method, path, query_params, cluster, upstream_policy, body_template, body_json } => {
-            ToolBackend::Rest(RestBackend::compile(
+            ToolBackend::Rest(Box::new(RestBackend::compile(
                 method,
                 path,
                 query_params,
@@ -202,7 +199,7 @@ pub(super) fn build_tool_entry(
                 body_template,
                 body_json,
                 upstream_limits,
-            )?)
+            )?))
         },
         UpstreamBackend::McpServer { url, .. } => {
             let upstream_tool_name = match &source {
@@ -258,7 +255,6 @@ pub(super) fn build_tool_entry(
 }
 
 /// Rejects an explicit zero limit; shared by search and catalog pagination.
-#[allow(clippy::result_large_err)]
 pub(super) fn validate_positive_limit(requested_limit: Option<usize>) -> Result<(), CallToolError> {
     if requested_limit == Some(0) {
         return Err(CallToolError::ValidationError("limit must be greater than zero".to_owned()));
