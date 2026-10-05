@@ -35,8 +35,9 @@ use std::time::Duration;
 
 use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::Tool as ArionMcpTool;
 use arion_e2e_tests::config_builder::{
-    ClusterBuilder, DynamicMcpServerBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder,
-    McpRestBackendBuilder, McpToolBuilder, McpToolRbacBuilder, inline_string_data_source, mcp_resource_id,
+    inline_string_data_source, mcp_resource_id, ClusterBuilder, DynamicMcpServerBuilder, EndpointBuilder,
+    McpGatewayBuilder, McpGatewayHttpConfigBuilder, McpOpenApiToolSourceBuilder, McpRestBackendBuilder, McpToolBuilder,
+    McpToolRbacBuilder,
 };
 use arion_e2e_tests::{
     HarnessError, JwtKeyPair, McpTestClient, McpTool, MockMcpServer, PreConfiguredResponse, TestBackend, TestJwtClaims,
@@ -548,6 +549,41 @@ async fn test_mcp_gateway_xds_unknown_scope_is_noop() {
 
     let tools = client.list_tools().await.expect("Failed to list tools");
     assert!(tools.tools.iter().any(|t| t.name == "test.ghost"));
+
+    harness.shutdown();
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_mcp_gateway_xds_open_api_source_add_replace_and_remove() {
+    let (harness, listener_addr) = start_harness_with_mcp_listener().await;
+    let client = new_initialized_client(listener_addr).await;
+    let resource_id = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "api");
+
+    let spec = "paths: { /a: { get: { operationId: get_a } }, /b: { get: { operationId: get_b } } }";
+    let source =
+        McpOpenApiToolSourceBuilder::new("api", "dummy", inline_string_data_source(spec)).eager_tools().build();
+    harness.push_mcp_open_api_source(&resource_id, &source).await.expect("Failed to push OpenAPI source");
+
+    let tools = client.list_tools().await.expect("Failed to list tools");
+    let names: Vec<&str> = tools.tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(names.contains(&"api.get_a"), "expected derived tools in {names:?}");
+    assert!(names.contains(&"api.get_b"), "expected derived tools in {names:?}");
+
+    let spec = "paths: { /b: { get: { operationId: get_b } } }";
+    let source =
+        McpOpenApiToolSourceBuilder::new("api", "dummy", inline_string_data_source(spec)).eager_tools().build();
+    harness.push_mcp_open_api_source(&resource_id, &source).await.expect("Failed to replace OpenAPI source");
+
+    let tools = client.list_tools().await.expect("Failed to list tools");
+    let names: Vec<&str> = tools.tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(!names.contains(&"api.get_a"), "replaced source must evict old tools: {names:?}");
+    assert!(names.contains(&"api.get_b"), "expected surviving tool in {names:?}");
+
+    harness.remove_mcp_open_api_source(&resource_id).await.expect("Failed to remove OpenAPI source");
+    let tools = client.list_tools().await.expect("Failed to list tools");
+    let names: Vec<&str> = tools.tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(!names.contains(&"api.get_b"), "removed source must evict its tools: {names:?}");
 
     harness.shutdown();
 }

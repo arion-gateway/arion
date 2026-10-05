@@ -104,7 +104,7 @@ impl ToolsRegistry {
     pub async fn add_dynamic_server(&self, server: DynamicMcpServer) -> Result<(), super::ToolBuilderError> {
         Self::validate_namespace(&server.namespace)?;
         let namespace = server.namespace.clone();
-        if self.namespace_has_direct_tools(&namespace) {
+        if self.namespace_has_direct_tools(&namespace) || self.open_api_sources.pin().contains(&namespace) {
             return Err(super::ToolBuilderError::SharedNamespace(namespace));
         }
         let entry = StdArc::new(DynamicMcpServerEntry::new(server));
@@ -112,7 +112,7 @@ impl ToolsRegistry {
             .fetch_dynamic_server_tools(&entry)
             .await
             .map_err(|error| super::ToolBuilderError::DynamicRefresh(error.to_string()))?;
-        if self.namespace_has_direct_tools(&namespace) {
+        if self.namespace_has_direct_tools(&namespace) || self.open_api_sources.pin().contains(&namespace) {
             return Err(super::ToolBuilderError::SharedNamespace(namespace));
         }
         entry.bump_deadline(true);

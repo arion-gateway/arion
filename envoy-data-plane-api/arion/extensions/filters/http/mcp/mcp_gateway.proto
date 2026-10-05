@@ -16,7 +16,8 @@ message McpGateway {
     // the default result limit.
     ToolSearch search = 3;
     // Optional xDS Tool Discovery Service. When set, Tool, DynamicMcpServer,
-    // and CodeMode-only Toolkit resources matching this configuration are consumed over xDS.
+    // OpenApiToolSource, and CodeMode-only Toolkit resources matching this
+    // configuration are consumed over xDS.
     TdsSpecifier tds = 4;
     // Upstream MCP servers whose tools are discovered at runtime by calling
     // tools/list on the upstream and materialised into this filter's registry.
@@ -31,6 +32,9 @@ message McpGateway {
         // Sandboxed TypeScript execution as the exclusive MCP tool surface.
         CodeMode code_mode = 9;
     }
+    // OpenAPI documents whose operations are expanded into REST-backed tools
+    // at configuration time.
+    repeated OpenApiToolSource open_api_tool_sources = 10;
 }
 
 // Server info
@@ -95,7 +99,10 @@ message RestBackend {
   string path = 2;
   repeated QueryParam query_params = 3;
   string cluster = 4;
-  envoy.config.core.v3.DataSource body_template = 5;
+  oneof body {
+    envoy.config.core.v3.DataSource body_template = 5;
+    string body_json = 7;
+  }
   HttpUpstreamPolicy upstream_policy = 6;
 }
 
@@ -141,9 +148,33 @@ message DynamicMcpServer {
   DisclosureMode tool_disclosure_mode = 7;
 }
 
+// An OpenAPI 3.x document expanded into one REST-backed tool per operation.
+// The namespace is both the public namespace of the derived tools and this
+// resource's live identity. The policy and settings are applied to every
+// derived Tool definition.
+message OpenApiToolSource {
+  // OpenAPI 3.x document, JSON or YAML.
+  envoy.config.core.v3.DataSource spec = 1;
+  string namespace = 2;
+  string cluster = 3;
+  HttpUpstreamPolicy upstream_policy = 4;
+  optional ToolRbac rbac = 5;
+  DisclosureMode tool_disclosure_mode = 6;
+  // Overrides the base path taken from the spec's first server URL.
+  optional string path_prefix = 7;
+  // When false (the default), operations that cannot be expressed as REST
+  // tools fail the configuration; when true they are skipped with a warning.
+  bool skip_unsupported_operations = 8;
+  // Glob patterns ('*' and '?') matched against an operation's operationId
+  // and its "METHOD /path" form. An empty include list selects all
+  // operations; exclusions are applied after inclusions.
+  repeated string include_operations = 9;
+  repeated string exclude_operations = 10;
+}
+
 // Tool Discovery Service binding. config_name selects which TDS stream's
-// Tool, DynamicMcpServer, and CodeMode-only Toolkit resources this filter
-// consumes (resource IDs are of the form
+// Tool, DynamicMcpServer, OpenApiToolSource, and CodeMode-only Toolkit
+// resources this filter consumes (resource IDs are of the form
 // "{server_info.name}/{config_name}/{resource_name}").
 message TdsSpecifier {
   string config_name = 1;

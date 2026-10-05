@@ -204,6 +204,8 @@ pub enum ToolBuilderError {
     InvalidOutputSchema(String),
     #[error("Failed compiling template: {0}")]
     FailedCompilingTemplate(#[from] upon::Error),
+    #[error("body_template and body_json are mutually exclusive")]
+    ConflictingBodyModes,
     #[error("Invalid REST upstream authority: {0}")]
     InvalidUpstreamAuthority(#[source] http::header::InvalidHeaderValue),
     #[error("Duplicate tool name: {0}")]
@@ -216,7 +218,9 @@ pub enum ToolBuilderError {
     InvalidQualifiedToolName(SmolStr),
     #[error("Duplicate dynamic MCP server namespace: {0}")]
     DuplicateDynamicServer(SmolStr),
-    #[error("Namespace '{0}' cannot be shared by direct tools and a dynamic MCP server")]
+    #[error("Duplicate OpenAPI tool source namespace: {0}")]
+    DuplicateOpenApiSource(SmolStr),
+    #[error("Namespace '{0}' is already owned by another tool source")]
     SharedNamespace(SmolStr),
     #[error("Dynamic MCP server refresh failed: {0}")]
     DynamicRefresh(String),

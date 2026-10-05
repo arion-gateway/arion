@@ -405,7 +405,8 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
             config.search.clone(),
             config.upstream_limits.clone(),
             embeddings_client,
-        )?;
+        )?
+        .with_open_api_sources(config.open_api_tool_sources.clone())?;
         let tools = StdArc::new(tools);
 
         let tds_registration = if let Some(tds) = &config.tds {
@@ -959,6 +960,7 @@ mod tests {
         McpGatewayConfig {
             server_info: McpServerInfo { name: "test".into(), version: "1".into() },
             tools: Vec::new(),
+            open_api_tool_sources: Vec::new(),
             dynamic_mcp_servers: Vec::new(),
             tds: None,
             search: McpToolSearch::default(),
@@ -1000,6 +1002,7 @@ mod tests {
         McpGatewayConfig {
             server_info: McpServerInfo { name: "test".into(), version: "1".into() },
             tools: Vec::new(),
+            open_api_tool_sources: Vec::new(),
             dynamic_mcp_servers: Vec::new(),
             tds: None,
             search: McpToolSearch::default(),
@@ -1022,6 +1025,7 @@ mod tests {
                 cluster: "test".into(),
                 upstream_policy: Box::new(HttpUpstreamPolicy::default()),
                 body_template: None,
+                body_json: None,
             },
             rbac: None,
             embedding: EmbeddingVector::default(),
