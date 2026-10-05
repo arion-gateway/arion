@@ -19,12 +19,13 @@
 //
 
 use abort_on_drop::ChildTask;
+use anyhow::Result;
 use arion_configuration::config::{bootstrap::Node, cluster::ClusterSpecifier, Listener};
 use arion_lib::{
     access_log::{update_configuration, Target},
     clusters::cluster::ClusterType,
     ConfigurationSenders, ConversionContext, EndpointHealthUpdate, HealthCheckManager, ListenerConfigurationChange,
-    ListenerFactory, PartialClusterLoadAssignment, PartialClusterType, Result, RouteConfigurationChange, SecretManager,
+    ListenerFactory, PartialClusterLoadAssignment, PartialClusterType, RouteConfigurationChange, SecretManager,
 };
 use arion_xds::{
     start_aggregate_client_no_retry_loop,
@@ -103,13 +104,13 @@ impl XdsConfigurationHandler {
     )> {
         let selector = ClusterSpecifier::Cluster(cluster_name.into());
         let cluster_id = arion_lib::clusters::resolve_cluster(&selector, None)
-            .ok_or_else(|| format!("Failed to resolve cluster {cluster_name} from specifier"))?;
+            .ok_or_else(|| anyhow::anyhow!("Failed to resolve cluster {cluster_name} from specifier"))?;
         let grpc_connections = match arion_lib::clusters::all_grpc_connections(cluster_id) {
             Ok(connections) => connections,
             Err(err) => {
-                let msg = format!("Failed to get gRPC connections from cluster ({cluster_name}): {err}");
-                warn!(msg);
-                return Err(msg.into());
+                let msg = anyhow::anyhow!("Failed to get gRPC connections from cluster ({cluster_name}): {err}");
+                warn!("{msg}");
+                return Err(anyhow::anyhow!(msg));
             },
         };
         let grpc_services: Vec<arion_lib::clusters::GrpcService> = grpc_connections
@@ -118,7 +119,7 @@ impl XdsConfigurationHandler {
                 Ok((_, grpc_service)) => Some(grpc_service),
                 Err(err) => {
                     let msg = format!("Skipping (failed) gRPC endpoint for cluster ({cluster_name}): {err}");
-                    warn!(msg);
+                    warn!("{msg}");
                     None
                 },
             })
@@ -126,8 +127,8 @@ impl XdsConfigurationHandler {
 
         if grpc_services.is_empty() {
             let msg = format!("Failed to locate any gRPC connections for cluster ({cluster_name})");
-            warn!(msg);
-            Err(msg.into())
+            warn!("{msg}");
+            Err(anyhow::anyhow!(msg))
         } else {
             let grpc_service_lb = arion_lib::clusters::SimpleRoundRobinGrpcServiceLB::new(grpc_services);
             start_aggregate_client_no_retry_loop(node.clone(), grpc_service_lb)
@@ -238,16 +239,15 @@ impl XdsConfigurationHandler {
                 let _ = send_change_to_runtimes(&self.route_senders, change).await.ok();
                 match fast_timeout(ROUTE_UPDATE_TIMEOUT, notify.notified()).await {
                     Ok(()) => Ok(()),
-                    Err(_) => {
-                        Err(format!("RouteConfiguration '{id}' removal timed-out waiting to be applied by runtime(s)")
-                            .into())
-                    },
+                    Err(_) => Err(anyhow::anyhow!(
+                        "RouteConfiguration '{id}' removal timed-out waiting to be applied by runtime(s)"
+                    )),
                 }
             },
             arion_xds::xds::model::TypeUrl::Secret => {
                 let msg = "Secret removal is not supported";
                 warn!("{msg}");
-                Err(msg.into())
+                Err(anyhow::anyhow!(msg))
             },
             TypeUrl::Extension(ref type_url) => {
                 debug!("Got extension removal for {type_url} resource {id}");
@@ -278,7 +278,7 @@ impl XdsConfigurationHandler {
                     },
                     Err(err) => {
                         warn!("Got invalid update for listener {id}");
-                        Err(err)
+                        Err(err.into())
                     },
                 }
             },
@@ -289,7 +289,7 @@ impl XdsConfigurationHandler {
                     Ok(cluster) => self.add_cluster(cluster).await,
                     Err(err) => {
                         warn!("Got invalid update for cluster {id}");
-                        Err(err)
+                        Err(err.into())
                     },
                 }
             },
@@ -300,10 +300,9 @@ impl XdsConfigurationHandler {
                 let _ = send_change_to_runtimes(&self.route_senders, change).await.ok();
                 match fast_timeout(ROUTE_UPDATE_TIMEOUT, notify.notified()).await {
                     Ok(()) => Ok(()),
-                    Err(_) => {
-                        Err(format!("RouteConfiguration '{id}' update timedout waiting to be applied by runtime(s)")
-                            .into())
-                    },
+                    Err(_) => Err(anyhow::anyhow!(
+                        "RouteConfiguration '{id}' update timedout waiting to be applied by runtime(s)"
+                    )),
                 }
             },
             XdsResourcePayload::Endpoints(id, cla) => {
@@ -319,7 +318,7 @@ impl XdsConfigurationHandler {
                     },
                     Err(err) => {
                         warn!("Got invalid update for cluster load assignment {id}");
-                        Err(err)
+                        Err(err.into())
                     },
                 }
             },
@@ -339,7 +338,7 @@ impl XdsConfigurationHandler {
                     },
                     Err(err) => {
                         warn!("Got invalid update for cluster load assignment {id}");
-                        Err(err)
+                        Err(err.into())
                     },
                 }
             },
@@ -388,7 +387,7 @@ impl XdsConfigurationHandler {
             if handler.type_urls().contains(&type_url) {
                 if let Err(e) = handler.handle_update(type_url, resource_id, payload).await {
                     warn!("Extension handler error for {type_url}: {e}");
-                    return Err(e.to_string().into());
+                    return Err(e.into());
                 }
             }
         }
@@ -400,7 +399,7 @@ impl XdsConfigurationHandler {
             if handler.type_urls().contains(&type_url) {
                 if let Err(e) = handler.handle_remove(type_url, resource_id).await {
                     warn!("Extension handler error for {type_url} removal: {e}");
-                    return Err(e.to_string().into());
+                    return Err(e.into());
                 }
             }
         }

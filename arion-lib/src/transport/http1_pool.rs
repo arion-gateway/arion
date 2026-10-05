@@ -15,13 +15,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::connector::UnifiedConnector;
+use super::connector::{map_tls_connect_error, UnifiedConnector};
 use crate::{
     body::{
         on_end_body::{BodyEndPermit, OnEndBody},
         poly_body::PolyBody,
         timeout_body::TimeoutBody,
     },
+    event_error::UpstreamError,
     thread_local::{LocalBuilder, ThreadLocalObject},
     ArionRequestBody, ArionResponseBody, Error, Result,
 };
@@ -242,7 +243,7 @@ impl std::fmt::Debug for Http1Pool {
 impl Http1Pool {
     pub async fn send(&self, req: Request<ArionRequestBody>) -> Result<Response<ArionResponseBody>> {
         let mut tx = self.checkout().await?;
-        let response = tx.send_request(req).await.map_err(Error::from)?;
+        let response = tx.send_request(req).await.map_err(UpstreamError::from)?;
         Ok(attach_permit(&self.inner, tx, response))
     }
 
@@ -274,12 +275,12 @@ impl Http1Pool {
         match &self.connect {
             Http1Connect::Plain(connector) => {
                 let mut connector = connector.clone();
-                let io = connector.call(self.dst.clone()).await.map_err(Error::from)?;
+                let io = connector.call(self.dst.clone()).await?;
                 handshake(io).await
             },
             Http1Connect::Tls(connector) => {
                 let mut connector = connector.clone();
-                let io = connector.call(self.dst.clone()).await.map_err(Error::from)?;
+                let io = connector.call(self.dst.clone()).await.map_err(map_tls_connect_error)?;
                 handshake(io).await
             },
         }
@@ -313,13 +314,14 @@ async fn handshake<T>(io: T) -> Result<SendRequest<ArionRequestBody>>
 where
     T: Read + Write + Unpin + Send + 'static,
 {
-    let (mut sender, conn) = Http1Builder::new().writev(false).handshake(io).await.map_err(Error::from)?;
+    let (mut sender, conn) =
+        Http1Builder::new().writev(false).handshake(io).await.map_err(|e| Error::upstream(UpstreamError::from(e)))?;
     tokio::spawn(async move {
         if let Err(err) = conn.with_upgrades().await {
             debug!("upstream http1 connection closed: {err}");
         }
     });
-    sender.ready().await.map_err(Error::from)?;
+    sender.ready().await.map_err(|e| Error::upstream(UpstreamError::from(e)))?;
     Ok(sender)
 }
 

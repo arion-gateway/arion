@@ -1021,9 +1021,9 @@ impl ExternalProcessingWorker<kind::Processing> {
                 .await;
         } else {
             info!(target: "ext_proc", "{} - abort (failure_mode_allow is false)", log_msg);
-            _ = self.request_processing.frame_bridge.inject_frame(Err(Box::new(err.clone())), proof_request).await;
+            _ = self.request_processing.frame_bridge.inject_frame(Err(err.clone().into()), proof_request).await;
             self.request_processing.frame_bridge.close(Some(&mut self.timeout_state.active));
-            _ = self.response_processing.frame_bridge.inject_frame(Err(Box::new(err.clone())), proof_response).await;
+            _ = self.response_processing.frame_bridge.inject_frame(Err(err.clone().into()), proof_response).await;
             self.response_processing.frame_bridge.close(Some(&mut self.timeout_state.active));
         }
 
@@ -1127,8 +1127,8 @@ impl ExternalProcessingWorker<kind::Processing> {
                                         self.response_processing.return_status(status, "immediate_response_disabled")
                                     });
 
-                                    _ = self.request_processing.frame_bridge.inject_frame(Err(Box::new(ExtProcError::Timeout("immediate response disabled"))), proof_request).await;
-                                    _ = self.response_processing.frame_bridge.inject_frame(Err(Box::new(ExtProcError::Timeout("immediate response disabled"))), proof_response).await;
+                                    _ = self.request_processing.frame_bridge.inject_frame(Err(ExtProcError::Timeout("immediate response disabled").into()), proof_request).await;
+                                    _ = self.response_processing.frame_bridge.inject_frame(Err(ExtProcError::Timeout("immediate response disabled").into()), proof_response).await;
                                 }
 
                             } else { // enabled

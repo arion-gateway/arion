@@ -103,9 +103,9 @@ mod envoy_conversions {
         options::Options,
         Result,
     };
+    use anyhow::Context;
     use arion_data_plane_api::decode::from_serde_deserializer;
     pub use arion_data_plane_api::envoy_data_plane_api::envoy::config::bootstrap::v3::Bootstrap as EnvoyBootstrap;
-    use arion_error::{Context, ErrorInfo};
     use serde::Deserialize;
 
     #[derive(Deserialize)]
@@ -130,25 +130,22 @@ mod envoy_conversions {
 
     fn bootstrap_from_path_to_envoy_bootstrap(envoy_path: impl AsRef<Path>) -> Result<Bootstrap> {
         (|| -> Result<_> {
-            let envoy_file = std::fs::File::open(&envoy_path).with_context_msg("failed to open file")?;
+            let envoy_file = std::fs::File::open(&envoy_path).context("failed to open file")?;
             let mut track = serde_path_to_error::Track::new();
             let envoy: EnvoyBootstrap = from_serde_deserializer(serde_path_to_error::Deserializer::new(
                 serde_yaml::Deserializer::from_reader(&envoy_file),
                 &mut track,
             ))
-            .with_context_fn(|| ErrorInfo::default().with_message(format!("failed to deserialize {}", track.path())))?;
-            Bootstrap::try_from(envoy).with_context_msg("failed to convert into arion bootstrap")
+            .with_context(|| format!("failed to deserialize {}", track.path()))?;
+            Bootstrap::try_from(envoy).context("failed to convert into arion bootstrap")
         })()
-        .with_context_fn(|| {
-            ErrorInfo::default()
-                .with_message(format!("failed to read config from \"{}\"", envoy_path.as_ref().display()))
-        })
+        .with_context(|| format!("failed to read config from \"{}\"", envoy_path.as_ref().display()))
     }
 
     impl Config {
         pub fn new(opt: &Options) -> Result<Self> {
             let config = match (&opt.config_files.config, &opt.config_files.bootstrap_override) {
-                (None, None) => return Err("no config file specified".into()),
+                (None, None) => return Err(anyhow::anyhow!("no config file specified")),
                 (None, Some(envoy_path)) => {
                     let bootstrap = bootstrap_from_path_to_envoy_bootstrap(envoy_path)?;
                     Self {
@@ -169,9 +166,8 @@ mod envoy_conversions {
                         metrics,
                         timezone,
                         envoy_bootstrap,
-                    } = deserialize_yaml(config).with_context_fn(|| {
-                        ErrorInfo::default().with_message(format!("failed to deserialize \"{}\"", config.display()))
-                    })?;
+                    } = deserialize_yaml(config)
+                        .with_context(|| format!("failed to deserialize \"{}\"", config.display()))?;
 
                     if let Some(ref conf) = access_log_config {
                         let mut custom_ops = std::collections::HashSet::new();
@@ -185,9 +181,9 @@ mod envoy_conversions {
                         (None, None) => Bootstrap::default(),
                         (Some(b), None) => b,
                         (None, Some(envoy)) => Bootstrap::try_from(envoy.0)
-                            .with_context_msg("failed to convert envoy bootstrap to arion bootstrap")?,
+                            .context("failed to convert envoy bootstrap to arion bootstrap")?,
                         (Some(_), Some(_)) => {
-                            return Err("only one of `bootstrap` and `envoy_bootstrap` may be set".into());
+                            return Err(anyhow::anyhow!("only one of `bootstrap` and `envoy_bootstrap` may be set"));
                         },
                     };
                     if let Some(bootstrap_override) = maybe_override {
@@ -244,7 +240,7 @@ mod envoy_conversions {
                     std::fs::write(test_path.clone(), serialized.as_bytes())?;
                     let deserialized: Config = serde_yaml::from_str(&serialized)?;
                     if new_conf != deserialized {
-                        return Err(arion_error::Error::new("failed to roundtrip config transcoding"));
+                        return Err(anyhow::anyhow!("failed to roundtrip config transcoding"));
                     }
                     std::fs::remove_file(test_path)?;
                 } else {

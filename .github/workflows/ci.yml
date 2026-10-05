@@ -10,6 +10,9 @@ env:
   CARGO_CACHE_PATH: ~/.cargo/registry
   CARGO_GIT_PATH: ~/.cargo/git
   TARGET_DIR: target
+  # Replaces the rustflags in .cargo/config.toml, minus target-cpu=native: the cached
+  # target/ is restored on runners with different CPUs, causing SIGILL
+  RUSTFLAGS: -C force-frame-pointers=no
 
 jobs:
   # Fast checks that run in parallel (no build artifacts needed)
@@ -63,7 +66,7 @@ jobs:
             ${{ env.CARGO_CACHE_PATH }}
             ${{ env.CARGO_GIT_PATH }}
             ${{ env.TARGET_DIR }}
-          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock', 'envoy-data-plane-api/build.rs') }}
+          key: ${{ runner.os }}-cargo-build-generic-cpu-${{ hashFiles('**/Cargo.lock', 'envoy-data-plane-api/build.rs') }}
 
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -72,13 +75,14 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
+          target: wasm32-unknown-unknown # for the Wasm test filters
           profile: minimal
 
       - name: Build (release)
-        run: cargo build --workspace --release --locked
+        run: cargo build --all-features --workspace --release --locked
 
       - name: Run tests
-        run: cargo test --workspace --release --locked
+        run: cargo test --all-features --workspace --release --locked
 
   # E2E tests spawn the arion binary, so build it (release, all features) first
   e2e-test:
@@ -98,7 +102,7 @@ jobs:
             ${{ env.CARGO_GIT_PATH }}
             ${{ env.TARGET_DIR }}
             arion-wasm-sdk/target
-          key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('**/Cargo.lock', 'envoy-data-plane-api/build.rs') }}
+          key: ${{ runner.os }}-cargo-e2e-generic-cpu-${{ hashFiles('**/Cargo.lock', 'envoy-data-plane-api/build.rs') }}
 
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -113,11 +117,12 @@ jobs:
       - name: Build arion (release, all features)
         run: cargo build -p arion-proxy --all-features --release --locked
 
-      # arion-e2e-tests/build.rs builds these too, but only warns if that fails.
+      # arion-e2e-tests/build.rs builds these too, but only warns if that fails. It also
+      # strips RUSTFLAGS, so unset it here to match and avoid compiling the filters twice.
       # Kept as debug: filters_wasm.rs loads them from wasm32-unknown-unknown/debug/
       - name: Build Wasm test filters
         working-directory: arion-wasm-sdk
-        run: cargo build --target wasm32-unknown-unknown --workspace
+        run: env -u RUSTFLAGS cargo build --target wasm32-unknown-unknown --workspace
 
       - name: Run e2e tests
         env:

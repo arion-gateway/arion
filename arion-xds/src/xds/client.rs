@@ -470,8 +470,7 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
                         resource_id,
                         decoded.as_ref().err()
                     );
-                    let decoding_error: arion_error::Error = error_msg.clone().into();
-                    decoding_errors.push(RejectedConfig::from((resource_id.clone(), decoding_error)));
+                    decoding_errors.push(RejectedConfig::from((resource_id.clone(), error_msg.clone())));
                     warn!(error_msg);
                 }
                 decoded.ok().map(|value| XdsResourceUpdate::Update(resource_id, Box::new(value), resource_version))

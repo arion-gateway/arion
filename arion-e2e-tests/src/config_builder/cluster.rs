@@ -521,7 +521,7 @@ impl UpstreamProxyProtocolBuilder {
         self,
         inner_transport_socket: Option<TransportSocket>,
     ) -> arion_data_plane_api::envoy_data_plane_api::envoy::extensions::transport_sockets::proxy_protocol::v3::ProxyProtocolUpstreamTransport
-    {
+{
         use arion_data_plane_api::envoy_data_plane_api::envoy::{
             config::core::v3::{
                 proxy_protocol_pass_through_tl_vs::PassTlVsMatchType as EnvoyPassTlvsMatchType,

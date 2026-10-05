@@ -57,7 +57,7 @@ pub fn observes_daylight_saving(tz: &Tz) -> bool {
     false
 }
 
-pub fn init_tz_cache(set: &mut JoinSet<Result<()>>, tz: &TimeZone) -> Result<()> {
+pub fn init_tz_cache<E: Send + 'static>(set: &mut JoinSet<std::result::Result<(), E>>, tz: &TimeZone) -> Result<()> {
     let tz_local = tz.local.to_uppercase();
     if tz_local.is_empty() || tz_local == "UTC" {
         return Ok(());

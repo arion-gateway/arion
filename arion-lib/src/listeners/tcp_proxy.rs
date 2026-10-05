@@ -21,10 +21,7 @@
 #[cfg(feature = "access-log")]
 use {
     crate::access_log::Target,
-    crate::event_error::{
-        find_error_in_chain, ConnectionTerminationDetails, ResponseCodeDetails, UpstreamTransportEventError,
-    },
-    crate::transport::connector::TcpErrorContext,
+    crate::event_error::{ConnectionTerminationDetails, ResponseCodeDetails, UpstreamTransportEventError},
     crate::with_access_log,
     arion_format::context::{FinishContext, InitContext, SocketAddrContext, TcpContext, WireContext},
     arion_format::types::ResponseFlags,
@@ -264,17 +261,17 @@ impl TcpProxy {
                         {
                             response_flags.insert(ResponseFlags::UPSTREAM_CONNECTION_FAILURE);
 
-                            if let Some(tcp_error) = e.get_context_data::<TcpErrorContext>() {
-                                maybe_upstream_peer_addr = Some(tcp_error.upstream_addr);
+                            if let Some(tcp_error) = e.upstream_context() {
+                                maybe_upstream_peer_addr = tcp_error.upstream_addr;
                                 response_flags = tcp_error.response_flags;
                                 cluster_name = tcp_error.cluster_name;
                             } else {
-                                // impossible case to make the compiler happy...
+                                // no UpstreamConnection in the error chain (e.g. internal listener failure)
                                 maybe_upstream_peer_addr = None;
                                 cluster_name = "-";
                             }
 
-                            let io_err = find_error_in_chain::<std::io::Error>(e.inner());
+                            let io_err = e.find_source::<std::io::Error>();
                             maybe_upstream_transport_failure_reason = io_err.map(UpstreamTransportEventError::from);
                             maybe_response_code_details = io_err.map(ResponseCodeDetails::from);
                             with_access_log!(
@@ -301,7 +298,7 @@ impl TcpProxy {
                 {
                     response_flags.insert(ResponseFlags::NO_ROUTE_FOUND);
 
-                    let io_err = find_error_in_chain::<std::io::Error>(e.inner());
+                    let io_err = e.find_source::<std::io::Error>();
                     maybe_upstream_transport_failure_reason = io_err.map(UpstreamTransportEventError::from);
                     maybe_response_code_details = io_err.map(ResponseCodeDetails::from);
 

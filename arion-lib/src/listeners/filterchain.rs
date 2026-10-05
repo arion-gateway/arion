@@ -23,8 +23,9 @@ use super::{
     tcp_proxy::{TcpProxy, TcpProxyBuilder},
 };
 use crate::{
+    event_error::DownstreamError,
     listeners::{
-        metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
+        metadata::{ConnMeta, DownstreamConnectionMetadata, DownstreamMetadata},
         rate_limiter::{
             connection_limit::{ConnectionGuard, NetworkConnectionLimit},
             global_rate_limiter::NetworkGlobalRateLimit,
@@ -316,11 +317,8 @@ impl FilterchainType {
                     CodecType::Http2 => hyper_server.http2_only(),
                     CodecType::Auto => hyper_server,
                 };
-                let trans_svc = HttpConnectionManager::transaction_context_svc(
-                    http_connection_manager,
-                    metadata,
-                    Arc::clone(&stream_metrics),
-                );
+                let conn = ConnMeta::new(metadata, stream_metrics);
+                let trans_svc = HttpConnectionManager::transaction_context_svc(http_connection_manager, conn);
                 // `service_fn` keeps the per-request future monomorphized (stack-allocated,
                 // polled in place): no `Box::pin` allocation on the hot path.
                 // NOTE: the closure returns `handle_request`'s concrete future directly
@@ -329,14 +327,14 @@ impl FilterchainType {
                 // bounds below, pinning lifetimes and breaking `Send` of the connection
                 // future. Returning the concrete future keeps all lifetimes determined.
                 let svc = service_fn(move |req: Request<Incoming>| {
-                    let svc = trans_svc.clone();
+                    let svc = StdArc::clone(&trans_svc);
                     svc.handle_request(req)
                 });
                 hyper_server
                     .serve_connection_with_upgrades(stream, svc)
                     .await
                     .inspect_err(|err| debug!("{listener_name} : HTTP connection error: {err}"))
-                    .map_err(Error::from)
+                    .map_err(|e| Error::from(DownstreamError::from(e)))
             },
             ConnectionHandler::Tcp(tcp_proxy) => {
                 with_metric!(

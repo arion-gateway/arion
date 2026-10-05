@@ -29,7 +29,6 @@ use std::{
 use triomphe::Arc;
 
 use arion_configuration::config::core::Address;
-use arion_error::{Context, ContextualError};
 use arion_format::types::ResponseFlags;
 use arion_interner::StringInterner;
 use http::uri::Authority;
@@ -55,14 +54,6 @@ use crate::with_metric;
 use {crate::get_shard_id, arion_metrics::metrics::clusters, opentelemetry::KeyValue};
 
 use super::{bind_device::BindDevice, resolve};
-
-#[derive(Debug, thiserror::Error)]
-pub enum ConnectError {
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Event(#[from] UpstreamError),
-}
 
 #[derive(Clone, Debug)]
 pub enum ConnectUsing {
@@ -136,11 +127,94 @@ impl ConnectUsing {
     }
 }
 
-#[allow(dead_code)]
+#[derive(Debug, Clone)]
 pub struct TcpErrorContext {
-    pub upstream_addr: SocketAddr,
+    pub upstream_addr: Option<SocketAddr>,
     pub response_flags: ResponseFlags,
     pub cluster_name: &'static str,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConnectErrorKind {
+    #[error("missing port in address: {0}")]
+    MissingPort(String),
+    #[error("DNS resolution failed: {0}")]
+    Dns(#[source] io::Error),
+    #[error("socket creation failed: {0}")]
+    Socket(#[source] io::Error),
+    #[error("bind device failed: {0}")]
+    BindDevice(#[source] io::Error),
+    #[error("connection timed out")]
+    Timeout(#[from] tokio::time::error::Elapsed),
+    #[error("connection I/O error: {0}")]
+    Io(#[from] io::Error),
+    #[error("circuit breaker max connections exceeded")]
+    CircuitBreaker,
+    #[error("internal listener unavailable: {0}")]
+    InternalListener(String),
+}
+
+impl Clone for ConnectErrorKind {
+    fn clone(&self) -> Self {
+        match self {
+            Self::MissingPort(s) => Self::MissingPort(s.clone()),
+            Self::Dns(e) => Self::Dns(io::Error::new(e.kind(), e.to_string())),
+            Self::Socket(e) => Self::Socket(io::Error::new(e.kind(), e.to_string())),
+            Self::BindDevice(e) => Self::BindDevice(io::Error::new(e.kind(), e.to_string())),
+            Self::Timeout(_) => Self::Timeout(elapsed()),
+            Self::Io(e) => Self::Io(io::Error::new(e.kind(), e.to_string())),
+            Self::CircuitBreaker => Self::CircuitBreaker,
+            Self::InternalListener(s) => Self::InternalListener(s.clone()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("connection failed to upstream '{}' ({:?}): {kind}", context.cluster_name, context.upstream_addr)]
+pub struct ConnectError {
+    pub context: TcpErrorContext,
+    #[source]
+    pub kind: ConnectErrorKind,
+}
+
+impl ConnectError {
+    #[inline]
+    pub fn is_timeout(&self) -> bool {
+        matches!(self.kind, ConnectErrorKind::Timeout(_))
+    }
+
+    #[inline]
+    pub fn elapsed(&self) -> Option<&tokio::time::error::Elapsed> {
+        match &self.kind {
+            ConnectErrorKind::Timeout(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn is_retriable(&self) -> bool {
+        matches!(
+            self.kind,
+            ConnectErrorKind::Dns(_)
+                | ConnectErrorKind::Timeout(_)
+                | ConnectErrorKind::Io(_)
+                | ConnectErrorKind::InternalListener(_)
+        )
+    }
+}
+
+struct ContextBuilder {
+    cluster_name: &'static str,
+}
+
+impl ContextBuilder {
+    #[inline]
+    fn error(&self, addr: Option<SocketAddr>, flags: ResponseFlags, kind: ConnectErrorKind) -> crate::Error {
+        crate::Error::upstream(UpstreamError::Connect(Box::new(ConnectError {
+            context: TcpErrorContext { upstream_addr: addr, response_flags: flags, cluster_name: self.cluster_name },
+            kind,
+        })))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -154,118 +228,72 @@ pub struct LocalConnectorWithDNSResolver {
 
 impl LocalConnectorWithDNSResolver {
     #[allow(clippy::too_many_lines)]
-    pub fn connect(
-        &self,
-    ) -> impl Future<Output = std::result::Result<(TcpStream, &'static str), ContextualError<ConnectError>>> + 'static
-    {
+    pub fn connect(&self) -> impl Future<Output = crate::Result<(TcpStream, &'static str)>> + 'static {
         let addr = self.addr.clone();
         let device = self.bind_device.clone();
         let cluster_name = self.cluster_name;
         let connection_timeout = self.connect_timeout;
 
         async move {
+            let ctx = ContextBuilder { cluster_name };
             let host = addr.host();
-            let port = addr
-                .port_u16()
-                .ok_or(ContextualError::new(io::Error::new(
-                    io::ErrorKind::AddrNotAvailable,
-                    format!("Port has to be set {addr:?}"),
-                )))
-                .map_err(|e| {
-                    // this error is difficult to categorize. It happens because the port is not set in the URI.
-                    // The host has not been resolved yet, so we cannot provide a specific address.
-                    e.with_context_data(TcpErrorContext {
-                        upstream_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
-                        response_flags: ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
-                        cluster_name,
-                    })
-                    .map_into()
-                })?;
+            let port = addr.port_u16().ok_or_else(|| {
+                ctx.error(
+                    None,
+                    ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
+                    ConnectErrorKind::MissingPort(format!("{addr:?}")),
+                )
+            })?;
 
             let addr = resolve(host, port).await.map_err(|e| {
-                ContextualError::new(e)
-                    .with_context_data(TcpErrorContext {
-                        upstream_addr: SocketAddr::from(([0, 0, 0, 0], port)),
-                        response_flags: ResponseFlags::DNS_RESOLUTION_FAILED,
-                        cluster_name,
-                    })
-                    .map_into()
+                ctx.error(
+                    Some(SocketAddr::from(([0, 0, 0, 0], port))),
+                    ResponseFlags::DNS_RESOLUTION_FAILED,
+                    ConnectErrorKind::Dns(e),
+                )
             })?;
 
             let sock = match addr {
-                std::net::SocketAddr::V4(_) => TcpSocket::new_v4().map_err(|e| {
-                    ContextualError::new(e)
-                        .with_context_data(TcpErrorContext {
-                            upstream_addr: addr,
-                            response_flags: ResponseFlags::NO_HEALTHY_UPSTREAM
-                                | ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
-                            cluster_name,
-                        })
-                        .map_into()
+                SocketAddr::V4(_) => TcpSocket::new_v4().map_err(|e| {
+                    ctx.error(
+                        Some(addr),
+                        ResponseFlags::NO_HEALTHY_UPSTREAM | ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
+                        ConnectErrorKind::Socket(e),
+                    )
                 })?,
-                std::net::SocketAddr::V6(_) => TcpSocket::new_v6().map_err(|e| {
-                    ContextualError::new(e)
-                        .with_context_data(TcpErrorContext {
-                            upstream_addr: addr,
-                            response_flags: ResponseFlags::NO_HEALTHY_UPSTREAM
-                                | ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
-                            cluster_name,
-                        })
-                        .map_into()
+                SocketAddr::V6(_) => TcpSocket::new_v6().map_err(|e| {
+                    ctx.error(
+                        Some(addr),
+                        ResponseFlags::NO_HEALTHY_UPSTREAM | ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
+                        ConnectErrorKind::Socket(e),
+                    )
                 })?,
             };
 
             if let Some(device) = device {
-                // binding might succeed here but still fail later
-                // e.g. with an non-categorized error on connect
                 debug!("Binding socket to: {:?}", device);
                 super::bind_device::bind_device(&sock, &device).map_err(|e| {
-                    ContextualError::new(e)
-                        .with_context_data(TcpErrorContext {
-                            upstream_addr: addr,
-                            response_flags: ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
-                            cluster_name,
-                        })
-                        .map_into()
+                    ctx.error(Some(addr), ResponseFlags::UPSTREAM_CONNECTION_FAILURE, ConnectErrorKind::BindDevice(e))
                 })?;
             }
 
             let stream = if let Some(connection_timeout) = connection_timeout {
                 fast_timeout(connection_timeout, sock.connect(addr))
-                    .await // Result<Result<TcpStream, io::Error>>, Elapsed>
-                    .map_err(|_e| UpstreamError::ConnectTimeout(elapsed()))
-                    .map_err(|e| {
-                        ContextualError::new(e)
-                            .with_context_data(TcpErrorContext {
-                                upstream_addr: addr,
-                                response_flags: ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
-                                cluster_name,
-                            })
-                            .map_into()
-                    })? // Result<TcpStream, io::Error>
-                    .map_err(|orig| UpstreamError::Io(io::Error::new(orig.kind(), orig.to_string())))
-                    .map_err(|e| {
-                        ContextualError::new(e)
-                            .with_context_data(TcpErrorContext {
-                                upstream_addr: addr,
-                                response_flags: ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
-                                cluster_name,
-                            })
-                            .map_into()
+                    .await
+                    .map_err(|_e| {
+                        ctx.error(
+                            Some(addr),
+                            ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
+                            ConnectErrorKind::Timeout(elapsed()),
+                        )
+                    })?
+                    .map_err(|orig| {
+                        ctx.error(Some(addr), ResponseFlags::UPSTREAM_CONNECTION_FAILURE, ConnectErrorKind::Io(orig))
                     })?
             } else {
-                sock.connect(addr)
-                    .await
-                    .map_err(|orig| UpstreamError::Io(io::Error::new(orig.kind(), orig.to_string())))
-                    .map_err(|e| {
-                        ContextualError::new(e)
-                            .with_context_data(TcpErrorContext {
-                                upstream_addr: addr,
-                                response_flags: ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
-                                cluster_name,
-                            })
-                            .map_into()
-                    })?
+                sock.connect(addr).await.map_err(|orig| {
+                    ctx.error(Some(addr), ResponseFlags::UPSTREAM_CONNECTION_FAILURE, ConnectErrorKind::Io(orig))
+                })?
             };
 
             #[cfg(target_os = "linux")]
@@ -281,7 +309,7 @@ impl LocalConnectorWithDNSResolver {
 
 impl Service<Uri> for LocalConnectorWithDNSResolver {
     type Response = TokioIo<TcpStream>;
-    type Error = ContextualError<ConnectError>;
+    type Error = crate::Error;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _: &mut task::Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -306,15 +334,19 @@ impl InternalConnector {
     pub async fn connect(
         &self,
         downstream_metadata: Option<Arc<DownstreamConnectionMetadata>>,
-    ) -> std::result::Result<(AsyncInstrumentedStream, &'static str), ContextualError<io::Error>> {
+    ) -> crate::Result<(AsyncInstrumentedStream, &'static str)> {
         debug!("Connecting to internal listener '{}' from cluster '{}'", self.listener_name, self.cluster_name);
 
+        let ctx = ContextBuilder { cluster_name: self.cluster_name };
         let sender = internal_registry::get_connection_sender_for_listener(self.listener_name).ok_or_else(|| {
-            let err = io::Error::new(
-                io::ErrorKind::ConnectionRefused,
-                format!("Internal listener '{}' not found or not ready", self.listener_name),
-            );
-            ContextualError::new(err)
+            ctx.error(
+                None,
+                ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
+                ConnectErrorKind::InternalListener(format!(
+                    "Internal listener '{}' not found or not ready",
+                    self.listener_name
+                )),
+            )
         })?;
         let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
         let downstream_metadata = downstream_metadata.unwrap_or_else(|| {
@@ -329,11 +361,14 @@ impl InternalConnector {
             start_instant: Instant::now(),
         };
         if let Err(e) = sender.send(internal_conn).await {
-            let err = io::Error::new(
-                io::ErrorKind::ConnectionRefused,
-                format!("Failed to send connection to internal listener '{}': {}", self.listener_name, e),
-            );
-            return Err(ContextualError::new(err));
+            return Err(ctx.error(
+                None,
+                ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
+                ConnectErrorKind::InternalListener(format!(
+                    "Failed to send connection to internal listener '{}': {}",
+                    self.listener_name, e
+                )),
+            ));
         }
         debug!("Successfully connected to internal listener '{}'", self.listener_name);
 
@@ -375,7 +410,7 @@ impl From<(&ConnectUsing, &'static str)> for UnifiedConnector {
 
 impl Service<Uri> for UnifiedConnector {
     type Response = HttpConnection;
-    type Error = ContextualError<ConnectError>;
+    type Error = crate::Error;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, cx: &mut task::Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -398,10 +433,14 @@ impl Service<Uri> for UnifiedConnector {
                     crate::clusters::try_increment_connections(cluster_name, crate::clusters::RoutingPriority::Default)
                 {
                     return Box::pin(async move {
-                        Err(ContextualError::new(ConnectError::Io(io::Error::new(
-                            io::ErrorKind::ConnectionRefused,
-                            format!("Circuit breaker max_connections exceeded for cluster {cluster_name}"),
-                        ))))
+                        Err(crate::Error::upstream(UpstreamError::Connect(Box::new(ConnectError {
+                            context: TcpErrorContext {
+                                upstream_addr: None,
+                                response_flags: ResponseFlags::UPSTREAM_OVERFLOW,
+                                cluster_name,
+                            },
+                            kind: ConnectErrorKind::CircuitBreaker,
+                        }))))
                     });
                 }
 
@@ -416,27 +455,27 @@ impl Service<Uri> for UnifiedConnector {
                         // Decrement circuit breaker connections since connection failed
                         crate::clusters::decrement_connections(cluster_name, crate::clusters::RoutingPriority::Default);
 
-                        match e.as_ref() {
-                            ConnectError::Event(UpstreamError::ConnectTimeout(_)) => {
-                                // Record timeout metric
-                                with_metric!(
-                                    clusters::UPSTREAM_CX_CONNECT_TIMEOUT,
-                                    add,
-                                    1,
-                                    shard_id,
-                                    &[KeyValue::new("cluster", cluster_name)]
-                                );
-                            },
-                            _ => {
-                                // Record generic connection failure metric
-                                with_metric!(
-                                    clusters::UPSTREAM_CX_CONNECT_FAIL,
-                                    add,
-                                    1,
-                                    shard_id,
-                                    &[KeyValue::new("cluster", cluster_name)]
-                                );
-                            },
+                        let is_timeout = e
+                            .find_source::<UpstreamError>()
+                            .is_some_and(|ue| matches!(ue, UpstreamError::Connect(c) if c.is_timeout()));
+                        if is_timeout {
+                            // Record timeout metric
+                            with_metric!(
+                                clusters::UPSTREAM_CX_CONNECT_TIMEOUT,
+                                add,
+                                1,
+                                shard_id,
+                                &[KeyValue::new("cluster", cluster_name)]
+                            );
+                        } else {
+                            // Record generic connection failure metric
+                            with_metric!(
+                                clusters::UPSTREAM_CX_CONNECT_FAIL,
+                                add,
+                                1,
+                                shard_id,
+                                &[KeyValue::new("cluster", cluster_name)]
+                            );
                         }
                     })?;
 
@@ -529,10 +568,7 @@ impl Service<Uri> for UnifiedConnector {
                 let is_http2 = c.is_http2;
                 debug!("UnifiedConnector::call for internal listener '{}' with is_http2={}", c.listener_name, is_http2);
                 Box::pin(async move {
-                    let (stream, _cluster_name) = connector.connect(None).await.map_err(|e| {
-                        let (io_err, _info) = e.into_inner();
-                        ContextualError::new(ConnectError::Io(io_err))
-                    })?;
+                    let (stream, _cluster_name) = connector.connect(None).await?;
                     debug!("Internal connection established, using is_http2={}", is_http2);
                     if is_http2 {
                         Ok(HttpConnection::new_http2(TokioIo::new(stream)))
@@ -542,5 +578,24 @@ impl Service<Uri> for UnifiedConnector {
                 })
             },
         }
+    }
+}
+
+pub(crate) fn map_tls_connect_error(err: Box<dyn std::error::Error + Send + Sync>) -> crate::Error {
+    match err.downcast::<crate::Error>() {
+        Ok(crate_err) => *crate_err,
+        Err(err) => match err.downcast::<io::Error>() {
+            Ok(io_err) => {
+                if let Some(tls_err) = io_err.get_ref().and_then(|e| e.downcast_ref::<rustls::Error>()) {
+                    crate::Error::Tls(crate::TlsError::Rustls(tls_err.clone()))
+                } else {
+                    crate::Error::upstream(crate::event_error::UpstreamError::Io(*io_err))
+                }
+            },
+            Err(err) => match err.downcast::<rustls::Error>() {
+                Ok(tls_err) => crate::Error::Tls(crate::TlsError::Rustls(*tls_err)),
+                Err(err) => crate::Error::upstream(crate::event_error::UpstreamError::Other(err.to_string())),
+            },
+        },
     }
 }

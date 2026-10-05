@@ -32,7 +32,23 @@ pub enum RetryCondition<'a, B> {
     Response(&'a Response<B>),
 }
 
-impl<B: Body> RetryCondition<'_, B> {
+impl<'a, B: Body> RetryCondition<'a, B> {
+    pub fn from_upstream_result(result: &'a crate::Result<Response<B>>) -> Option<Self> {
+        match result {
+            Ok(ref resp) => {
+                // exclude a priori the evaluation of the retry policy for 1xx, and 2xx.
+                if resp.status().is_informational() || resp.status().is_success() {
+                    return None;
+                }
+                Some(RetryCondition::Response(resp))
+            },
+            Err(err) => {
+                let ev = err.as_upstream_error()?.clone();
+                Some(RetryCondition::Error(ev))
+            },
+        }
+    }
+
     pub fn inner_response(&self) -> Option<&Response<B>> {
         if let RetryCondition::Response(resp) = self {
             Some(resp)
@@ -52,7 +68,11 @@ impl<B: Body> RetryCondition<'_, B> {
 
     #[allow(dead_code)]
     pub fn is_timeout(&self) -> bool {
-        matches!(self, RetryCondition::Error(UpstreamError::ConnectTimeout(_) | UpstreamError::RouteTimeout))
+        match self {
+            RetryCondition::Error(UpstreamError::Connect(conn_err)) => conn_err.is_timeout(),
+            RetryCondition::Error(UpstreamError::RouteTimeout) => true,
+            _ => false,
+        }
     }
 
     pub fn should_retry(&self, retry_policy: &RetryPolicy) -> bool {
@@ -112,10 +132,16 @@ impl<B: Body> RetryCondition<'_, B> {
                         return true;
                     }
                 },
-                RetryOn::ConnectFailure => {
-                    if matches!(self, RetryCondition::Error(UpstreamError::Io(_) | UpstreamError::ConnectTimeout(_))) {
+                RetryOn::ConnectFailure => match self {
+                    RetryCondition::Error(UpstreamError::Connect(conn_err)) => {
+                        if conn_err.is_retriable() {
+                            return true;
+                        }
+                    },
+                    RetryCondition::Error(UpstreamError::Io(_)) => {
                         return true;
-                    }
+                    },
+                    _ => {},
                 },
                 RetryOn::RefusedStream => {
                     if matches!(self, RetryCondition::Error(UpstreamError::RefusedStream)) {
@@ -129,6 +155,7 @@ impl<B: Body> RetryCondition<'_, B> {
                 },
             }
         }
+
         false
     }
 }
