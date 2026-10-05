@@ -95,6 +95,18 @@ static TOOL_SEARCH_INPUT_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
     })
 });
 
+fn parse_json_rpc_message(body: &[u8]) -> serde_json::Result<model::JsonRpcMessage> {
+    let mut value = serde_json::from_slice::<Value>(body)?;
+
+    if let Value::Object(message) = &mut value {
+        if message.contains_key("method") && message.contains_key("id") && !message.contains_key("params") {
+            message.insert("params".to_owned(), Value::Object(serde_json::Map::new()));
+        }
+    }
+
+    serde_json::from_value(value)
+}
+
 #[allow(clippy::struct_field_names)]
 pub struct Session {
     pub listener_name: &'static str,
@@ -602,7 +614,7 @@ impl McpGateway {
 
         let body = body.to_bytes();
 
-        let json_rpc_message = match serde_json::from_slice::<model::JsonRpcMessage>(&body) {
+        let json_rpc_message = match parse_json_rpc_message(&body) {
             Ok(message) => message,
             Err(err) => {
                 info!(target: "mcp_gateway", "handle_rpc_json_message: failed to parse json message: {body:?} ({err:?})");
@@ -955,6 +967,69 @@ mod tests {
         DisclosureMode, EmbeddingVector, HttpUpstreamPolicy, McpCodeMode, McpGatewayMode, McpTool, McpToolSearch,
         McpToolsMode, UpstreamBackend, UpstreamLimits,
     };
+
+    #[test]
+    fn params_less_request_is_normalized_before_rmcp_deserialization() {
+        let message =
+            parse_json_rpc_message(br#"{"method":"tools/list","jsonrpc":"2.0","id":1}"#).expect("params-less request");
+
+        let model::JsonRpcMessage::Request(request) = message else {
+            panic!("expected JSON-RPC request");
+        };
+        assert_eq!(request.id, NumberOrString::Number(1));
+        assert_eq!(request.request.method, "tools/list");
+        assert!(request.request.params.is_empty());
+    }
+
+    #[test]
+    fn existing_request_params_are_preserved() {
+        let message =
+            parse_json_rpc_message(br#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"cursor":"next"}}"#)
+                .expect("request with params");
+
+        let model::JsonRpcMessage::Request(request) = message else {
+            panic!("expected JSON-RPC request");
+        };
+        assert_eq!(request.request.params, serde_json::Map::from_iter([("cursor".to_owned(), json!("next"))]));
+    }
+
+    #[test]
+    fn params_less_notification_remains_a_notification() {
+        let message = parse_json_rpc_message(br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+            .expect("params-less notification");
+
+        let model::JsonRpcMessage::Notification(notification) = message else {
+            panic!("expected JSON-RPC notification");
+        };
+        assert_eq!(notification.notification.method, "notifications/initialized");
+        assert!(notification.notification.params.is_empty());
+    }
+
+    #[test]
+    fn response_with_an_id_is_not_normalized_as_a_request() {
+        let message =
+            parse_json_rpc_message(br#"{"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}"#).expect("JSON-RPC response");
+
+        let model::JsonRpcMessage::Response(response) = message else {
+            panic!("expected JSON-RPC response");
+        };
+        assert_eq!(response.id, NumberOrString::Number(1));
+        assert_eq!(response.result.get("status"), Some(&json!("ok")));
+    }
+
+    #[test]
+    fn explicit_null_params_are_not_normalized() {
+        let message = parse_json_rpc_message(br#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":null}"#)
+            .expect("explicit null params retain rmcp behavior");
+
+        assert!(matches!(message, model::JsonRpcMessage::Notification(_)));
+    }
+
+    #[test]
+    fn malformed_json_and_invalid_params_remain_parse_errors() {
+        parse_json_rpc_message(br#"{"jsonrpc":"2.0""#).unwrap_err();
+        parse_json_rpc_message(br#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":[]}"#).unwrap_err();
+    }
 
     fn config_with_codemode() -> McpGatewayConfig {
         McpGatewayConfig {
