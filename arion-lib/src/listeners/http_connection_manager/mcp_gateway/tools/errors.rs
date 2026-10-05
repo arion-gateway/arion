@@ -93,7 +93,6 @@ impl ToolInvocationFailure {
 pub(super) type ToolInvocationOutcome = Result<model::CallToolResult, ToolInvocationFailure>;
 
 #[derive(Debug, thiserror::Error)]
-#[allow(clippy::large_enum_variant)]
 pub enum CallToolError {
     #[error("'name' parameter is missing or not a string")]
     NameNotString,
@@ -106,9 +105,9 @@ pub enum CallToolError {
     #[error("Failed to encode request for tool '{tool}': {reason}")]
     RequestEncoding { tool: String, reason: String },
     #[error("Client initialization error: {0}")]
-    ClientInitializeError(#[from] ClientInitializeError),
+    ClientInitializeError(#[from] Box<ClientInitializeError>),
     #[error("ServiceError: {0}")]
-    ServiceError(#[from] ServiceError),
+    ServiceError(#[from] Box<ServiceError>),
     #[error("SerdeError: {0}")]
     SerdeError(#[from] serde_json::Error),
     #[error("Validation error: {0}")]
@@ -136,7 +135,7 @@ impl From<CallToolError> for model::ErrorData {
             CallToolError::RequestEncoding { ref tool, ref reason } => {
                 model::ErrorData::internal_error(format!("Failed to encode request for tool '{tool}': {reason}"), None)
             },
-            CallToolError::ClientInitializeError(ref init_err) => match init_err {
+            CallToolError::ClientInitializeError(ref init_err) => match init_err.as_ref() {
                 ClientInitializeError::JsonRpcError(error_data) => error_data.clone(),
                 ClientInitializeError::ConnectionClosed(ref msg) => {
                     model::ErrorData::internal_error(format!("Upstream connection closed: {msg}"), None)
@@ -154,7 +153,7 @@ impl From<CallToolError> for model::ErrorData {
             CallToolError::SerdeError(ref e) => {
                 model::ErrorData::parse_error(format!("Serialization error: {e}"), None)
             },
-            CallToolError::ServiceError(ref svc_err) => match svc_err {
+            CallToolError::ServiceError(ref svc_err) => match svc_err.as_ref() {
                 ServiceError::McpError(error_data) => error_data.clone(),
                 ServiceError::TransportSend(ref e) => {
                     model::ErrorData::internal_error(format!("Upstream transport send error: {e}"), None)
@@ -184,14 +183,13 @@ impl From<CallToolError> for model::ErrorData {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[allow(clippy::large_enum_variant)]
 pub enum ListToolsError {
     #[error("Unsupported transport")]
     UnsupportedTransport,
     #[error("Client: {0}")]
-    ClientError(#[from] ClientInitializeError),
+    ClientError(#[from] Box<ClientInitializeError>),
     #[error("ServiceError: {0}")]
-    ServiceError(#[from] ServiceError),
+    ServiceError(#[from] Box<ServiceError>),
     #[error("Invalid dynamic tool snapshot: {0}")]
     InvalidSnapshot(String),
 }

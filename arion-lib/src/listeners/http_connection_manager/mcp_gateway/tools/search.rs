@@ -94,7 +94,6 @@ impl ToolsRegistry {
         }
     }
 
-    #[allow(clippy::result_large_err)]
     fn validate_search_request(
         &self,
         request: ToolSearchRequest,

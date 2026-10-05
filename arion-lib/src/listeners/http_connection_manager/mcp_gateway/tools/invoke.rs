@@ -128,7 +128,7 @@ async fn invoke_mcp_server(
                     info!(target: "mcp_gateway", "removing MCP client for URL {url} due to transport error!");
                     session.mcp_upstreams.pin().remove(url.as_str());
                 }
-                Err(CallToolError::ServiceError(error))
+                Err(CallToolError::ServiceError(Box::new(error)))
             },
         }
     };

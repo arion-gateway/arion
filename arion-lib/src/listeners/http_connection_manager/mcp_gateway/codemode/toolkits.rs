@@ -99,7 +99,6 @@ impl ToolkitRegistry {
         visible
     }
 
-    #[allow(clippy::result_large_err)]
     pub fn list(
         &self,
         tools: &ToolsRegistry,
