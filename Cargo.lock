@@ -381,6 +381,7 @@ dependencies = [
  "atomic-time",
  "atomic_enum",
  "atomicoption",
+ "aws-lc-rs",
  "base64 0.22.1",
  "bincode-next",
  "bitflags 2.13.1",
