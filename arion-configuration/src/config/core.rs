@@ -95,7 +95,7 @@ impl Read for DataSourceReader<'_> {
         match self {
             Self::OwnedBytes { bytes, read } => {
                 let mut remaining = bytes.get(*read..).unwrap_or(&[]);
-                let copied = remaining.read(buf)?;
+                let copied = remaining.read(buf)? ;
                 *read += copied;
                 Ok(copied)
             },
@@ -285,6 +285,13 @@ pub struct InternalAddress {
     pub endpoint_id: SmolStr,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HttpUri {
+    pub uri: String,
+    pub cluster: String,
+    pub timeout: std::time::Duration,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct RustType<T>(pub T);
 
@@ -300,7 +307,7 @@ pub(crate) use envoy_conversions::*;
 #[cfg(feature = "envoy-conversions")]
 pub mod envoy_conversions {
     #![allow(deprecated)]
-    use super::{Address, DataSource, InternalAddress, RustType, StringMatcher, StringMatcherPattern};
+    use super::{Address, DataSource, HttpUri, InternalAddress, RustType, StringMatcher, StringMatcherPattern};
     use crate::config::common::*;
     use arion_data_plane_api::envoy_data_plane_api::envoy::{
         config::core::v3::{
@@ -322,8 +329,29 @@ pub mod envoy_conversions {
     use regex::{Regex, RegexBuilder};
     use smol_str::SmolStr;
 
+    use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::{
+        http_uri::HttpUpstreamType as EnvoyHttpClusterType, HttpUri as EnvoyHttpUri,
+    };
     use arion_data_plane_api::envoy_data_plane_api::google::protobuf::Duration as EnvoyDuration;
     use std::time::Duration;
+
+    impl TryFrom<EnvoyHttpUri> for HttpUri {
+        type Error = GenericError;
+        fn try_from(value: EnvoyHttpUri) -> Result<Self, Self::Error> {
+            let EnvoyHttpUri { uri, timeout, http_upstream_type } = value;
+            let timeout = timeout.map(TryInto::try_into).transpose()?.map(RustType::<Duration>::into_inner);
+            let timeout = required!(timeout)?;
+            let http_upstream_type = required!(http_upstream_type)?;
+            Ok(HttpUri {
+                uri,
+                cluster: {
+                    let EnvoyHttpClusterType::Cluster(cluster) = http_upstream_type;
+                    cluster
+                },
+                timeout,
+            })
+        }
+    }
 
     impl TryFrom<EnvoyDuration> for RustType<Duration> {
         type Error = GenericError;

@@ -20,6 +20,7 @@ use crate::config::{
     core::{DataSource, StringMatcher},
     network_filters::http_connection_manager::{route::RouteMatch, RetryPolicy},
 };
+pub use crate::config::core::HttpUri;
 use http::HeaderName;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -60,13 +61,6 @@ pub struct JwtProvider {
     pub jwks_source_specifier: JwksSourceSpecifier,
     // pub require_expiration: bool,
     // pub max_lifetime: Option<Duration>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct HttpUri {
-    pub uri: String,
-    pub cluster: String,
-    pub timeout: std::time::Duration,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -120,9 +114,7 @@ mod envoy_conversions {
     use crate::config::core::RustType;
     use crate::config::network_filters::http_connection_manager::{RetryBackoff, RetryOn};
     use crate::config::{required, unsupported_field, GenericError, WithNodeOnResult};
-    use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::http_uri::HttpUpstreamType as EnvoyHttpClusterType;
     use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::BackoffStrategy as EnvoyCoreBackoffStrategy;
-    use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::HttpUri as EnvoyHttpUri;
     use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::RetryPolicy as EnvoyCoreRetryPolicy;
     use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::jwt_provider::JwksSourceSpecifier as EnvoyJwksSourceSpecifier;
     use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::jwt_requirement::RequiresType as EnvoyRequiresType;
@@ -134,24 +126,6 @@ mod envoy_conversions {
     use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::JwtRequirement as EnvoyJwtRequirement;
     use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::RemoteJwks as EnvoyRemoteJwks;
     use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::RequirementRule as EnvoyRequirementRule;
-
-    impl TryFrom<EnvoyHttpUri> for HttpUri {
-        type Error = GenericError;
-        fn try_from(value: EnvoyHttpUri) -> Result<Self, Self::Error> {
-            let EnvoyHttpUri { uri, timeout, http_upstream_type } = value;
-            let timeout = timeout.map(TryInto::try_into).transpose()?.map(RustType::<Duration>::into_inner);
-            let timeout = required!(timeout)?;
-            let http_upstream_type = required!(http_upstream_type)?;
-            Ok(HttpUri {
-                uri,
-                cluster: {
-                    let EnvoyHttpClusterType::Cluster(cluster) = http_upstream_type;
-                    cluster
-                },
-                timeout,
-            })
-        }
-    }
 
     // NOTE: envoy makes use of two different retry policies: one for route and one for core.
     // Core is much simpler than route, as it only supports only a subset of fields.

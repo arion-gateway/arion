@@ -36,6 +36,7 @@ pub mod wasm;
 pub mod http_modifiers;
 pub mod jwt_authn;
 pub mod mcp_gateway;
+pub mod oauth2;
 mod redirect;
 mod route;
 mod upgrades;
