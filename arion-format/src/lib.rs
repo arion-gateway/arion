@@ -23,6 +23,9 @@ pub mod grammar;
 pub mod header_formatter;
 pub mod operator;
 pub mod types;
+pub mod uri_formatter;
+
+pub use uri_formatter::UriFormatter;
 
 use crate::grammar::{AccessLogGrammar, ENVOY_OPERATORS};
 use arrayvec::ArrayString;

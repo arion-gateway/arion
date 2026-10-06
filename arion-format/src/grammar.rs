@@ -51,9 +51,13 @@ macro_rules! trie_mapstr_argument {
 static ENVOY_REQ_ARGS: LazyLock<Trie<u8, (ReqArgument, Category, usize, bool)>> = LazyLock::new(|| {
     let mut trie = Trie::new();
     trie_mapstr_argument!(trie, ":SCHEME", ReqArgument::Scheme);
+    trie_mapstr_argument!(trie, ":scheme", ReqArgument::Scheme);
     trie_mapstr_argument!(trie, ":METHOD", ReqArgument::Method);
+    trie_mapstr_argument!(trie, ":method", ReqArgument::Method);
     trie_mapstr_argument!(trie, ":PATH", ReqArgument::Path);
+    trie_mapstr_argument!(trie, ":path", ReqArgument::Path);
     trie_mapstr_argument!(trie, ":AUTHORITY", ReqArgument::Authority);
+    trie_mapstr_argument!(trie, ":authority", ReqArgument::Authority);
     trie_mapstr_argument!(trie, "X-ENVOY-ORIGINAL-PATH?:PATH", ReqArgument::OriginalPathOrPath);
     trie
 });
@@ -61,6 +65,7 @@ static ENVOY_REQ_ARGS: LazyLock<Trie<u8, (ReqArgument, Category, usize, bool)>> 
 static ENVOY_RESP_ARGS: LazyLock<Trie<u8, (RespArgument, Category, usize, bool)>> = LazyLock::new(|| {
     let mut trie = Trie::new();
     trie_mapstr_argument!(trie, ":STATUS", RespArgument::Status);
+    trie_mapstr_argument!(trie, ":status", RespArgument::Status);
     trie
 });
 
