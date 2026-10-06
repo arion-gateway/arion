@@ -26,6 +26,7 @@ mod health_check;
 mod listener;
 pub mod mcp_gateway;
 mod network_global_rate_limit;
+pub mod oauth2;
 pub mod presets;
 mod rate_limit;
 mod rbac;
@@ -60,6 +61,7 @@ pub use mcp_gateway::{
     MCP_TOOL_TYPE_URL,
 };
 pub use network_global_rate_limit::{NetworkGlobalRateLimit, NetworkGlobalRateLimitBuilder};
+pub use oauth2::OAuth2Builder;
 pub use rate_limit::{
     LocalRateLimit, LocalRateLimitBuilder, TokenBucket, TokenBucketBuilder, UserRateLimiter, UserRateLimiterBuilder,
 };
