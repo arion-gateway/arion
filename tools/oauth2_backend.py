@@ -4,12 +4,13 @@ Lightweight Mock OAuth2 Server & Upstream Backend for testing Arion Gateway.
 Zero external dependencies (uses standard library http.server).
 
 Endpoints:
-- OAuth2 Authorize endpoint: GET  /oauth/authorize (port 8089)
-- OAuth2 Token endpoint:     POST /oauth/token     (port 8089)
-- Upstream Mock API:         GET  /api/hello       (port 8090)
+- OAuth2 Authorize endpoint: GET  /oauth/authorize (default port 8089)
+- OAuth2 Token endpoint:     POST /oauth/token     (default port 8089)
+- Upstream Mock API:         GET  /api/hello       (optional, when --upstream-port is specified)
 
 Usage:
   python3 tools/oauth2_backend.py
+  python3 tools/oauth2_backend.py --upstream-port 8090
   python3 tools/oauth2_backend.py --port 8089 --upstream-port 8090 --auto-approve
 """
 
@@ -253,38 +254,46 @@ def main():
     parser = argparse.ArgumentParser(description="Mock OAuth2 & Upstream Server for Arion Gateway")
     parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8089, help="OAuth2 server port (default: 8089)")
-    parser.add_argument("--upstream-port", type=int, default=8090, help="Upstream mock backend port (default: 8090)")
+    parser.add_argument("--upstream-port", type=int, default=None, help="Optional upstream mock backend port (not bound if omitted)")
     parser.add_argument("--auto-approve", action="store_true", help="Automatically approve authorization requests without user interaction")
     args = parser.parse_args()
 
     OAuthHandler.auto_approve = args.auto_approve
 
     oauth_server = http.server.HTTPServer((args.host, args.port), OAuthHandler)
-    upstream_server = http.server.HTTPServer((args.host, args.upstream_port), UpstreamHandler)
-
     t1 = threading.Thread(target=oauth_server.serve_forever, daemon=True)
-    t2 = threading.Thread(target=upstream_server.serve_forever, daemon=True)
     t1.start()
-    t2.start()
+
+    upstream_server = None
+    t2 = None
+    if args.upstream_port is not None:
+        upstream_server = http.server.HTTPServer((args.host, args.upstream_port), UpstreamHandler)
+        t2 = threading.Thread(target=upstream_server.serve_forever, daemon=True)
+        t2.start()
 
     print(f"\n{BOLD}{GREEN}===================================================================={RESET}")
-    print(f"{BOLD}{GREEN}  Arion OAuth2 Mock Server & Upstream Backend running!{RESET}")
+    title = "Arion OAuth2 Mock Server" + (" & Upstream Backend" if upstream_server else "") + " running!"
+    print(f"{BOLD}{GREEN}  {title}{RESET}")
     print(f"{BOLD}{GREEN}===================================================================={RESET}")
     print(f"  • {BOLD}OAuth2 Server:{RESET}      http://{args.host}:{args.port}")
     print(f"    - Authorize endpoint:   http://{args.host}:{args.port}/oauth/authorize")
     print(f"    - Token endpoint:       http://{args.host}:{args.port}/oauth/token")
-    print(f"  • {BOLD}Upstream Backend:{RESET}   http://{args.host}:{args.upstream_port}")
-    print(f"    - Protected API:        http://{args.host}:{args.upstream_port}/api/hello")
+    if upstream_server:
+        print(f"  • {BOLD}Upstream Backend:{RESET}   http://{args.host}:{args.upstream_port}")
+        print(f"    - Protected API:        http://{args.host}:{args.upstream_port}/api/hello")
     print(f"  • Mode:                   {'Auto-approve (headless curl)' if args.auto_approve else 'Interactive HTML consent screen'}")
     print(f"{BOLD}{GREEN}===================================================================={RESET}\n")
 
     try:
         t1.join()
-        t2.join()
+        if t2:
+            t2.join()
     except KeyboardInterrupt:
-        print(f"\n{YELLOW}Shutting down mock servers...{RESET}")
+        server_str = "servers" if upstream_server else "server"
+        print(f"\n{YELLOW}Shutting down mock {server_str}...{RESET}")
         oauth_server.shutdown()
-        upstream_server.shutdown()
+        if upstream_server:
+            upstream_server.shutdown()
         sys.exit(0)
 
 
