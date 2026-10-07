@@ -12,18 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
 use std::{
     borrow::Cow,
     sync::{LazyLock, Once},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
 
+use aws_lc_rs::hmac;
 use base64::{prelude::BASE64_STANDARD, Engine};
 use http::{header, HeaderMap, HeaderValue, Request, StatusCode, Version};
 use papaya::HashMap as PapayaMap;
 use rand::Rng;
-use aws_lc_rs::hmac;
 use serde::Deserialize;
 use smol_str::SmolStr;
 use tracing::{debug, error, warn};
@@ -113,10 +113,7 @@ impl OAuth2FilterBuilder {
         let redirect_uri_formatter = UriFormatter::try_new(self.config.redirect_uri.as_str())
             .unwrap_or_else(|_| UriFormatter::try_new("").unwrap());
 
-        let inner = Arc::new(OAuth2FilterInner {
-            config: self.config,
-            redirect_uri_formatter,
-        });
+        let inner = Arc::new(OAuth2FilterInner { config: self.config, redirect_uri_formatter });
         OAuth2Filter { inner }
     }
 }
@@ -158,8 +155,8 @@ impl OAuth2Filter {
 
         let Some(host) = extract_host(req) else {
             warn!(target: "oauth2", "missing Host header or authority in request");
-            let resp = SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into())
-                .into_response(req.version());
+            let resp =
+                SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into()).into_response(req.version());
             return FilterDecision::DirectResponse(Box::new(resp));
         };
         let path = req.uri().path();
@@ -196,8 +193,7 @@ impl OAuth2Filter {
 
         // 4. Hot path: check for existing valid session cookies.
         let cookie_names = &config.credentials.cookie_names;
-        let (bearer_token, oauth_hmac, oauth_expires) =
-            extract_session_cookies(req.headers(), cookie_names);
+        let (bearer_token, oauth_hmac, oauth_expires) = extract_session_cookies(req.headers(), cookie_names);
 
         let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
 
@@ -305,11 +301,8 @@ impl OAuth2Filter {
         let redirect_uri = self.inner.redirect_uri_formatter.format(&ctx);
 
         // Generate random CSRF nonce
-        let nonce: String = rand::thread_rng()
-            .sample_iter(&rand::distributions::Alphanumeric)
-            .take(32)
-            .map(char::from)
-            .collect();
+        let nonce: String =
+            rand::thread_rng().sample_iter(&rand::distributions::Alphanumeric).take(32).map(char::from).collect();
 
         // State encodes the original path and query
         let original_target = req.uri().path_and_query().map_or("/", |pq| pq.as_str());
@@ -321,11 +314,7 @@ impl OAuth2Filter {
 
         let auth_url = format!(
             "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}",
-            config.authorization_endpoint,
-            encoded_client_id,
-            encoded_redirect_uri,
-            encoded_scopes,
-            state
+            config.authorization_endpoint, encoded_client_id, encoded_redirect_uri, encoded_scopes, state
         );
 
         let mut resp = SyntheticHttpResponse::custom_error(
@@ -382,7 +371,7 @@ impl OAuth2Filter {
                             let resp = SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into())
                                 .into_response(version);
                             return FilterDecision::DirectResponse(Box::new(resp));
-                        }
+                        },
                     };
                     code = Some(decoded);
                 } else if k == "state" {
@@ -393,7 +382,7 @@ impl OAuth2Filter {
                             let resp = SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into())
                                 .into_response(version);
                             return FilterDecision::DirectResponse(Box::new(resp));
-                        }
+                        },
                     };
                     state = Some(decoded);
                 }
@@ -402,8 +391,7 @@ impl OAuth2Filter {
 
         let Some(code_val) = code else {
             warn!(target: "oauth2", "callback request missing 'code' parameter");
-            let resp = SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into())
-                .into_response(version);
+            let resp = SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into()).into_response(version);
             return FilterDecision::DirectResponse(Box::new(resp));
         };
 
@@ -539,9 +527,7 @@ impl OAuth2Filter {
         let config = &self.inner.config;
         let uri = config.token_endpoint.uri.as_str();
 
-        let req_builder = OAUTH_HTTP_CLIENT
-            .post(uri)
-            .timeout(config.token_endpoint.timeout);
+        let req_builder = OAUTH_HTTP_CLIENT.post(uri).timeout(config.token_endpoint.timeout);
 
         let req_builder = match config.auth_type {
             AuthType::UrlEncodedBody => {
@@ -552,9 +538,7 @@ impl OAuth2Filter {
                     utf8_percent_encode(config.credentials.client_id.as_str(), NON_ALPHANUMERIC),
                     utf8_percent_encode(config.credentials.token_secret.as_str(), NON_ALPHANUMERIC),
                 );
-                req_builder
-                    .header(header::CONTENT_TYPE.as_str(), "application/x-www-form-urlencoded")
-                    .body(body)
+                req_builder.header(header::CONTENT_TYPE.as_str(), "application/x-www-form-urlencoded").body(body)
             },
             AuthType::BasicAuth => {
                 let body = format!(
@@ -578,9 +562,7 @@ impl OAuth2Filter {
             return Err(format!("token endpoint returned status {status}: {body}"));
         }
 
-        resp.json::<TokenEndpointResponse>()
-            .await
-            .map_err(|e| format!("failed to decode json response: {e}"))
+        resp.json::<TokenEndpointResponse>().await.map_err(|e| format!("failed to decode json response: {e}"))
     }
 }
 
@@ -706,7 +688,6 @@ fn format_cookie(
     HeaderValue::try_from(buf.into_bytes()).ok()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -741,10 +722,7 @@ mod tests {
                 specifier: PathSpecifier::Exact("/callback".into()),
                 ignore_case: false,
             },
-            signout_path: PathMatcher {
-                specifier: PathSpecifier::Exact("/signout".into()),
-                ignore_case: false,
-            },
+            signout_path: PathMatcher { specifier: PathSpecifier::Exact("/signout".into()), ignore_case: false },
             forward_bearer_token: true,
             preserve_authorization_header: false,
             pass_through_matcher: vec![],
@@ -786,7 +764,10 @@ mod tests {
                 eprintln!("LOCATION IS: {}", location);
                 assert!(location.starts_with("https://auth.example.com/oauth/authorize?"));
                 // Notice the dynamic redirect_uri formatting from request headers!
-                assert!(location.contains("https%3A%2F%2Fgateway%2Eexample%2Ecom%2Fcallback") || location.contains("https%3A%2F%2Fgateway.example.com%2Fcallback"));
+                assert!(
+                    location.contains("https%3A%2F%2Fgateway%2Eexample%2Ecom%2Fcallback")
+                        || location.contains("https%3A%2F%2Fgateway.example.com%2Fcallback")
+                );
                 assert!(location.contains("client_id=client%2Did") || location.contains("client_id=client-id"));
                 assert!(resp.headers().contains_key(header::SET_COOKIE));
             },
@@ -856,9 +837,7 @@ mod tests {
         let hmac_payload = format!("{host}:{expires_at}");
         let hmac_val = compute_hmac(config.credentials.hmac_secret.as_str(), &hmac_payload);
 
-        let cookie_header = format!(
-            "BearerToken={token}; OauthExpires={expires_at}; OauthHMAC={hmac_val}"
-        );
+        let cookie_header = format!("BearerToken={token}; OauthExpires={expires_at}; OauthHMAC={hmac_val}");
 
         let mut req = Request::builder()
             .uri("/api/data")
@@ -870,10 +849,7 @@ mod tests {
         // First pass: validates HMAC and populates papaya cache
         let decision = filter.apply_request(&mut req).await;
         assert!(matches!(decision, FilterDecision::Continue));
-        assert_eq!(
-            req.headers().get(header::AUTHORIZATION).unwrap(),
-            "Bearer my-jwt-access-token"
-        );
+        assert_eq!(req.headers().get(header::AUTHORIZATION).unwrap(), "Bearer my-jwt-access-token");
 
         // Verify cache entry exists in papaya
         assert!(OAUTH_SESSION_CACHE.pin().get(hmac_val.as_str()).is_some());
@@ -888,10 +864,7 @@ mod tests {
 
         let decision2 = filter.apply_request(&mut req2).await;
         assert!(matches!(decision2, FilterDecision::Continue));
-        assert_eq!(
-            req2.headers().get(header::AUTHORIZATION).unwrap(),
-            "Bearer my-jwt-access-token"
-        );
+        assert_eq!(req2.headers().get(header::AUTHORIZATION).unwrap(), "Bearer my-jwt-access-token");
     }
 
     #[tokio::test]
@@ -909,10 +882,7 @@ mod tests {
         match decision {
             FilterDecision::DirectResponse(resp) => {
                 assert_eq!(resp.status(), StatusCode::FOUND);
-                assert_eq!(
-                    resp.headers().get(header::LOCATION).unwrap(),
-                    "https://auth.example.com/oauth/logout"
-                );
+                assert_eq!(resp.headers().get(header::LOCATION).unwrap(), "https://auth.example.com/oauth/logout");
                 let cookies: Vec<_> = resp.headers().get_all(header::SET_COOKIE).iter().collect();
                 assert!(!cookies.is_empty());
                 for c in cookies {
@@ -954,10 +924,7 @@ mod tests {
         assert_eq!(exp, Some("789"));
 
         let mut headers2 = HeaderMap::new();
-        headers2.insert(
-            header::COOKIE,
-            "BearerToken=tok123; other=xyz".parse().unwrap(),
-        );
+        headers2.insert(header::COOKIE, "BearerToken=tok123; other=xyz".parse().unwrap());
         let (tok2, hmac2, exp2) = extract_session_cookies(&headers2, &cnames);
         assert_eq!(tok2, Some("tok123"));
         assert_eq!(hmac2, None);
@@ -989,7 +956,7 @@ mod tests {
         match decision {
             FilterDecision::DirectResponse(resp) => {
                 assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-            }
+            },
             _ => panic!("expected 400 Bad Request on invalid percent encoded query"),
         }
     }
@@ -999,16 +966,13 @@ mod tests {
         let config = sample_config();
         let mut filter = OAuth2Filter::new(config);
 
-        let mut req = Request::builder()
-            .uri("/protected")
-            .body(ArionRequestBody::default())
-            .unwrap();
+        let mut req = Request::builder().uri("/protected").body(ArionRequestBody::default()).unwrap();
 
         let decision = filter.apply_request(&mut req).await;
         match decision {
             FilterDecision::DirectResponse(resp) => {
                 assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-            }
+            },
             _ => panic!("expected 400 Bad Request when Host header is missing"),
         }
     }

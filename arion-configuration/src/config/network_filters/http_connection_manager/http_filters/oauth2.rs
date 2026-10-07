@@ -20,11 +20,7 @@ use smol_str::SmolStr;
 
 use crate::config::{
     core::HttpUri,
-    network_filters::http_connection_manager::{
-        header_matcher::HeaderMatcher,
-        route::PathMatcher,
-        RetryPolicy,
-    },
+    network_filters::http_connection_manager::{header_matcher::HeaderMatcher, route::PathMatcher, RetryPolicy},
 };
 
 #[allow(clippy::struct_excessive_bools)]
@@ -223,22 +219,13 @@ pub struct CookieConfigs {
 mod envoy_conversions {
     use super::*;
 
-    use crate::config::{
-        common::*,
-        core::RustType,
-    };
+    use crate::config::{common::*, core::RustType};
     use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::oauth2::v3::{
         cookie_config::SameSite as EnvoySameSite,
         o_auth2_config::AuthType as EnvoyAuthType,
-        o_auth2_credentials::{
-            CookieNames as EnvoyCookieNames,
-            TokenFormation as EnvoyTokenFormation,
-        },
-        CookieConfig as EnvoyCookieConfig,
-        CookieConfigs as EnvoyCookieConfigs,
-        OAuth2 as EnvoyOAuth2,
-        OAuth2Config as EnvoyOAuth2Config,
-        OAuth2Credentials as EnvoyOAuth2Credentials,
+        o_auth2_credentials::{CookieNames as EnvoyCookieNames, TokenFormation as EnvoyTokenFormation},
+        CookieConfig as EnvoyCookieConfig, CookieConfigs as EnvoyCookieConfigs, OAuth2 as EnvoyOAuth2,
+        OAuth2Config as EnvoyOAuth2Config, OAuth2Credentials as EnvoyOAuth2Credentials,
     };
 
     impl TryFrom<EnvoyOAuth2> for OAuth2Config {
@@ -298,10 +285,8 @@ mod envoy_conversions {
                 required!(redirect_path_matcher).with_node("redirect_path_matcher")?.try_into()?;
             let signout_path = required!(signout_path).with_node("signout_path")?.try_into()?;
 
-            let pass_through_matcher =
-                convert_vec!(pass_through_matcher).with_node("pass_through_matcher")?;
-            let deny_redirect_matcher =
-                convert_vec!(deny_redirect_matcher).with_node("deny_redirect_matcher")?;
+            let pass_through_matcher = convert_vec!(pass_through_matcher).with_node("pass_through_matcher")?;
+            let deny_redirect_matcher = convert_vec!(deny_redirect_matcher).with_node("deny_redirect_matcher")?;
 
             let auth_scopes = if auth_scopes.is_empty() {
                 vec!["user".into()]
@@ -311,9 +296,9 @@ mod envoy_conversions {
 
             let resources = resources.into_iter().map(SmolStr::from).collect();
 
-            let auth_type = match EnvoyAuthType::try_from(auth_type)
-                .map_err(|e| GenericError::from_msg_with_cause(format!("invalid auth_type enum value {auth_type}"), e))?
-            {
+            let auth_type = match EnvoyAuthType::try_from(auth_type).map_err(|e| {
+                GenericError::from_msg_with_cause(format!("invalid auth_type enum value {auth_type}"), e)
+            })? {
                 EnvoyAuthType::UrlEncodedBody => AuthType::UrlEncodedBody,
                 EnvoyAuthType::BasicAuth => AuthType::BasicAuth,
             };
@@ -345,11 +330,7 @@ mod envoy_conversions {
                 .unwrap_or_else(default_token_lifetime);
 
             let cookie_configs = cookie_configs.map(TryInto::try_into).transpose()?.unwrap_or_default();
-            let stat_prefix = if stat_prefix.is_empty() {
-                default_stat_prefix()
-            } else {
-                stat_prefix.into()
-            };
+            let stat_prefix = if stat_prefix.is_empty() { default_stat_prefix() } else { stat_prefix.into() };
 
             Ok(Self {
                 token_endpoint,
@@ -385,13 +366,8 @@ mod envoy_conversions {
     impl TryFrom<EnvoyOAuth2Credentials> for OAuth2Credentials {
         type Error = GenericError;
         fn try_from(value: EnvoyOAuth2Credentials) -> Result<Self, Self::Error> {
-            let EnvoyOAuth2Credentials {
-                client_id,
-                token_secret,
-                cookie_names,
-                cookie_domain,
-                token_formation,
-            } = value;
+            let EnvoyOAuth2Credentials { client_id, token_secret, cookie_names, cookie_domain, token_formation } =
+                value;
 
             let client_id = required!(client_id).with_node("client_id")?;
             let token_secret = required!(token_secret).with_node("token_secret")?;
@@ -429,31 +405,19 @@ mod envoy_conversions {
                 } else {
                     value.bearer_token.into()
                 },
-                oauth_hmac: if value.oauth_hmac.is_empty() {
-                    defaults.oauth_hmac
-                } else {
-                    value.oauth_hmac.into()
-                },
+                oauth_hmac: if value.oauth_hmac.is_empty() { defaults.oauth_hmac } else { value.oauth_hmac.into() },
                 oauth_expires: if value.oauth_expires.is_empty() {
                     defaults.oauth_expires
                 } else {
                     value.oauth_expires.into()
                 },
-                id_token: if value.id_token.is_empty() {
-                    defaults.id_token
-                } else {
-                    value.id_token.into()
-                },
+                id_token: if value.id_token.is_empty() { defaults.id_token } else { value.id_token.into() },
                 refresh_token: if value.refresh_token.is_empty() {
                     defaults.refresh_token
                 } else {
                     value.refresh_token.into()
                 },
-                oauth_nonce: if value.oauth_nonce.is_empty() {
-                    defaults.oauth_nonce
-                } else {
-                    value.oauth_nonce.into()
-                },
+                oauth_nonce: if value.oauth_nonce.is_empty() { defaults.oauth_nonce } else { value.oauth_nonce.into() },
                 code_verifier: if value.code_verifier.is_empty() {
                     defaults.code_verifier
                 } else {
@@ -467,9 +431,9 @@ mod envoy_conversions {
         type Error = GenericError;
         fn try_from(value: EnvoyCookieConfig) -> Result<Self, Self::Error> {
             let EnvoyCookieConfig { same_site, path, partitioned } = value;
-            let same_site = match EnvoySameSite::try_from(same_site)
-                .map_err(|e| GenericError::from_msg_with_cause(format!("invalid same_site enum value {same_site}"), e))?
-            {
+            let same_site = match EnvoySameSite::try_from(same_site).map_err(|e| {
+                GenericError::from_msg_with_cause(format!("invalid same_site enum value {same_site}"), e)
+            })? {
                 EnvoySameSite::Disabled => CookieSameSite::Disabled,
                 EnvoySameSite::Strict => CookieSameSite::Strict,
                 EnvoySameSite::Lax => CookieSameSite::Lax,
@@ -509,16 +473,11 @@ mod envoy_conversions {
     mod tests {
         use super::*;
         use arion_data_plane_api::envoy_data_plane_api::envoy::{
-            config::core::v3::{
-                http_uri::HttpUpstreamType,
-                HttpUri as EnvoyHttpUri,
-            },
+            config::core::v3::{http_uri::HttpUpstreamType, HttpUri as EnvoyHttpUri},
             extensions::transport_sockets::tls::v3::SdsSecretConfig as EnvoySdsSecretConfig,
             r#type::matcher::v3::{
-                path_matcher::Rule as EnvoyPathMatcherRule,
-                string_matcher::MatchPattern as EnvoyStringMatcherPattern,
-                PathMatcher as EnvoyTypePathMatcher,
-                StringMatcher as EnvoyStringMatcher,
+                path_matcher::Rule as EnvoyPathMatcherRule, string_matcher::MatchPattern as EnvoyStringMatcherPattern,
+                PathMatcher as EnvoyTypePathMatcher, StringMatcher as EnvoyStringMatcher,
             },
         };
         use arion_data_plane_api::envoy_data_plane_api::google::protobuf::Duration as EnvoyDuration;
@@ -630,9 +589,7 @@ mod envoy_conversions {
 
         #[test]
         fn test_top_level_oauth2_wrapper() {
-            let envoy_filter = EnvoyOAuth2 {
-                config: Some(sample_envoy_oauth2_config()),
-            };
+            let envoy_filter = EnvoyOAuth2 { config: Some(sample_envoy_oauth2_config()) };
 
             let cfg = OAuth2Config::try_from(envoy_filter).unwrap();
             assert_eq!(cfg.credentials.client_id, "test-client-id");

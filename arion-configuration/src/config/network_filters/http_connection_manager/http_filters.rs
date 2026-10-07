@@ -91,8 +91,7 @@ pub enum HttpFilterType {
 pub(crate) use envoy_conversions::*;
 
 use crate::config::network_filters::http_connection_manager::http_filters::{
-    cors::CorsConfig, jwt::JwtAuthentication, oauth2::OAuth2Config, user_rate_limit::UserRateLimiter,
-    wasm::WasmConfig,
+    cors::CorsConfig, jwt::JwtAuthentication, oauth2::OAuth2Config, user_rate_limit::UserRateLimiter, wasm::WasmConfig,
 };
 
 use super::is_default;
@@ -101,8 +100,7 @@ use super::is_default;
 mod envoy_conversions {
     #![allow(deprecated)]
     use super::{
-        ext_proc::ExtProcPerRoute, FilterConfigOverride, FilterOverride, HttpFilter,
-        HttpFilterType, HttpRbac,
+        ext_proc::ExtProcPerRoute, FilterConfigOverride, FilterOverride, HttpFilter, HttpFilterType, HttpRbac,
     };
     use crate::config::common::*;
     use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::cedar::cedar_policy::v3::CedarPolicy as ProtoCedarPolicy;

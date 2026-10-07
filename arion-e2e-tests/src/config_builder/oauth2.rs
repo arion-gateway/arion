@@ -16,21 +16,13 @@ use std::time::Duration;
 
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::{
-        config::core::v3::{
-            http_uri::HttpUpstreamType,
-            HttpUri,
-        },
+        config::core::v3::{http_uri::HttpUpstreamType, HttpUri},
         extensions::{
-            filters::http::oauth2::v3::{
-                o_auth2_credentials::TokenFormation,
-                OAuth2, OAuth2Config, OAuth2Credentials,
-            },
+            filters::http::oauth2::v3::{o_auth2_credentials::TokenFormation, OAuth2, OAuth2Config, OAuth2Credentials},
             transport_sockets::tls::v3::SdsSecretConfig,
         },
         r#type::matcher::v3::{
-            path_matcher::Rule as PathMatcherRule,
-            string_matcher::MatchPattern,
-            PathMatcher, StringMatcher,
+            path_matcher::Rule as PathMatcherRule, string_matcher::MatchPattern, PathMatcher, StringMatcher,
         },
     },
     google::protobuf::{Any, BoolValue},
@@ -131,10 +123,7 @@ impl OAuth2Builder {
 
         let credentials = OAuth2Credentials {
             client_id: self.client_id,
-            token_secret: Some(SdsSecretConfig {
-                name: self.token_secret_name,
-                sds_config: None,
-            }),
+            token_secret: Some(SdsSecretConfig { name: self.token_secret_name, sds_config: None }),
             token_formation: Some(TokenFormation::HmacSecret(SdsSecretConfig {
                 name: self.hmac_secret_name,
                 sds_config: None,

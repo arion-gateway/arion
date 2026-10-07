@@ -16,11 +16,11 @@ use std::collections::HashMap;
 
 use triomphe::Arc;
 
+pub use crate::config::core::HttpUri;
 use crate::config::{
     core::{DataSource, StringMatcher},
     network_filters::http_connection_manager::{route::RouteMatch, RetryPolicy},
 };
-pub use crate::config::core::HttpUri;
 use http::HeaderName;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;

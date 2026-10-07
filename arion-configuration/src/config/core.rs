@@ -95,7 +95,7 @@ impl Read for DataSourceReader<'_> {
         match self {
             Self::OwnedBytes { bytes, read } => {
                 let mut remaining = bytes.get(*read..).unwrap_or(&[]);
-                let copied = remaining.read(buf)? ;
+                let copied = remaining.read(buf)?;
                 *read += copied;
                 Ok(copied)
             },

@@ -27,12 +27,12 @@
 use std::path::PathBuf;
 
 use arion_e2e_tests::config_builder::{
-    BootstrapBuilder, ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder,
-    OAuth2Builder, RouteBuilder, RouteConfigBuilder, VirtualHostBuilder,
+    BootstrapBuilder, ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, OAuth2Builder,
+    RouteBuilder, RouteConfigBuilder, VirtualHostBuilder,
 };
 use arion_e2e_tests::{
-    cleanup_config_file, ArionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend,
-    TestClient, TestResponse,
+    cleanup_config_file, ArionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient,
+    TestResponse,
 };
 use http::StatusCode;
 
@@ -68,8 +68,7 @@ impl OAuth2TestHarness {
         let token_json = r#"{"access_token":"mock_access_token_xyz_42","token_type":"Bearer","expires_in":3600,"refresh_token":"mock_refresh_token_abc"}"#;
         oauth_server
             .set_default_response(
-                PreConfiguredResponse::with_body(token_json)
-                    .header("content-type", "application/json"),
+                PreConfiguredResponse::with_body(token_json).header("content-type", "application/json"),
             )
             .await;
 
@@ -93,32 +92,21 @@ impl OAuth2TestHarness {
             VirtualHostBuilder::new("default").route(RouteBuilder::new().match_prefix("/").cluster("backend")),
         );
 
-        let hcm = HcmBuilder::new()
-            .http1()
-            .oauth2(oauth2)
-            .route_config(route_config);
+        let hcm = HcmBuilder::new().http1().oauth2(oauth2).route_config(route_config);
 
         let bootstrap = BootstrapBuilder::new()
-            .listener(
-                ListenerBuilder::new("http")
-                    .port(0)
-                    .filter_chain(FilterChainBuilder::new("main").hcm(hcm)),
-            )
+            .listener(ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm)))
             .cluster(ClusterBuilder::new("backend").endpoint(EndpointBuilder::from_socket_addr(backend.addr())))
-            .cluster(ClusterBuilder::new("oauth_cluster").endpoint(EndpointBuilder::from_socket_addr(oauth_server.addr())));
+            .cluster(
+                ClusterBuilder::new("oauth_cluster").endpoint(EndpointBuilder::from_socket_addr(oauth_server.addr())),
+            );
 
         let config_path = bootstrap.build_to_temp().expect("build config to temp");
         let arion =
             ArionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.expect("spawn arion");
         let client = TestClient::new(arion.listener_addr().expect("listener address"));
 
-        Self {
-            backend,
-            oauth_server,
-            _arion: arion,
-            client,
-            config_path,
-        }
+        Self { backend, oauth_server, _arion: arion, client, config_path }
     }
 }
 
@@ -141,7 +129,10 @@ async fn test_oauth2_unauthenticated_request_redirects_to_auth() {
     let location = resp.header("location").expect("location header");
     assert!(location.contains("/oauth/authorize"), "location must contain authorize endpoint: {location}");
     assert!(location.contains("client_id="), "location must contain client_id: {location}");
-    assert!(location.contains("state=") && location.contains("protected"), "location must encode target state: {location}");
+    assert!(
+        location.contains("state=") && location.contains("protected"),
+        "location must encode target state: {location}"
+    );
 
     // Assert CSRF nonce cookie is set
     let nonce = extract_cookie_value(&resp, "OauthNonce");
@@ -161,8 +152,7 @@ async fn test_oauth2_full_authentication_flow_and_bearer_injection() {
 
     // Step 2: Callback with authorization code
     let callback_path = "/callback?code=mockauthcode999&state=%2Fapi%2Fdata";
-    let callback_req = RequestBuilder::get(callback_path)
-        .header("cookie", format!("OauthNonce={nonce}"));
+    let callback_req = RequestBuilder::get(callback_path).header("cookie", format!("OauthNonce={nonce}"));
 
     let resp2 = harness.client.send(callback_req).await.expect("callback request");
     resp2.assert_status(StatusCode::FOUND);
@@ -189,9 +179,7 @@ async fn test_oauth2_full_authentication_flow_and_bearer_injection() {
     assert_ne!(oauth_expires, "");
 
     // Step 3: Access protected resource using the session cookies
-    let cookie_header = format!(
-        "BearerToken={bearer_token}; OauthHMAC={oauth_hmac}; OauthExpires={oauth_expires}"
-    );
+    let cookie_header = format!("BearerToken={bearer_token}; OauthHMAC={oauth_hmac}; OauthExpires={oauth_expires}");
 
     let auth_req = RequestBuilder::get("/api/data").header("cookie", &cookie_header);
     let resp3 = harness.client.send(auth_req).await.expect("authenticated request");
@@ -238,8 +226,12 @@ async fn test_oauth2_signout_clears_cookies() {
 
     // Assert cookies are cleared
     let set_cookies = resp.header_all("set-cookie");
-    let clears_bearer = set_cookies.iter().any(|c| c.contains("BearerToken=;") || c.contains("BearerToken=\"\"") || c.contains("Max-Age=0"));
-    let clears_hmac = set_cookies.iter().any(|c| c.contains("OauthHMAC=;") || c.contains("OauthHMAC=\"\"") || c.contains("Max-Age=0"));
+    let clears_bearer = set_cookies
+        .iter()
+        .any(|c| c.contains("BearerToken=;") || c.contains("BearerToken=\"\"") || c.contains("Max-Age=0"));
+    let clears_hmac = set_cookies
+        .iter()
+        .any(|c| c.contains("OauthHMAC=;") || c.contains("OauthHMAC=\"\"") || c.contains("Max-Age=0"));
 
     assert!(clears_bearer, "Signout must clear BearerToken cookie: {set_cookies:?}");
     assert!(clears_hmac, "Signout must clear OauthHMAC cookie: {set_cookies:?}");

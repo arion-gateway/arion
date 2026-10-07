@@ -733,10 +733,8 @@ mod envoy_conversions {
             RedirectAction as EnvoyRedirectAction, RouteAction as EnvoyRouteAction, RouteMatch as EnvoyRouteMatch,
         },
         r#type::matcher::v3::{
-            path_matcher::Rule as EnvoyPathMatcherRule,
-            string_matcher::MatchPattern as EnvoyStringMatcherPattern,
-            PathMatcher as EnvoyTypePathMatcher,
-            RegexMatchAndSubstitute as EnvoyRegexMatchAndSubstitute,
+            path_matcher::Rule as EnvoyPathMatcherRule, string_matcher::MatchPattern as EnvoyStringMatcherPattern,
+            PathMatcher as EnvoyTypePathMatcher, RegexMatchAndSubstitute as EnvoyRegexMatchAndSubstitute,
         },
     };
     use http::{
@@ -1174,16 +1172,16 @@ mod envoy_conversions {
                         EnvoyStringMatcherPattern::SafeRegex(r) => PathSpecifier::Regex(regex_from_envoy(r)?),
                         EnvoyStringMatcherPattern::Suffix(_) => {
                             return Err(GenericError::unsupported_variant("Suffix"))
-                        }
+                        },
                         EnvoyStringMatcherPattern::Contains(_) => {
                             return Err(GenericError::unsupported_variant("Contains"))
-                        }
+                        },
                         EnvoyStringMatcherPattern::Custom(_) => {
                             return Err(GenericError::unsupported_variant("Custom"))
-                        }
+                        },
                     };
                     Ok(PathMatcher { specifier, ignore_case })
-                }
+                },
             }
         }
     }
