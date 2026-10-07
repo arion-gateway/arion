@@ -335,6 +335,9 @@ impl TlsContextBuilder<WantsToBuildServer> {
                 let ck_arc = StdArc::new(ck);
                 let mut has_errors = false;
 
+                names_to_register.retain(|n| {
+                    n.as_str() != "*" && (!n.starts_with("*.") || n.trim_end_matches('.').matches('.').count() > 1)
+                });
                 if names_to_register.is_empty() {
                     debug!("DownstreamTlsContext: certificate for secret '{secret_name}' has no DNS name to match SNI");
                     resolver.add_default(ck_arc);
