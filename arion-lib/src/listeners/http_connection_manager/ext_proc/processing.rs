@@ -133,7 +133,13 @@ impl FramesBuffer {
     }
 
     // merge can either return a DATA frame or None
-    pub fn push(&mut self, frame: Frame<Bytes>, now: tokio::time::Instant) -> Option<Frame<Bytes>> {
+    pub fn push(
+        &mut self,
+        frame: Frame<Bytes>,
+        now: tokio::time::Instant,
+        body_mode: OverridableBodyMode,
+    ) -> Option<Frame<Bytes>> {
+        let buffered = matches!(body_mode, OverridableBodyMode::Buffered | OverridableBodyMode::BufferedPartial);
         let is_data = frame.is_data();
 
         if is_data {
@@ -162,8 +168,9 @@ impl FramesBuffer {
                 self.data_buffer = Some(BufferedData::Single(new_data));
             }
 
-            let emit = self.count >= self.frame_merge_limit
-                || now.duration_since(self.last_merge.unwrap_or(now)) >= self.frame_merge_window;
+            let emit = !buffered
+                && (self.count >= self.frame_merge_limit
+                    || now.duration_since(self.last_merge.unwrap_or(now)) >= self.frame_merge_window);
 
             self.last_merge = Some(now);
 
@@ -178,10 +185,15 @@ impl FramesBuffer {
             }
         } else {
             // TRAILERS
-            let data = self.data_buffer.take().map(|buf| match buf {
-                BufferedData::Single(b) => Frame::data(b),
-                BufferedData::Merged(b) => Frame::data(b.freeze()),
-            });
+            // Keep the buffered body until EOF so its EOS flag accounts for trailer processing.
+            let data = if buffered {
+                None
+            } else {
+                self.data_buffer.take().map(|buf| match buf {
+                    BufferedData::Single(b) => Frame::data(b),
+                    BufferedData::Merged(b) => Frame::data(b.freeze()),
+                })
+            };
             self.count = 0;
             self.last_merge = Some(now);
             self.trailers_buffer = Some(frame);
@@ -914,9 +926,12 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
 
     /// At the end of the body, leaves an empty chunk to carry `end_of_stream` when nothing is
     /// buffered (the last chunk was already flushed, or no data came after the headers), as Envoy
-    /// sends one. Trailers, when present, end the stream instead.
+    /// sends one. Trailers, when sent to the processor, end the stream instead.
     pub fn buffer_end_of_stream(&mut self, override_mode: &OverridableGlobalModes) {
         if override_mode.should_process_body::<Msg>() && !self.end_of_stream {
+            if !override_mode.should_process_trailers::<Msg>() {
+                self.parked_trailers = self.frames_buffer.trailers_buffer.take();
+            }
             self.frames_buffer.push_end_of_stream();
         }
     }

@@ -1355,7 +1355,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                             let body_mode = self.overridable_modes.request.body_mode();
 
                             debug!(target: "ext_proc", "outbound request body frame: buffering frame...");
-                            if let Some(frame_to_send) = self.request_processing.frames_buffer.push(frame, tokio::time::Instant::now()) {
+                            if let Some(frame_to_send) = self.request_processing.frames_buffer.push(frame, tokio::time::Instant::now(), body_mode) {
                                 // invariant: frame_to_send is always a DATA frame at this point. TRAILERS are sent later.
                                 if let OverridableBodyMode::None = body_mode { // body processing is disabled, just inject back the frame
                                     let proof = self.request_processing.make_proof().unwrap_or_else(|| {
@@ -1445,7 +1445,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                             let body_mode = self.overridable_modes.response.body_mode();
 
                             debug!(target: "ext_proc", "outbound response body frame: buffering frame...");
-                            if let Some(frame_to_send) = self.response_processing.frames_buffer.push(frame, tokio::time::Instant::now()) {
+                            if let Some(frame_to_send) = self.response_processing.frames_buffer.push(frame, tokio::time::Instant::now(), body_mode) {
                                 // invariant: frame_to_send is always a DATA frame at this point. TRAILERS are sent later.
                                 if let OverridableBodyMode::None = body_mode { // body processing is disabled, just inject back the frame
                                     debug!(target: "ext_proc", "outbound response body frame: injecting the frame DATA into the body");
@@ -1617,7 +1617,7 @@ impl ExternalProcessingWorker<kind::Observability> {
                     match outbound_request_body_frame {
                         Some(Ok(frame)) => {
                             debug!(target: "ext_proc", "outbound request body frame: buffering frame...");
-                            if let Some(frame_to_send) = self.request_processing.frames_buffer.push(frame, tokio::time::Instant::now()) {
+                            if let Some(frame_to_send) = self.request_processing.frames_buffer.push(frame, tokio::time::Instant::now(), self.overridable_modes.request.body_mode()) {
 
                                 let proof = self.request_processing.make_proof().unwrap_or_else(|| {
                                     let status = ProcessingStatus::RequestReady(ReadyStatus::default());
@@ -1698,7 +1698,7 @@ impl ExternalProcessingWorker<kind::Observability> {
                     match outbound_response_body_frame {
                         Some(Ok(frame)) => {
                             debug!(target: "ext_proc", "outbound response body frame: buffering frame...");
-                            if let Some(frame_to_send) = self.response_processing.frames_buffer.push(frame, tokio::time::Instant::now()) {
+                            if let Some(frame_to_send) = self.response_processing.frames_buffer.push(frame, tokio::time::Instant::now(), self.overridable_modes.response.body_mode()) {
                                 let proof = self.response_processing.make_proof().unwrap_or_else(|| {
                                     let status = ProcessingStatus::ResponseReady(ReadyStatus::default());
                                     self.response_processing.return_status(status, "proof for frame injection when body processing is enabled")

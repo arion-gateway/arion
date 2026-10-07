@@ -849,6 +849,13 @@ fn generate_mock_external_processors_states<M: MessageKind + ModeSelector>(
         has_body && !matches!(<M as ModeSelector>::body_mode(processing_mode), BodyProcessingMode::None);
     let should_send_trailers =
         has_trailers && matches!(<M as ModeSelector>::trailer_mode(processing_mode), TrailerProcessingMode::Send);
+    let should_send_terminal_body = has_trailers
+        && !should_send_trailers
+        && match <M as ModeSelector>::body_mode(processing_mode) {
+            BodyProcessingMode::Streamed | BodyProcessingMode::FullDuplexStreamed => true,
+            BodyProcessingMode::Buffered | BodyProcessingMode::BufferedPartial => !has_body && !should_send_headers,
+            BodyProcessingMode::None => false,
+        };
 
     let mut mock_ext_proc_state = vec![];
     for header_response in generate_header_processing_response::<M>(status) {
@@ -862,7 +869,14 @@ fn generate_mock_external_processors_states<M: MessageKind + ModeSelector>(
                     state = state.add_response(header_response.clone());
                 }
                 if should_send_body {
-                    state = state.add_response(body_response.clone());
+                    state = state.add_response(
+                        body_response
+                            .clone()
+                            .with_expected_end_of_stream(!should_send_trailers && !should_send_terminal_body),
+                    );
+                }
+                if should_send_terminal_body {
+                    state = state.add_response(end_of_stream_body_response::<M>());
                 }
                 if should_send_trailers {
                     state = state.add_response(trailer_response);
@@ -3503,7 +3517,8 @@ async fn test_request_body_and_trailer_processing_out_of_order() {
         )
         .add_response(create_body_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None))
         .add_response(create_body_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None))
-        .add_response(create_body_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None));
+        .add_response(create_body_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None))
+        .add_response(end_of_stream_body_response::<RequestMsg>());
 
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
@@ -3540,7 +3555,7 @@ async fn test_request_body_and_trailer_processing_out_of_order() {
         http::HeaderName::from_static("x-custom-trailer"),
         http::HeaderValue::from_static("original-value"),
     )]);
-    let expected_data = &["chunk1".into(), "chunk2".into(), "chunk3".into()];
+    let expected_data = &["chunk1".into(), "chunk2".into(), "chunk3".into(), Bytes::new()];
 
     assert_matches!(assert_body_frames(body, expected_data, Some(expected_trailers)).await, Ok(()));
 }
@@ -4449,7 +4464,8 @@ async fn test_response_body_and_trailer_out_of_order() {
         )
         .add_response(create_body_response::<ResponseMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None))
         .add_response(create_body_response::<ResponseMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None))
-        .add_response(create_body_response::<ResponseMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None));
+        .add_response(create_body_response::<ResponseMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None))
+        .add_response(end_of_stream_body_response::<ResponseMsg>());
 
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
@@ -4486,7 +4502,7 @@ async fn test_response_body_and_trailer_out_of_order() {
         http::HeaderName::from_static("x-custom-trailer"),
         http::HeaderValue::from_static("original-value"),
     )]);
-    let expected_data = &["chunk1".into(), "chunk2".into(), "chunk3".into()];
+    let expected_data = &["chunk1".into(), "chunk2".into(), "chunk3".into(), Bytes::new()];
 
     assert_matches!(assert_body_frames(body, expected_data, Some(expected_trailers)).await, Ok(()));
 }
@@ -7019,6 +7035,55 @@ async fn test_body_end_of_stream_after_the_merge_window() {
     let body = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
     assert!(body.is_empty());
     assert_eq!(body_end_of_stream_flags(&mut received), (vec![true], vec![]));
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_body_end_of_stream_with_skipped_trailers() {
+    for body_mode in [BodyProcessingMode::Streamed, BodyProcessingMode::Buffered, BodyProcessingMode::BufferedPartial] {
+        let (server_addr, mut received) = start_recording_server(false).await;
+        let processing_mode = ProcessingMode {
+            request_header_mode: HeaderProcessingMode::Send,
+            request_body_mode: body_mode,
+            request_trailer_mode: TrailerProcessingMode::Skip,
+            response_header_mode: HeaderProcessingMode::Send,
+            response_body_mode: body_mode,
+            response_trailer_mode: TrailerProcessingMode::Skip,
+        };
+        let config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        let mut ext_proc = ExternalProcessor::from(config);
+
+        let mut request = build_request_from_mock(&MockMessage::<RequestMsg>::new(
+            vec![],
+            vec!["request body"],
+            vec![Some(("x-request-trailer", "preserved"))],
+        ))
+        .await;
+        assert_matches!(ext_proc.apply_request(&mut request, &RequestCtx::default()).await, FilterDecision::Continue);
+        let body = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap();
+        assert_eq!(body.trailers().unwrap().get("x-request-trailer").unwrap(), "preserved");
+        assert_eq!(body.to_bytes(), "request body");
+
+        let mut response = build_response_from_mock(&MockMessage::<ResponseMsg>::new(
+            vec![],
+            vec!["response body"],
+            vec![Some(("x-response-trailer", "preserved"))],
+        ))
+        .await;
+        assert_matches!(ext_proc.apply_response(&mut response, &RequestCtx::default()).await, FilterDecision::Continue);
+        let body = std::mem::take(&mut response.body_mut().inner).collect().await.unwrap();
+        assert_eq!(body.trailers().unwrap().get("x-response-trailer").unwrap(), "preserved");
+        assert_eq!(body.to_bytes(), "response body");
+
+        let expected_eos: &[bool] = match body_mode {
+            BodyProcessingMode::Buffered | BodyProcessingMode::BufferedPartial => &[true],
+            _ => &[false, true],
+        };
+        let (request_eos, response_eos) = body_end_of_stream_flags(&mut received);
+        for eos in [request_eos, response_eos] {
+            assert_eq!(eos.as_slice(), expected_eos, "{body_mode:?}");
+        }
+    }
 }
 
 /// Runs a request and a response through `ext_proc`, then returns the `metadata_context` of the
