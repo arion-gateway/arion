@@ -13,9 +13,11 @@
 // limitations under the License.
 
 use std::{
+    borrow::Cow,
     sync::{LazyLock, Once},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
 
 use base64::{prelude::BASE64_STANDARD, Engine};
 use http::{header, HeaderMap, HeaderValue, Request, StatusCode, Version};
@@ -37,7 +39,7 @@ use crate::{
     ArionRequestBody,
 };
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::oauth2::{
-    AuthType, CookieConfig, CookieSameSite, OAuth2Config,
+    AuthType, CookieConfig, CookieNames, CookieSameSite, OAuth2Config,
 };
 use arion_format::{
     context::{DownstreamContext, SocketAddrContext},
@@ -154,7 +156,12 @@ impl OAuth2Filter {
             }
         }
 
-        let host = extract_host(req);
+        let Some(host) = extract_host(req) else {
+            warn!(target: "oauth2", "missing Host header or authority in request");
+            let resp = SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into())
+                .into_response(req.version());
+            return FilterDecision::DirectResponse(Box::new(resp));
+        };
         let path = req.uri().path();
 
         // 2. Signout path: clear authentication cookies and redirect to end_session_endpoint or /.
@@ -183,48 +190,36 @@ impl OAuth2Filter {
                     let query = req.uri().query().unwrap_or_default().to_string();
                     (is_https, redirect_uri, query, req.version())
                 };
-                return self.handle_callback(version, is_https, redirect_uri, &query, &host).await;
+                return self.handle_callback(version, is_https, redirect_uri, &query, host).await;
             }
         }
 
         // 4. Hot path: check for existing valid session cookies.
         let cookie_names = &config.credentials.cookie_names;
-        let (bearer_token, oauth_hmac, oauth_expires) = {
-            let cookies = extract_cookies(req.headers());
-            let tok = cookies
-                .iter()
-                .find(|(k, _)| *k == cookie_names.bearer_token.as_str())
-                .map(|(_, v)| SmolStr::new(*v));
-            let hmac_cookie = cookies
-                .iter()
-                .find(|(k, _)| *k == cookie_names.oauth_hmac.as_str())
-                .map(|(_, v)| SmolStr::new(*v));
-            let exp_cookie = cookies
-                .iter()
-                .find(|(k, _)| *k == cookie_names.oauth_expires.as_str())
-                .map(|(_, v)| SmolStr::new(*v));
-            (tok, hmac_cookie, exp_cookie)
-        };
+        let (bearer_token, oauth_hmac, oauth_expires) =
+            extract_session_cookies(req.headers(), cookie_names);
 
         let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
 
-        if let (Some(token), Some(hmac_val), Some(expires_str)) = (&bearer_token, &oauth_hmac, &oauth_expires) {
+        if let (Some(tok), Some(hmac_val), Some(expires_str)) = (bearer_token, oauth_hmac, oauth_expires) {
             if let Ok(expires_at) = expires_str.parse::<u64>() {
                 if expires_at > now_secs {
                     // Check fast-path papaya session cache.
                     let cache = OAUTH_SESSION_CACHE.pin();
-                    if let Some(&cached_expiry) = cache.get(hmac_val.as_str()) {
+                    if let Some(&cached_expiry) = cache.get(hmac_val) {
                         if cached_expiry > now_secs {
-                            self.inject_bearer_token(req, token.as_str());
+                            let token = SmolStr::new(tok);
+                            self.inject_bearer_token(req, &token);
                             return FilterDecision::Continue;
                         }
                     }
 
                     // Cache miss: verify HMAC signature.
                     let expected_data = format!("{host}:{expires_at}");
-                    if verify_hmac(config.credentials.hmac_secret.as_str(), &expected_data, hmac_val.as_str()) {
-                        cache.insert(hmac_val.clone(), expires_at);
-                        self.inject_bearer_token(req, token.as_str());
+                    if verify_hmac(config.credentials.hmac_secret.as_str(), &expected_data, hmac_val) {
+                        cache.insert(SmolStr::new(hmac_val), expires_at);
+                        let token = SmolStr::new(tok);
+                        self.inject_bearer_token(req, &token);
                         return FilterDecision::Continue;
                     }
                     warn!(target: "oauth2", "invalid HMAC signature for host: {host}");
@@ -286,8 +281,7 @@ impl OAuth2Filter {
             cnames.refresh_token.as_str(),
             cnames.oauth_nonce.as_str(),
         ] {
-            let cookie_str = format_cookie(name, "", Some(0), None, cdomain, false);
-            if let Ok(hv) = HeaderValue::from_str(&cookie_str) {
+            if let Some(hv) = format_cookie(name, "", Some(0), None, cdomain, false) {
                 resp.headers_mut().append(header::SET_COOKIE, hv);
             }
         }
@@ -319,15 +313,16 @@ impl OAuth2Filter {
 
         // State encodes the original path and query
         let original_target = req.uri().path_and_query().map_or("/", |pq| pq.as_str());
-        let state = percent_encode_str(original_target);
-        let encoded_redirect_uri = percent_encode_str(redirect_uri.as_str());
+        let state = utf8_percent_encode(original_target, NON_ALPHANUMERIC);
+        let encoded_redirect_uri = utf8_percent_encode(redirect_uri.as_str(), NON_ALPHANUMERIC);
         let scopes = config.auth_scopes.join(" ");
-        let encoded_scopes = percent_encode_str(&scopes);
+        let encoded_scopes = utf8_percent_encode(&scopes, NON_ALPHANUMERIC);
+        let encoded_client_id = utf8_percent_encode(config.credentials.client_id.as_str(), NON_ALPHANUMERIC);
 
         let auth_url = format!(
             "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}",
             config.authorization_endpoint,
-            percent_encode_str(config.credentials.client_id.as_str()),
+            encoded_client_id,
             encoded_redirect_uri,
             encoded_scopes,
             state
@@ -348,16 +343,14 @@ impl OAuth2Filter {
         // Set CSRF nonce cookie
         let is_https = req.uri().scheme_str() == Some("https")
             || req.headers().get("x-forwarded-proto").is_some_and(|v| v == "https");
-        let nonce_cookie = format_cookie(
+        if let Some(hv) = format_cookie(
             cnames.oauth_nonce.as_str(),
             &nonce,
             Some(config.csrf_token_expires_in.as_secs()),
             config.cookie_configs.oauth_nonce_cookie_config.as_ref(),
             cdomain,
             is_https,
-        );
-
-        if let Ok(hv) = HeaderValue::from_str(&nonce_cookie) {
+        ) {
             resp.headers_mut().append(header::SET_COOKIE, hv);
         }
 
@@ -376,15 +369,33 @@ impl OAuth2Filter {
         let cnames = &config.credentials.cookie_names;
         let cdomain = config.credentials.cookie_domain.as_deref();
 
-        let mut code = None;
-        let mut state = None;
+        let mut code: Option<Cow<'_, str>> = None;
+        let mut state: Option<Cow<'_, str>> = None;
 
         for pair in query.split('&') {
             if let Some((k, v)) = pair.split_once('=') {
                 if k == "code" {
-                    code = Some(percent_decode_str(v));
+                    let decoded = match percent_decode_str(v).decode_utf8() {
+                        Ok(d) => d,
+                        Err(e) => {
+                            warn!(target: "oauth2", "invalid percent-encoded utf-8 in 'code': {e}");
+                            let resp = SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into())
+                                .into_response(version);
+                            return FilterDecision::DirectResponse(Box::new(resp));
+                        }
+                    };
+                    code = Some(decoded);
                 } else if k == "state" {
-                    state = Some(percent_decode_str(v));
+                    let decoded = match percent_decode_str(v).decode_utf8() {
+                        Ok(d) => d,
+                        Err(e) => {
+                            warn!(target: "oauth2", "invalid percent-encoded utf-8 in 'state': {e}");
+                            let resp = SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into())
+                                .into_response(version);
+                            return FilterDecision::DirectResponse(Box::new(resp));
+                        }
+                    };
+                    state = Some(decoded);
                 }
             }
         }
@@ -445,57 +456,55 @@ impl OAuth2Filter {
 
         // Set BearerToken cookie
         if !config.disable_access_token_set_cookie {
-            let cookie = format_cookie(
+            if let Some(hv) = format_cookie(
                 cnames.bearer_token.as_str(),
                 &token_resp.access_token,
                 Some(expires_in),
                 config.cookie_configs.bearer_token_cookie_config.as_ref(),
                 cdomain,
                 is_https,
-            );
-            if let Ok(hv) = HeaderValue::from_str(&cookie) {
+            ) {
                 resp.headers_mut().append(header::SET_COOKIE, hv);
             }
         }
 
         // Set OauthExpires cookie
-        let exp_cookie = format_cookie(
+        let mut exp_itoa = itoa::Buffer::new();
+        let exp_str = exp_itoa.format(expires_at);
+        if let Some(hv) = format_cookie(
             cnames.oauth_expires.as_str(),
-            &expires_at.to_string(),
+            exp_str,
             Some(expires_in),
             config.cookie_configs.oauth_expires_cookie_config.as_ref(),
             cdomain,
             is_https,
-        );
-        if let Ok(hv) = HeaderValue::from_str(&exp_cookie) {
+        ) {
             resp.headers_mut().append(header::SET_COOKIE, hv);
         }
 
         // Set OauthHMAC cookie
-        let hmac_cookie = format_cookie(
+        if let Some(hv) = format_cookie(
             cnames.oauth_hmac.as_str(),
             &hmac_val,
             Some(expires_in),
             config.cookie_configs.oauth_hmac_cookie_config.as_ref(),
             cdomain,
             is_https,
-        );
-        if let Ok(hv) = HeaderValue::from_str(&hmac_cookie) {
+        ) {
             resp.headers_mut().append(header::SET_COOKIE, hv);
         }
 
         // Set IdToken cookie if present and enabled
         if !config.disable_id_token_set_cookie {
             if let Some(id_tok) = &token_resp.id_token {
-                let id_cookie = format_cookie(
+                if let Some(hv) = format_cookie(
                     cnames.id_token.as_str(),
                     id_tok,
                     Some(expires_in),
                     config.cookie_configs.id_token_cookie_config.as_ref(),
                     cdomain,
                     is_https,
-                );
-                if let Ok(hv) = HeaderValue::from_str(&id_cookie) {
+                ) {
                     resp.headers_mut().append(header::SET_COOKIE, hv);
                 }
             }
@@ -505,23 +514,21 @@ impl OAuth2Filter {
         if !config.disable_refresh_token_set_cookie && config.use_refresh_token {
             if let Some(ref_tok) = &token_resp.refresh_token {
                 let ref_exp = config.default_refresh_token_expires_in.as_secs();
-                let ref_cookie = format_cookie(
+                if let Some(hv) = format_cookie(
                     cnames.refresh_token.as_str(),
                     ref_tok,
                     Some(ref_exp),
                     config.cookie_configs.refresh_token_cookie_config.as_ref(),
                     cdomain,
                     is_https,
-                );
-                if let Ok(hv) = HeaderValue::from_str(&ref_cookie) {
+                ) {
                     resp.headers_mut().append(header::SET_COOKIE, hv);
                 }
             }
         }
 
         // Clear OauthNonce cookie
-        let clear_nonce = format_cookie(cnames.oauth_nonce.as_str(), "", Some(0), None, cdomain, false);
-        if let Ok(hv) = HeaderValue::from_str(&clear_nonce) {
+        if let Some(hv) = format_cookie(cnames.oauth_nonce.as_str(), "", Some(0), None, cdomain, false) {
             resp.headers_mut().append(header::SET_COOKIE, hv);
         }
 
@@ -540,10 +547,10 @@ impl OAuth2Filter {
             AuthType::UrlEncodedBody => {
                 let body = format!(
                     "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&client_secret={}",
-                    percent_encode_str(code),
-                    percent_encode_str(redirect_uri),
-                    percent_encode_str(config.credentials.client_id.as_str()),
-                    percent_encode_str(config.credentials.token_secret.as_str()),
+                    utf8_percent_encode(code, NON_ALPHANUMERIC),
+                    utf8_percent_encode(redirect_uri, NON_ALPHANUMERIC),
+                    utf8_percent_encode(config.credentials.client_id.as_str(), NON_ALPHANUMERIC),
+                    utf8_percent_encode(config.credentials.token_secret.as_str(), NON_ALPHANUMERIC),
                 );
                 req_builder
                     .header(header::CONTENT_TYPE.as_str(), "application/x-www-form-urlencoded")
@@ -552,8 +559,8 @@ impl OAuth2Filter {
             AuthType::BasicAuth => {
                 let body = format!(
                     "grant_type=authorization_code&code={}&redirect_uri={}",
-                    percent_encode_str(code),
-                    percent_encode_str(redirect_uri),
+                    utf8_percent_encode(code, NON_ALPHANUMERIC),
+                    utf8_percent_encode(redirect_uri, NON_ALPHANUMERIC),
                 );
                 let creds = format!("{}:{}", config.credentials.client_id, config.credentials.token_secret);
                 let auth_header = format!("Basic {}", BASE64_STANDARD.encode(creds.as_bytes()));
@@ -579,29 +586,56 @@ impl OAuth2Filter {
 
 // === Helper Functions ===
 
-fn extract_host(req: &Request<ArionRequestBody>) -> String {
+fn extract_host(req: &Request<ArionRequestBody>) -> Option<&str> {
     if let Some(host) = req.headers().get(header::HOST).and_then(|v| v.to_str().ok()) {
-        return host.split(':').next().unwrap_or(host).to_string();
+        return Some(strip_port(host));
     }
-    if let Some(auth) = req.uri().authority() {
-        return auth.host().to_string();
-    }
-    "localhost".to_string()
+    req.uri().host()
 }
 
-fn extract_cookies<'a>(headers: &'a HeaderMap) -> Vec<(&'a str, &'a str)> {
-    let mut cookies = Vec::new();
+#[inline]
+fn strip_port(host: &str) -> &str {
+    if let Some(rest) = host.strip_prefix('[') {
+        if let Some(bracket_end) = rest.find(']') {
+            &host[..=bracket_end + 1]
+        } else {
+            host
+        }
+    } else {
+        host.split_once(':').map_or(host, |(h, _port)| h)
+    }
+}
+
+fn extract_session_cookies<'a>(
+    headers: &'a HeaderMap,
+    cookie_names: &CookieNames,
+) -> (Option<&'a str>, Option<&'a str>, Option<&'a str>) {
+    let mut bearer_token = None;
+    let mut oauth_hmac = None;
+    let mut oauth_expires = None;
+
     for hv in headers.get_all(header::COOKIE) {
-        if let Ok(cookie_str) = hv.to_str() {
-            for pair in cookie_str.split(';') {
-                let pair = pair.trim();
-                if let Some((k, v)) = pair.split_once('=') {
-                    cookies.push((k.trim(), v.trim()));
+        let Ok(cookie_str) = hv.to_str() else { continue };
+        for pair in cookie_str.split(';') {
+            if let Some((k, v)) = pair.split_once('=') {
+                let k = k.trim();
+                let v = v.trim();
+                if k == cookie_names.bearer_token.as_str() {
+                    bearer_token = Some(v);
+                } else if k == cookie_names.oauth_hmac.as_str() {
+                    oauth_hmac = Some(v);
+                } else if k == cookie_names.oauth_expires.as_str() {
+                    oauth_expires = Some(v);
+                }
+
+                if bearer_token.is_some() && oauth_hmac.is_some() && oauth_expires.is_some() {
+                    return (bearer_token, oauth_hmac, oauth_expires);
                 }
             }
         }
     }
-    cookies
+
+    (bearer_token, oauth_hmac, oauth_expires)
 }
 
 fn compute_hmac(secret: &str, data: &str) -> String {
@@ -625,53 +659,53 @@ fn format_cookie(
     config: Option<&CookieConfig>,
     domain: Option<&str>,
     is_secure: bool,
-) -> String {
+) -> Option<HeaderValue> {
     let path = config.map_or("/", |c| c.path.as_str());
-    let mut parts = Vec::with_capacity(7);
-    parts.push(format!("{name}={value}"));
-    parts.push(format!("Path={path}"));
-    parts.push("HttpOnly".to_string());
+    let domain_len = domain.map_or(0, |d| if !d.is_empty() { d.len() + 9 } else { 0 });
+    let estimated_cap = name.len() + 1 + value.len() + 7 + path.len() + domain_len + 64;
+
+    let mut buf = String::with_capacity(estimated_cap);
+    buf.push_str(name);
+    buf.push('=');
+    buf.push_str(value);
+    buf.push_str("; Path=");
+    buf.push_str(path);
+    buf.push_str("; HttpOnly");
 
     if is_secure {
-        parts.push("Secure".to_string());
+        buf.push_str("; Secure");
     }
 
     if let Some(d) = domain {
         if !d.is_empty() {
-            parts.push(format!("Domain={d}"));
+            buf.push_str("; Domain=");
+            buf.push_str(d);
         }
     }
 
     if let Some(age) = max_age {
-        parts.push(format!("Max-Age={age}"));
+        buf.push_str("; Max-Age=");
+        let mut itoa_buf = itoa::Buffer::new();
+        buf.push_str(itoa_buf.format(age));
     }
 
     if let Some(cfg) = config {
         match cfg.same_site {
-            CookieSameSite::Strict => parts.push("SameSite=Strict".to_string()),
-            CookieSameSite::Lax => parts.push("SameSite=Lax".to_string()),
-            CookieSameSite::None => parts.push("SameSite=None".to_string()),
+            CookieSameSite::Strict => buf.push_str("; SameSite=Strict"),
+            CookieSameSite::Lax => buf.push_str("; SameSite=Lax"),
+            CookieSameSite::None => buf.push_str("; SameSite=None"),
             CookieSameSite::Disabled => {},
         }
         if cfg.partitioned {
-            parts.push("Partitioned".to_string());
+            buf.push_str("; Partitioned");
         }
     } else {
-        parts.push("SameSite=Lax".to_string());
+        buf.push_str("; SameSite=Lax");
     }
 
-    parts.join("; ")
+    HeaderValue::try_from(buf.into_bytes()).ok()
 }
 
-fn percent_encode_str(input: &str) -> String {
-    percent_encoding::utf8_percent_encode(input, percent_encoding::NON_ALPHANUMERIC).to_string()
-}
-
-fn percent_decode_str(input: &str) -> String {
-    percent_encoding::percent_decode_str(input)
-        .decode_utf8_lossy()
-        .into_owned()
-}
 
 #[cfg(test)]
 mod tests {
@@ -680,7 +714,7 @@ mod tests {
         core::{HttpUri, StringMatcher},
         network_filters::http_connection_manager::{
             header_matcher::HeaderMatcher,
-            http_filters::oauth2::{CookieNames, OAuth2Credentials},
+            http_filters::oauth2::OAuth2Credentials,
             route::{PathMatcher, PathSpecifier},
         },
     };
@@ -886,6 +920,96 @@ mod tests {
                 }
             },
             _ => panic!("expected 302 DirectResponse for signout"),
+        }
+    }
+
+    #[test]
+    fn test_format_cookie() {
+        let hv = format_cookie("my_cookie", "my_val", Some(3600), None, Some("example.com"), true).unwrap();
+        let s = hv.to_str().unwrap();
+        assert!(s.contains("my_cookie=my_val"));
+        assert!(s.contains("Path=/"));
+        assert!(s.contains("HttpOnly"));
+        assert!(s.contains("Secure"));
+        assert!(s.contains("Domain=example.com"));
+        assert!(s.contains("Max-Age=3600"));
+        assert!(s.contains("SameSite=Lax"));
+    }
+
+    #[test]
+    fn test_extract_session_cookies_single_pass() {
+        let cnames = CookieNames::default();
+        let mut headers = HeaderMap::new();
+
+        headers.insert(
+            header::COOKIE,
+            "theme=dark; BearerToken=tok123; tracking_id=abc; OauthHMAC=sig456; OauthExpires=789; other=xyz"
+                .parse()
+                .unwrap(),
+        );
+
+        let (tok, hmac, exp) = extract_session_cookies(&headers, &cnames);
+        assert_eq!(tok, Some("tok123"));
+        assert_eq!(hmac, Some("sig456"));
+        assert_eq!(exp, Some("789"));
+
+        let mut headers2 = HeaderMap::new();
+        headers2.insert(
+            header::COOKIE,
+            "BearerToken=tok123; other=xyz".parse().unwrap(),
+        );
+        let (tok2, hmac2, exp2) = extract_session_cookies(&headers2, &cnames);
+        assert_eq!(tok2, Some("tok123"));
+        assert_eq!(hmac2, None);
+        assert_eq!(exp2, None);
+    }
+
+    #[test]
+    fn test_extract_host_and_strip_port() {
+        assert_eq!(strip_port("example.com"), "example.com");
+        assert_eq!(strip_port("example.com:8080"), "example.com");
+        assert_eq!(strip_port("127.0.0.1:3000"), "127.0.0.1");
+        assert_eq!(strip_port("[::1]:8080"), "[::1]");
+        assert_eq!(strip_port("[::1]"), "[::1]");
+        assert_eq!(strip_port("[2001:db8::1]:443"), "[2001:db8::1]");
+    }
+
+    #[tokio::test]
+    async fn test_callback_with_invalid_percent_encoding_returns_bad_request() {
+        let config = sample_config();
+        let mut filter = OAuth2Filter::new(config);
+
+        let mut req = Request::builder()
+            .uri("/callback?code=%FF%FF&state=test")
+            .header("Host", "gateway.example.com")
+            .body(ArionRequestBody::default())
+            .unwrap();
+
+        let decision = filter.apply_request(&mut req).await;
+        match decision {
+            FilterDecision::DirectResponse(resp) => {
+                assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            }
+            _ => panic!("expected 400 Bad Request on invalid percent encoded query"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_missing_host_returns_bad_request() {
+        let config = sample_config();
+        let mut filter = OAuth2Filter::new(config);
+
+        let mut req = Request::builder()
+            .uri("/protected")
+            .body(ArionRequestBody::default())
+            .unwrap();
+
+        let decision = filter.apply_request(&mut req).await;
+        match decision {
+            FilterDecision::DirectResponse(resp) => {
+                assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            }
+            _ => panic!("expected 400 Bad Request when Host header is missing"),
         }
     }
 }
