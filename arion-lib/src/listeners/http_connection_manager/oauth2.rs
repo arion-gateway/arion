@@ -360,6 +360,8 @@ impl OAuth2Filter {
 
         let mut code: Option<Cow<'_, str>> = None;
         let mut state: Option<Cow<'_, str>> = None;
+        let mut error_param: Option<Cow<'_, str>> = None;
+        let mut error_desc: Option<Cow<'_, str>> = None;
 
         for pair in query.split('&') {
             if let Some((k, v)) = pair.split_once('=') {
@@ -385,12 +387,35 @@ impl OAuth2Filter {
                         },
                     };
                     state = Some(decoded);
+                } else if k == "error" {
+                    if let Ok(d) = percent_decode_str(v).decode_utf8() {
+                        error_param = Some(d);
+                    }
+                } else if k == "error_description" {
+                    if let Ok(d) = percent_decode_str(v).decode_utf8() {
+                        error_desc = Some(d);
+                    }
                 }
             }
         }
 
+        // Check if IdP reported an authorization error (RFC 6749 §4.1.2.1)
+        if let Some(err) = error_param {
+            if let Some(desc) = error_desc {
+                warn!(target: "oauth2", "oauth provider returned error: {err} ({desc})");
+            } else {
+                warn!(target: "oauth2", "oauth provider returned error: {err}");
+            }
+            let resp = SyntheticHttpResponse::unauthorized(EventFailure::DirectResponse.into()).into_response(version);
+            return FilterDecision::DirectResponse(Box::new(resp));
+        }
+
         let Some(code_val) = code else {
-            warn!(target: "oauth2", "callback request missing 'code' parameter");
+            if query.is_empty() {
+                warn!(target: "oauth2", "callback request missing 'code' parameter (query string is empty)");
+            } else {
+                warn!(target: "oauth2", "callback request missing 'code' parameter (query: '{query}')");
+            }
             let resp = SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into()).into_response(version);
             return FilterDecision::DirectResponse(Box::new(resp));
         };
@@ -939,6 +964,26 @@ mod tests {
         assert_eq!(strip_port("[::1]:8080"), "[::1]");
         assert_eq!(strip_port("[::1]"), "[::1]");
         assert_eq!(strip_port("[2001:db8::1]:443"), "[2001:db8::1]");
+    }
+
+    #[tokio::test]
+    async fn test_callback_with_oauth_error_returns_unauthorized() {
+        let config = sample_config();
+        let mut filter = OAuth2Filter::new(config);
+
+        let mut req = Request::builder()
+            .uri("/callback?error=access_denied&error_description=user+denied+consent&state=test")
+            .header("Host", "gateway.example.com")
+            .body(ArionRequestBody::default())
+            .unwrap();
+
+        let decision = filter.apply_request(&mut req).await;
+        match decision {
+            FilterDecision::DirectResponse(resp) => {
+                assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+            },
+            _ => panic!("expected 401 Unauthorized when IdP returns error"),
+        }
     }
 
     #[tokio::test]
