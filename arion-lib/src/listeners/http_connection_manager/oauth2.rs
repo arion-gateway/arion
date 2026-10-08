@@ -69,12 +69,13 @@ fn ensure_cleaner_started() {
     });
 }
 
-static OAUTH_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("failed to build oauth reqwest client")
-});
+#[derive(Debug, thiserror::Error)]
+enum OauthClientError {
+    #[error("Oauth2 reqwest: {0}")]
+    Reqwest(#[from] reqwest::Error),
+    #[error("TokenEndpointError: {0}")]
+    TokenEndpointError(http::StatusCode),
+}
 
 #[derive(Deserialize)]
 struct TokenEndpointResponse {
@@ -91,6 +92,7 @@ struct TokenEndpointResponse {
 pub struct OAuth2FilterInner {
     pub config: OAuth2Config,
     pub redirect_uri_formatter: UriFormatter,
+    pub client: reqwest::Client,
 }
 
 #[derive(Debug)]
@@ -107,14 +109,16 @@ impl OAuth2FilterBuilder {
         OAuth2FilterBuilder { config }
     }
 
-    pub fn build(self) -> OAuth2Filter {
+    pub fn build(self) -> Result<OAuth2Filter, reqwest::Error> {
         debug!(target: "oauth2", "creating new OAuth2 filter");
 
         let redirect_uri_formatter = UriFormatter::try_new(self.config.redirect_uri.as_str())
             .unwrap_or_else(|_| UriFormatter::try_new("").unwrap());
 
-        let inner = Arc::new(OAuth2FilterInner { config: self.config, redirect_uri_formatter });
-        OAuth2Filter { inner }
+        let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build()?;
+
+        let inner = Arc::new(OAuth2FilterInner { config: self.config, redirect_uri_formatter, client });
+        Ok(OAuth2Filter { inner })
     }
 }
 
@@ -132,7 +136,7 @@ impl Clone for OAuth2Filter {
 
 impl OAuth2Filter {
     #[allow(dead_code)]
-    pub fn new(config: OAuth2Config) -> Self {
+    pub fn try_new(config: OAuth2Config) -> Result<Self, reqwest::Error> {
         OAuth2FilterBuilder::new(config).build()
     }
 
@@ -184,10 +188,10 @@ impl OAuth2Filter {
                     let redirect_uri = self.inner.redirect_uri_formatter.format(&ctx);
                     let is_https = req.uri().scheme_str() == Some("https")
                         || req.headers().get("x-forwarded-proto").is_some_and(|v| v == "https");
-                    let query = req.uri().query().unwrap_or_default().to_string();
+                    let query = req.uri().query().unwrap_or_default();
                     (is_https, redirect_uri, query, req.version())
                 };
-                return self.handle_callback(version, is_https, redirect_uri, &query, host).await;
+                return self.handle_callback(version, is_https, redirect_uri, query, host).await;
             }
         }
 
@@ -346,6 +350,8 @@ impl OAuth2Filter {
         FilterDecision::DirectResponse(Box::new(resp))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
     async fn handle_callback(
         &self,
         version: Version,
@@ -436,9 +442,10 @@ impl OAuth2Filter {
         };
 
         let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-        let expires_in = token_resp.expires_in.unwrap_or_else(|| {
-            if config.default_expires_in.as_secs() > 0 {
-                config.default_expires_in.as_secs()
+        let expires_in = token_resp.expires_in.unwrap_or({
+            let exp = config.default_expires_in.as_secs();
+            if exp > 0 {
+                exp
             } else {
                 3600
             }
@@ -548,11 +555,11 @@ impl OAuth2Filter {
         FilterDecision::DirectResponse(Box::new(resp))
     }
 
-    async fn exchange_code(&self, code: &str, redirect_uri: &str) -> Result<TokenEndpointResponse, String> {
+    async fn exchange_code(&self, code: &str, redirect_uri: &str) -> Result<TokenEndpointResponse, OauthClientError> {
         let config = &self.inner.config;
         let uri = config.token_endpoint.uri.as_str();
 
-        let req_builder = OAUTH_HTTP_CLIENT.post(uri).timeout(config.token_endpoint.timeout);
+        let req_builder = self.inner.client.post(uri).timeout(config.token_endpoint.timeout);
 
         let req_builder = match config.auth_type {
             AuthType::UrlEncodedBody => {
@@ -580,14 +587,15 @@ impl OAuth2Filter {
             },
         };
 
-        let resp = req_builder.send().await.map_err(|e| format!("request error: {e}"))?;
+        let resp = req_builder.send().await?;
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(format!("token endpoint returned status {status}: {body}"));
+            debug!("token endpoint returned status {status}: {body}");
+            return Err(OauthClientError::TokenEndpointError(status));
         }
 
-        resp.json::<TokenEndpointResponse>().await.map_err(|e| format!("failed to decode json response: {e}"))
+        Ok(resp.json::<TokenEndpointResponse>().await?)
     }
 }
 
@@ -602,12 +610,8 @@ fn extract_host(req: &Request<ArionRequestBody>) -> Option<&str> {
 
 #[inline]
 fn strip_port(host: &str) -> &str {
-    if let Some(rest) = host.strip_prefix('[') {
-        if let Some(bracket_end) = rest.find(']') {
-            &host[..=bracket_end + 1]
-        } else {
-            host
-        }
+    if host.starts_with('[') {
+        host.find(']').and_then(|end| host.get(..=end)).unwrap_or(host)
     } else {
         host.split_once(':').map_or(host, |(h, _port)| h)
     }
@@ -659,6 +663,7 @@ fn verify_hmac(secret: &str, data: &str, signature_b64: &str) -> bool {
     hmac::verify(&key, data.as_bytes(), &sig_bytes).is_ok()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn format_cookie(
     name: &str,
     value: &str,
@@ -668,7 +673,7 @@ fn format_cookie(
     is_secure: bool,
 ) -> Option<HeaderValue> {
     let path = config.map_or("/", |c| c.path.as_str());
-    let domain_len = domain.map_or(0, |d| if !d.is_empty() { d.len() + 9 } else { 0 });
+    let domain_len = domain.map_or(0, |d| if d.is_empty() { 0 } else { d.len() + 9 });
     let estimated_cap = name.len() + 1 + value.len() + 7 + path.len() + domain_len + 64;
 
     let mut buf = String::with_capacity(estimated_cap);
@@ -720,7 +725,7 @@ mod tests {
         core::{HttpUri, StringMatcher},
         network_filters::http_connection_manager::{
             header_matcher::HeaderMatcher,
-            http_filters::oauth2::OAuth2Credentials,
+            http_filters::oauth2::{CookieConfigs, OAuth2Credentials},
             route::{PathMatcher, PathSpecifier},
         },
     };
@@ -753,7 +758,7 @@ mod tests {
             pass_through_matcher: vec![],
             auth_scopes: vec!["openid".into(), "profile".into()],
             resources: vec![],
-            auth_type: Default::default(),
+            auth_type: AuthType::default(),
             use_refresh_token: true,
             default_expires_in: Duration::from_secs(3600),
             deny_redirect_matcher: vec![],
@@ -761,7 +766,7 @@ mod tests {
             disable_id_token_set_cookie: false,
             disable_access_token_set_cookie: false,
             disable_refresh_token_set_cookie: false,
-            cookie_configs: Default::default(),
+            cookie_configs: CookieConfigs::default(),
             stat_prefix: "oauth".into(),
             csrf_token_expires_in: Duration::from_secs(600),
             code_verifier_token_expires_in: Duration::from_secs(600),
@@ -772,7 +777,7 @@ mod tests {
     #[tokio::test]
     async fn test_unauthenticated_request_triggers_redirect_with_dynamic_uri() {
         let config = sample_config();
-        let mut filter = OAuth2Filter::new(config);
+        let mut filter = OAuth2Filter::try_new(config).unwrap();
 
         let mut req = Request::builder()
             .uri("/protected/resource")
@@ -786,7 +791,7 @@ mod tests {
             FilterDecision::DirectResponse(resp) => {
                 assert_eq!(resp.status(), StatusCode::FOUND);
                 let location = resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
-                eprintln!("LOCATION IS: {}", location);
+                eprintln!("LOCATION IS: {location}");
                 assert!(location.starts_with("https://auth.example.com/oauth/authorize?"));
                 // Notice the dynamic redirect_uri formatting from request headers!
                 assert!(
@@ -810,7 +815,7 @@ mod tests {
             treat_missing_header_as_empty: false,
         }];
 
-        let mut filter = OAuth2Filter::new(config);
+        let mut filter = OAuth2Filter::try_new(config).unwrap();
         let mut req = Request::builder()
             .uri("/api/data")
             .header("Host", "gateway.example.com")
@@ -837,7 +842,7 @@ mod tests {
             treat_missing_header_as_empty: false,
         }];
 
-        let mut filter = OAuth2Filter::new(config);
+        let mut filter = OAuth2Filter::try_new(config).unwrap();
         let mut req = Request::builder()
             .uri("/api/data")
             .header("Host", "gateway.example.com")
@@ -852,7 +857,7 @@ mod tests {
     #[tokio::test]
     async fn test_authenticated_fast_path_with_session_cache_and_bearer_forwarding() {
         let config = sample_config();
-        let mut filter = OAuth2Filter::new(config.clone());
+        let mut filter = OAuth2Filter::try_new(config.clone()).unwrap();
 
         let host = "gateway.example.com";
         let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
@@ -895,7 +900,7 @@ mod tests {
     #[tokio::test]
     async fn test_signout_flow_clears_cookies_and_redirects() {
         let config = sample_config();
-        let mut filter = OAuth2Filter::new(config);
+        let mut filter = OAuth2Filter::try_new(config).unwrap();
 
         let mut req = Request::builder()
             .uri("/signout")
@@ -969,7 +974,7 @@ mod tests {
     #[tokio::test]
     async fn test_callback_with_oauth_error_returns_unauthorized() {
         let config = sample_config();
-        let mut filter = OAuth2Filter::new(config);
+        let mut filter = OAuth2Filter::try_new(config).unwrap();
 
         let mut req = Request::builder()
             .uri("/callback?error=access_denied&error_description=user+denied+consent&state=test")
@@ -989,7 +994,7 @@ mod tests {
     #[tokio::test]
     async fn test_callback_with_invalid_percent_encoding_returns_bad_request() {
         let config = sample_config();
-        let mut filter = OAuth2Filter::new(config);
+        let mut filter = OAuth2Filter::try_new(config).unwrap();
 
         let mut req = Request::builder()
             .uri("/callback?code=%FF%FF&state=test")
@@ -1009,7 +1014,7 @@ mod tests {
     #[tokio::test]
     async fn test_missing_host_returns_bad_request() {
         let config = sample_config();
-        let mut filter = OAuth2Filter::new(config);
+        let mut filter = OAuth2Filter::try_new(config).unwrap();
 
         let mut req = Request::builder().uri("/protected").body(ArionRequestBody::default()).unwrap();
 
