@@ -7,9 +7,6 @@ on:
     branches: [ main, master ]
 
 env:
-  CARGO_CACHE_PATH: ~/.cargo/registry
-  CARGO_GIT_PATH: ~/.cargo/git
-  TARGET_DIR: target
   # Replaces the rustflags in .cargo/config.toml, minus target-cpu=native: the cached
   # target/ is restored on runners with different CPUs, causing SIGILL
   RUSTFLAGS: -C force-frame-pointers=no
@@ -25,14 +22,6 @@ jobs:
       - name: Initialize git submodules
         run: git submodule update --init --recursive
 
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ env.CARGO_CACHE_PATH }}
-            ${{ env.CARGO_GIT_PATH }}
-          key: ${{ runner.os }}-cargo-checks-${{ hashFiles('**/Cargo.lock', 'envoy-data-plane-api/build.rs') }}
-
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
@@ -42,6 +31,13 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
           profile: minimal
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Make sure a RUSTFLAGS change busts the cache, regardless of the defaults
+          env-vars: RUSTFLAGS
+          cache-on-failure: true
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -59,15 +55,6 @@ jobs:
       - name: Initialize git submodules
         run: git submodule update --init --recursive
 
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ env.CARGO_CACHE_PATH }}
-            ${{ env.CARGO_GIT_PATH }}
-            ${{ env.TARGET_DIR }}
-          key: ${{ runner.os }}-cargo-build-generic-cpu-${{ hashFiles('**/Cargo.lock', 'envoy-data-plane-api/build.rs') }}
-
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
@@ -77,6 +64,13 @@ jobs:
           toolchain: stable
           target: wasm32-unknown-unknown # for the Wasm test filters
           profile: minimal
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Make sure a RUSTFLAGS change busts the cache, regardless of the defaults
+          env-vars: RUSTFLAGS
+          cache-on-failure: true
 
       - name: Build (release)
         run: cargo build --all-features --workspace --release --locked
@@ -94,16 +88,6 @@ jobs:
       - name: Initialize git submodules
         run: git submodule update --init --recursive
 
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ env.CARGO_CACHE_PATH }}
-            ${{ env.CARGO_GIT_PATH }}
-            ${{ env.TARGET_DIR }}
-            arion-wasm-sdk/target
-          key: ${{ runner.os }}-cargo-e2e-generic-cpu-${{ hashFiles('**/Cargo.lock', 'envoy-data-plane-api/build.rs') }}
-
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
@@ -113,6 +97,18 @@ jobs:
           toolchain: stable
           target: wasm32-unknown-unknown # for the Wasm test filters
           profile: minimal
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # arion-wasm-sdk is its own workspace (kept out of the main one), so it needs
+          # its own entry here too
+          workspaces: |
+            . -> target
+            arion-wasm-sdk -> target
+          # Make sure a RUSTFLAGS change busts the cache, regardless of the defaults
+          env-vars: RUSTFLAGS
+          cache-on-failure: true
 
       - name: Build arion (release, all features)
         run: cargo build -p arion-proxy --all-features --release --locked
