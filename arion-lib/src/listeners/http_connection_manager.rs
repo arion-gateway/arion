@@ -657,7 +657,7 @@ struct EventInfo {
 }
 
 impl TransactionContext {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::unnecessary_operation)]
     pub fn reset(
         &mut self,
         request_id: Option<RequestId>,
@@ -897,7 +897,7 @@ impl HttpPipelineSvc {
         Self
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::large_futures)]
     async fn call(
         &self,
         manager: &HttpConnectionManager,
@@ -1112,11 +1112,12 @@ impl RequestHandler<Request<ArionRequestBody>, &HttpConnectionManager> for &Rout
         self,
         ctx: &RequestCtx,
         mut request: Request<ArionRequestBody>,
-        connection_manager: &HttpConnectionManager,
+        arg: &HttpConnectionManager,
     ) -> Result<Response<ArionResponseBody>> {
         let route_conf = &self.route_configuration;
         let mut cached_route = match_request_route(&request, route_conf);
         let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
+        let connection_manager = arg;
 
         let mut filter_start_idx = 0;
         let filter_response = 'filter_loop: loop {
@@ -1453,6 +1454,7 @@ impl TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
     // `StdArc` (rather than `&self`) is also required: hyper-util bounds the per-request future
     // with `S::Future: 'static`, so it must own — not borrow — the connection state. Cloning the
     // `Arc` (one atomic inc) is cheaper than cloning the whole struct (three: conn x2 + manager).
+    #[allow(clippy::large_futures)]
     pub async fn handle_request(
         self: StdArc<Self>,
         incoming_request: Request<Incoming>,
@@ -1574,7 +1576,7 @@ impl<S> TransactionSvc<S> {
 }
 
 impl TransactionSvc<HttpPipelineSvc> {
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::large_futures)]
     async fn call(
         &self,
         manager: &HttpConnectionManager,
@@ -1816,8 +1818,9 @@ pub(crate) struct HttpTxnFlush {
 
 #[cfg(any(feature = "access-log", feature = "metrics"))]
 impl OnFlush for HttpTxnFlush {
-    fn run(self, stream_metrics: &StreamMetrics) {
+    fn run(self, metrics: &StreamMetrics) {
         let mut trans_state = self.trans_ctx.trans_state.lock();
+        let stream_metrics = metrics;
         let ctx_bytes = trans_state.bytes;
         #[cfg(feature = "access-log")]
         let ctx_flags = trans_state.flags;
@@ -1898,7 +1901,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
 
     #[cfg(feature = "access-log")]
     with_access_log!(
-        params.al_ctx.access_loggers.as_mut().map(|x| &mut **x).unwrap_or(&mut []),
+        params.al_ctx.access_loggers.as_deref_mut().unwrap_or(&mut []),
         FinishContext {
             duration,
             bytes_received: params.bytes_received,
@@ -2146,7 +2149,7 @@ fn reject_request_if_invalid(
     // check if uri/line is too long...
     //
     let mut counter = LengthCounter(0);
-    let _ = write!(&mut counter, "{}", request.uri());
+    _ = write!(&mut counter, "{}", request.uri());
     if counter.0 > MAX_URI_LENGTH {
         debug!("Too long uri: {} bytes", counter.0);
         let r = SyntheticHttpResponse::custom_error(

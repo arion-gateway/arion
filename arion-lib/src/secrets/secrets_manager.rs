@@ -185,7 +185,8 @@ fn parse_cert_details(der: &[u8], path: &str) -> Option<CertDetails> {
             let mut slice = &mut buf[..];
             _ = write!(slice, "{b:02x}");
             // Extract exactly the 2 written bytes from the original buffer
-            // and convert them to a string slice
+            // and convert them to a string slice.
+            // SAFETY: `{b:02x}` formats a single byte into exactly two ASCII hex digits (0-9, a-f), which are guaranteed to be valid UTF-8.
             let hex_str = unsafe { std::str::from_utf8_unchecked(&buf[..2]) };
             builder.push_str(hex_str);
         }

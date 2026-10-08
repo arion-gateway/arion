@@ -318,6 +318,7 @@ impl McpGateway {
         }
     }
 
+    #[allow(clippy::unused_self)]
     pub fn apply_response(
         &mut self,
         _response: &mut Response<ArionResponseBody>,

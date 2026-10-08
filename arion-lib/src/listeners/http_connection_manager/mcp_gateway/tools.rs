@@ -205,6 +205,12 @@ impl From<ClientInitializeError> for CallToolError {
     }
 }
 
+impl From<Box<ClientInitializeError>> for CallToolError {
+    fn from(err: Box<ClientInitializeError>) -> Self {
+        Self::ClientInitializeError(err)
+    }
+}
+
 impl From<ServiceError> for CallToolError {
     fn from(err: ServiceError) -> Self {
         Self::ServiceError(Box::new(err))
@@ -225,6 +231,12 @@ pub enum ListToolsError {
 impl From<ClientInitializeError> for ListToolsError {
     fn from(value: ClientInitializeError) -> Self {
         ListToolsError::ClientError(Box::new(value))
+    }
+}
+
+impl From<Box<ClientInitializeError>> for ListToolsError {
+    fn from(value: Box<ClientInitializeError>) -> Self {
+        ListToolsError::ClientError(value)
     }
 }
 
@@ -681,9 +693,13 @@ impl ToolsRegistry {
         );
         let client_info =
             ClientConfig::new(ClientCapabilities::default(), Implementation::new(DEFAULT_USER_AGENT, "0.1.0"));
-        client_info.serve(transport).await.inspect_err(|e| {
-            info!(target: "mcp_gateway", "get_mcp_client error: {}!", e);
-        })
+        client_info
+            .serve(transport)
+            .await
+            .inspect_err(|e| {
+                info!(target: "mcp_gateway", "get_mcp_client error: {}!", e);
+            })
+            .map_err(Box::new)
     }
 
     pub async fn call_semantic_search_tool(

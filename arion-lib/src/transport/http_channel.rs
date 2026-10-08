@@ -877,13 +877,11 @@ fn prepare_http2_request(request: &mut Request<ArionRequestBody>, is_tls: bool) 
     let has_authority = uri.authority().is_some();
 
     if !has_scheme || !has_authority {
-        let authority_from_host = if !has_authority {
-            if let Some(host_header) = request.headers().get(http::header::HOST) {
-                let authority_str = host_header.to_str().map_err(|e| format!("Can't parse Host header: {e}"))?;
-                Some(authority_str.parse::<Authority>().map_err(|e| format!("Can't parse authority: {e}"))?)
-            } else {
-                None
-            }
+        let authority_from_host = if has_authority {
+            None
+        } else if let Some(host_header) = request.headers().get(http::header::HOST) {
+            let authority_str = host_header.to_str().map_err(|e| format!("Can't parse Host header: {e}"))?;
+            Some(authority_str.parse::<Authority>().map_err(|e| format!("Can't parse authority: {e}"))?)
         } else {
             None
         };

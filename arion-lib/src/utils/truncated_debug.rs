@@ -37,7 +37,8 @@ impl Write for TruncatingWriter<'_, '_> {
                 // Character limit reached within this chunk.
                 self.truncated = true;
                 self.chars_remaining = 0;
-                return self.inner.write_str(&s[..byte_idx]);
+                let prefix = s.get(..byte_idx).unwrap_or_default();
+                return self.inner.write_str(prefix);
             }
             char_count += 1;
         }
@@ -60,5 +61,48 @@ impl<T: fmt::Debug, const N: usize> fmt::Debug for TruncatedDebug<'_, T, N> {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncated_debug_shorter() {
+        let text = "hello";
+        let formatted = format!("{:?}", TruncatedDebug::<_, 10>(&text));
+        assert_eq!(formatted, "\"hello\"");
+    }
+
+    #[test]
+    fn test_truncated_debug_exact() {
+        let text = "hello";
+        // format!("{:?}", "hello") produces "\"hello\"" which is 7 characters
+        let formatted = format!("{:?}", TruncatedDebug::<_, 7>(&text));
+        assert_eq!(formatted, "\"hello\"");
+    }
+
+    #[test]
+    fn test_truncated_debug_longer() {
+        let text = "hello world";
+        // limit to 6 chars: includes opening quote '"' + 'h' + 'e' + 'l' + 'l' + 'o'
+        let formatted = format!("{:?}", TruncatedDebug::<_, 6>(&text));
+        assert_eq!(formatted, "\"hello… ");
+    }
+
+    #[test]
+    fn test_truncated_debug_multibyte_utf8() {
+        let text = "città ☕";
+        // multibyte characters must not panic and slice at valid char boundary
+        let formatted = format!("{:?}", TruncatedDebug::<_, 5>(&text));
+        assert_eq!(formatted, "\"citt… ");
+    }
+
+    #[test]
+    fn test_truncated_debug_zero() {
+        let text = "hello";
+        let formatted = format!("{:?}", TruncatedDebug::<_, 0>(&text));
+        assert_eq!(formatted, "… ");
     }
 }

@@ -183,6 +183,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[allow(clippy::similar_names)]
     async fn a_busy_runtime_survives_a_config_query() {
         use std::time::Duration as StdDuration;
 

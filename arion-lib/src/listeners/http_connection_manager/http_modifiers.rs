@@ -306,6 +306,7 @@ impl<B> HeaderMapModifier<(&[EarlyHeaderMutation], &ConnMeta)> for Request<B> {
 // the match is case-insensitive (header names are case-insensitive per
 // RFC 9110; the pattern alone carries no case flag). `Regex` is unaffected
 // by this, matching Envoy semantics where `ignore_case` does not apply to it.
+#[allow(clippy::similar_names)]
 fn remove_matching_headers(headers: &mut HeaderMap, pattern: &StringMatcherPattern) {
     let matcher = StringMatcher { ignore_case: true, pattern: pattern.clone() };
     let matched: Vec<HeaderName> = headers.keys().filter(|name| matcher.matches(name.as_str())).cloned().collect();
