@@ -18,6 +18,7 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use arion_e2e_tests::config_builder::xds::PushResult;
 use arion_e2e_tests::config_builder::{
     ClusterBuilder, DownstreamTlsBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder,
     RouteBuilder, RouteConfigBuilder, SecretBuilder, UpstreamTlsBuilder, VirtualHostBuilder,
@@ -129,6 +130,89 @@ async fn test_xds_upstream_tls_sds_validation() {
 
     response.assert_status(StatusCode::OK);
     response.assert_body("Upstream SDS validation OK!");
+
+    harness.shutdown();
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_xds_listener_secret_next_to_upstream_tls_cluster() {
+    let certs = TestCerts::new();
+
+    let backend = TlsTestBackend::start_with_files(certs.beefcake_dublin_cert(), certs.beefcake_dublin_key())
+        .await
+        .expect("Failed to start TLS backend");
+    backend.set_default_response(PreConfiguredResponse::with_body("Upstream TLS OK!")).await;
+
+    let mut harness = XdsEnabledHarness::start().await.expect("Failed to start harness");
+
+    let listener_port = harness.allocate_listener_port().expect("Failed to allocate listener port");
+    let listener_addr = SocketAddr::from(([127, 0, 0, 1], listener_port));
+
+    let ca_secret = SecretBuilder::new("upstream-ca")
+        .validation_context_file(certs.beefcake_ca_chain())
+        .expect("Failed to load CA file")
+        .build();
+    harness.push_secret(&ca_secret).await.expect("Failed to push CA secret");
+
+    let cluster = ClusterBuilder::new("backend")
+        .endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+        .upstream_tls(
+            UpstreamTlsBuilder::new().sni("dublin.beefcake.example.com").validation_context_sds("upstream-ca"),
+        )
+        .build();
+    harness.push_cluster(&cluster).await.expect("Failed to push cluster");
+
+    let server_cert = |cert, key| {
+        SecretBuilder::new("server-cert").tls_certificate_files(cert, key).expect("Failed to load cert files").build()
+    };
+    harness
+        .push_secret(&server_cert(certs.beefcake_dublin_cert(), certs.beefcake_dublin_key()))
+        .await
+        .expect("Listener secret rejected");
+
+    let listener = ListenerBuilder::new("https")
+        .port(listener_port)
+        .filter_chain(
+            FilterChainBuilder::new("main").downstream_tls(DownstreamTlsBuilder::new().sds_secret("server-cert")).hcm(
+                HcmBuilder::new().route_config(RouteConfigBuilder::new("routes").virtual_host(
+                    VirtualHostBuilder::new("default").route(RouteBuilder::new().match_prefix("/").cluster("backend")),
+                )),
+            ),
+        )
+        .build();
+    harness.push_listener(&listener).await.expect("Failed to push listener");
+
+    harness.arion_mut().wait_for_listener_at(listener_addr, Duration::from_secs(10)).await.expect("Listener not ready");
+
+    let beefcake_client = TlsTestClientBuilder::new(listener_addr)
+        .server_name("localhost")
+        .root_ca(certs.beefcake_ca_chain())
+        .build()
+        .expect("Failed to build TLS client");
+    let response = beefcake_client.get("/before").await.expect("Failed to send request");
+    response.assert_status(StatusCode::OK);
+    response.assert_body("Upstream TLS OK!");
+
+    harness
+        .push_secret(&server_cert(certs.deadbeef_dublin_cert(), certs.deadbeef_dublin_key()))
+        .await
+        .expect("Listener secret rotation rejected");
+
+    let deadbeef_client = TlsTestClientBuilder::new(listener_addr)
+        .server_name("localhost")
+        .root_ca(certs.deadbeef_ca_chain())
+        .build()
+        .expect("Failed to build TLS client");
+    let mut response = deadbeef_client.get("/rotated").await;
+    for _ in 0..20 {
+        if response.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        response = deadbeef_client.get("/rotated").await;
+    }
+    response.expect("Rotated certificate not served").assert_status(StatusCode::OK);
 
     harness.shutdown();
 }
@@ -422,6 +506,92 @@ async fn test_xds_sni_routing() {
     response.assert_status(StatusCode::OK);
     response.assert_body("backend2");
     assert!(backend2.await_request().await.is_ok(), "backend should have received a request");
+
+    harness.shutdown();
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_xds_remove_and_readd_tls_secret() {
+    let backend = TestBackend::start().await.expect("Failed to start test backend");
+    backend.set_default_response(PreConfiguredResponse::with_body("SDS re-added!")).await;
+
+    let mut harness = XdsEnabledHarness::start().await.expect("Failed to start harness");
+    let certs = TestCerts::new();
+
+    let listener_port = harness.allocate_listener_port().expect("Failed to allocate listener port");
+    let listener_addr = SocketAddr::from(([127, 0, 0, 1], listener_port));
+
+    let beefcake_cert = SecretBuilder::new("server-cert")
+        .tls_certificate_files(certs.beefcake_dublin_cert(), certs.beefcake_dublin_key())
+        .expect("Failed to load cert files")
+        .build();
+
+    harness.push_secret(&beefcake_cert).await.expect("Failed to push secret");
+
+    let cluster = ClusterBuilder::new("backend").endpoint(EndpointBuilder::from_socket_addr(backend.addr())).build();
+
+    let listener = ListenerBuilder::new("https")
+        .port(listener_port)
+        .filter_chain(
+            FilterChainBuilder::new("main").downstream_tls(DownstreamTlsBuilder::new().sds_secret("server-cert")).hcm(
+                HcmBuilder::new().route_config(RouteConfigBuilder::new("routes").virtual_host(
+                    VirtualHostBuilder::new("default").route(RouteBuilder::new().match_prefix("/").cluster("backend")),
+                )),
+            ),
+        )
+        .build();
+
+    harness.push_cluster(&cluster).await.expect("Failed to push cluster");
+    harness.push_listener(&listener).await.expect("Failed to push listener");
+
+    harness.arion_mut().wait_for_listener_at(listener_addr, Duration::from_secs(10)).await.expect("Listener not ready");
+
+    let beefcake_client = TlsTestClientBuilder::new(listener_addr)
+        .server_name("localhost")
+        .root_ca(certs.beefcake_ca_chain())
+        .build()
+        .expect("Failed to build TLS client");
+
+    beefcake_client.get("/before").await.expect("Failed to send request").assert_status(StatusCode::OK);
+
+    let removal = harness.pusher().remove_secret("server-cert", Duration::from_secs(5)).await.expect("No ACK/NACK");
+    assert!(matches!(removal, PushResult::Ack), "Secret removal rejected: {removal:?}");
+
+    let response = beefcake_client.get("/removed").await.expect("Listener stopped serving its certificate");
+    response.assert_status(StatusCode::OK);
+
+    let deadbeef_cert = SecretBuilder::new("server-cert")
+        .tls_certificate_files(certs.deadbeef_dublin_cert(), certs.deadbeef_dublin_key())
+        .expect("Failed to load cert files")
+        .build();
+
+    harness.push_secret(&deadbeef_cert).await.expect("Failed to push secret again");
+
+    let deadbeef_client = TlsTestClientBuilder::new(listener_addr)
+        .server_name("localhost")
+        .root_ca(certs.deadbeef_ca_chain())
+        .build()
+        .expect("Failed to build TLS client");
+
+    let mut last_error = None;
+    for _ in 0..20 {
+        match deadbeef_client.get("/readded").await {
+            Ok(response) => {
+                response.assert_status(StatusCode::OK);
+                response.assert_body("SDS re-added!");
+                last_error = None;
+                break;
+            },
+            Err(e) => {
+                last_error = Some(e);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            },
+        }
+    }
+    if let Some(e) = last_error {
+        panic!("Re-added secret not served: {e}");
+    }
 
     harness.shutdown();
 }

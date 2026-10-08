@@ -58,11 +58,18 @@ impl Cors {
             return FilterDecision::Continue;
         };
 
+        let is_preflight = req.method() == Method::OPTIONS && req.headers().contains_key(ACCESS_CONTROL_REQUEST_METHOD);
+
         // 2. Validate Origin and save state.
         match self.determine_allowed_origin(origin_str) {
             Some((val, is_wildcard)) => {
                 self.validated_origin = Some(val);
                 self.is_wildcard_response = is_wildcard;
+            },
+            None if is_preflight && !self.inner.forward_not_matching_preflights => {
+                // Origin not allowed: answer the preflight here, without CORS headers.
+                debug!(target: "cors", "Preflight from origin not allowed, answering without CORS headers");
+                return Self::empty_response(req.version());
             },
             None => {
                 // Origin not allowed: ignore. Browser will block response due to missing headers.
@@ -71,8 +78,6 @@ impl Cors {
         }
 
         // 3. Preflight Handling (OPTIONS + Access-Control-Request-Method)
-        let is_preflight = req.method() == Method::OPTIONS && req.headers().contains_key(ACCESS_CONTROL_REQUEST_METHOD);
-
         if is_preflight {
             // Strict Validation: Check if the requested method is actually allowed.
             let Some(req_method_hdr) = req.headers().get(ACCESS_CONTROL_REQUEST_METHOD) else {
@@ -84,46 +89,45 @@ impl Cors {
                 return FilterDecision::Continue;
             };
 
-            if !self.inner.allow_methods.contains(&req_method) {
+            if !self.methods_wildcard() && !self.inner.allow_methods.contains(&req_method) {
                 debug!(target: "cors", "Preflight failed: Method {:?} not allowed", req_method);
                 return FilterDecision::Continue;
             }
 
             // Validate Access-Control-Request-Headers if present
-            // Note: "*" wildcard in allow_headers is only valid when credentials are disabled
-            let has_headers_wildcard =
-                !self.inner.allow_credentials && self.inner.allow_headers.iter().any(|h| h == "*");
+            let has_headers_wildcard = self.inner.allow_headers.iter().any(|h| h == "*");
+
+            let requested_headers =
+                req.headers().get(ACCESS_CONTROL_REQUEST_HEADERS).and_then(|h| h.to_str().ok()).map(String::from);
 
             if !has_headers_wildcard {
-                if let Some(req_headers_hdr) = req.headers().get(ACCESS_CONTROL_REQUEST_HEADERS) {
-                    if let Ok(req_headers_str) = req_headers_hdr.to_str() {
-                        // Parse comma-separated header names and validate each
-                        for requested_header in req_headers_str.split(',').map(|s| s.trim().to_ascii_lowercase_cow()) {
-                            if requested_header.is_empty() {
-                                continue;
-                            }
-                            // Check if the requested header is in allowed headers (case-insensitive)
-                            // We implicitly allow mcp-session-id to support the MCP Gateway
-                            let is_allowed = requested_header == "mcp-session-id"
-                                || self
-                                    .inner
-                                    .allow_headers
-                                    .iter()
-                                    .any(|h| h.to_ascii_lowercase_cow() == requested_header);
-                            if !is_allowed {
-                                debug!(target: "cors", "Preflight failed: Header '{}' not allowed", requested_header);
-                                return FilterDecision::Continue;
-                            }
+                if let Some(req_headers_str) = requested_headers.as_deref() {
+                    // Parse comma-separated header names and validate each
+                    for requested_header in req_headers_str.split(',').map(|s| s.trim().to_ascii_lowercase_cow()) {
+                        if requested_header.is_empty() {
+                            continue;
+                        }
+                        // Check if the requested header is in allowed headers (case-insensitive)
+                        // We implicitly allow mcp-session-id to support the MCP Gateway
+                        let is_allowed = requested_header == "mcp-session-id"
+                            || self.inner.allow_headers.iter().any(|h| h.to_ascii_lowercase_cow() == requested_header);
+                        if !is_allowed {
+                            debug!(target: "cors", "Preflight failed: Header '{}' not allowed", requested_header);
+                            return FilterDecision::Continue;
                         }
                     }
                 }
             }
 
             // If valid, generate the response immediately.
-            return self.generate_preflight_response(req.version());
+            return self.generate_preflight_response(req.version(), &req_method, requested_headers.as_deref());
         }
 
         FilterDecision::Continue
+    }
+
+    fn methods_wildcard(&self) -> bool {
+        self.inner.allow_methods.iter().any(|m| m.as_str() == "*")
     }
 
     pub fn apply_response(&mut self, response: &mut Response<ArionResponseBody>) -> FilterDecision {
@@ -152,8 +156,11 @@ impl Cors {
         }
 
         // 4. Set Access-Control-Expose-Headers
+        // mcp-session-id is exposed only when the response carries it (MCP Gateway).
         let mut expose_headers = conf.expose_headers.clone();
-        if !expose_headers.iter().any(|h| h.eq_ignore_ascii_case("mcp-session-id")) {
+        if headers.contains_key("mcp-session-id")
+            && !expose_headers.iter().any(|h| h.eq_ignore_ascii_case("mcp-session-id"))
+        {
             expose_headers.push("mcp-session-id".into());
         }
 
@@ -167,7 +174,23 @@ impl Cors {
         FilterDecision::Continue
     }
 
-    fn generate_preflight_response(&self, ver: http::Version) -> FilterDecision {
+    fn empty_response(ver: http::Version) -> FilterDecision {
+        let Ok(response) = Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .version(ver)
+            .body(TimeoutBody::new(None, PolyBody::from(Empty::new())).into())
+        else {
+            return FilterDecision::internal_server_error("failed to build CORS response", ver);
+        };
+        FilterDecision::DirectResponse(Box::new(response))
+    }
+
+    fn generate_preflight_response(
+        &self,
+        ver: http::Version,
+        requested_method: &Method,
+        requested_headers: Option<&str>,
+    ) -> FilterDecision {
         debug!(target: "cors", "generating preflight response");
         let Some(allowed_origin) = self.validated_origin.as_ref() else {
             return FilterDecision::internal_server_error(
@@ -193,28 +216,31 @@ impl Cors {
         }
 
         // C. Methods
-        let methods_str = conf.allow_methods.iter().map(http::Method::as_str).collect::<Vec<_>>().join(", ");
+        // With credentials "*" would be literal (Fetch spec), so echo the requested method.
+        let methods_str = if self.methods_wildcard() {
+            if conf.allow_credentials {
+                requested_method.as_str().to_owned()
+            } else {
+                "*".to_owned()
+            }
+        } else {
+            conf.allow_methods.iter().map(http::Method::as_str).collect::<Vec<_>>().join(", ")
+        };
         if let Ok(val) = HeaderValue::from_str(&methods_str) {
             headers.insert(ACCESS_CONTROL_ALLOW_METHODS, val);
         }
 
         // D. Headers
-        // If wildcard is configured and credentials are disabled, return "*"
-        // Otherwise, return the configured list
-        let mut allow_headers = conf.allow_headers.clone();
-        if !allow_headers.iter().any(|h| h.eq_ignore_ascii_case("mcp-session-id")) {
-            allow_headers.push("mcp-session-id".into());
-        }
-
-        if !allow_headers.is_empty() {
-            let has_headers_wildcard = !conf.allow_credentials && allow_headers.iter().any(|h| h == "*");
-            if has_headers_wildcard {
-                headers.insert(ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("*"));
-            } else {
-                let headers_str = allow_headers.join(", ");
-                if let Ok(val) = HeaderValue::from_str(&headers_str) {
-                    headers.insert(ACCESS_CONTROL_ALLOW_HEADERS, val);
-                }
+        // Echo the validated requested headers; a wildcard answers "*" only without credentials.
+        let has_headers_wildcard = conf.allow_headers.iter().any(|h| h == "*");
+        let headers_str = match (has_headers_wildcard, conf.allow_credentials, requested_headers) {
+            (true, false, _) => Some("*".to_owned()),
+            (_, _, Some(requested)) => Some(requested.to_owned()),
+            (_, _, None) => None,
+        };
+        if let Some(headers_str) = headers_str {
+            if let Ok(val) = HeaderValue::from_str(&headers_str) {
+                headers.insert(ACCESS_CONTROL_ALLOW_HEADERS, val);
             }
         }
 
@@ -225,7 +251,14 @@ impl Cors {
             }
         }
 
-        // F. Vary Headers
+        // F. Expose Headers
+        if !conf.expose_headers.is_empty() {
+            if let Ok(val) = HeaderValue::from_str(&conf.expose_headers.join(", ")) {
+                headers.insert(ACCESS_CONTROL_EXPOSE_HEADERS, val);
+            }
+        }
+
+        // G. Vary Headers
         // 1. Vary on Origin (Same logic as apply_response)
         if !self.is_wildcard_response || conf.allow_credentials {
             headers.append(VARY, HeaderValue::from_static("Origin"));
@@ -269,6 +302,7 @@ impl Cors {
 mod tests {
     use super::*;
     use arion_configuration::config::core::StringMatcher;
+    use std::str::FromStr;
 
     fn mock_req(method: Method, origin: Option<&str>, acr_method: Option<&str>) -> Request<ArionRequestBody> {
         mock_req_full(method, origin, acr_method, None)
@@ -360,6 +394,40 @@ mod tests {
     }
 
     #[test]
+    fn test_preflight_exposes_configured_headers() {
+        let mut cors =
+            Cors::from(CorsConfig { expose_headers: vec!["x-header-1".into(), "x-header-2".into()], ..basic_config() });
+        let mut req = mock_req(Method::OPTIONS, Some("https://allowed.com"), Some("POST"));
+
+        let FilterDecision::DirectResponse(resp) = cors.apply_request(&mut req) else {
+            panic!("Expected DirectResponse for Preflight");
+        };
+        assert_eq!(resp.headers().get(ACCESS_CONTROL_EXPOSE_HEADERS).unwrap(), "x-header-1, x-header-2");
+
+        let mut cors = Cors::from(CorsConfig { expose_headers: vec![], ..basic_config() });
+        let mut req = mock_req(Method::OPTIONS, Some("https://allowed.com"), Some("POST"));
+        let FilterDecision::DirectResponse(resp) = cors.apply_request(&mut req) else {
+            panic!("Expected DirectResponse for Preflight");
+        };
+        assert!(resp.headers().get(ACCESS_CONTROL_EXPOSE_HEADERS).is_none());
+    }
+
+    #[test]
+    fn test_preflight_from_unknown_origin_answered_or_forwarded() {
+        let mut cors = Cors::from(CorsConfig { forward_not_matching_preflights: false, ..basic_config() });
+        let mut req = mock_req(Method::OPTIONS, Some("https://unknown.com"), Some("POST"));
+        let FilterDecision::DirectResponse(resp) = cors.apply_request(&mut req) else {
+            panic!("Expected the preflight to be answered");
+        };
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert!(resp.headers().get(ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+
+        let mut cors = Cors::from(basic_config());
+        let mut req = mock_req(Method::OPTIONS, Some("https://unknown.com"), Some("POST"));
+        assert!(matches!(cors.apply_request(&mut req), FilterDecision::Continue));
+    }
+
+    #[test]
     fn test_preflight_fail_bad_method() {
         let mut cors = Cors::from(basic_config());
         let mut req = mock_req(Method::OPTIONS, Some("https://allowed.com"), Some("DELETE"));
@@ -397,6 +465,72 @@ mod tests {
 
         assert!(matches!(decision, FilterDecision::Continue));
         assert!(cors.validated_origin.is_none(), "No origin should mean no CORS processing");
+    }
+
+    #[test]
+    fn test_preflight_implicit_mcp_session_id_echoed() {
+        let conf = CorsConfig {
+            allow_origins: vec![StringMatcher::new("https://allowed.com")],
+            allow_methods: vec![Method::POST],
+            allow_headers: vec!["Content-Type".into()],
+            allow_credentials: false,
+            ..Default::default()
+        };
+        let mut cors = Cors::from(conf);
+        let mut req = mock_req_full(
+            Method::OPTIONS,
+            Some("https://allowed.com"),
+            Some("POST"),
+            Some("Content-Type, mcp-session-id"),
+        );
+
+        let decision = cors.apply_request(&mut req);
+
+        if let FilterDecision::DirectResponse(resp) = decision {
+            assert_eq!(resp.headers().get(ACCESS_CONTROL_ALLOW_HEADERS).unwrap(), "Content-Type, mcp-session-id");
+        } else {
+            panic!("Expected DirectResponse for preflight requesting mcp-session-id");
+        }
+    }
+
+    #[test]
+    fn test_preflight_wildcard_methods() {
+        let conf = CorsConfig {
+            allow_origins: vec![StringMatcher::new("https://allowed.com")],
+            allow_methods: vec![Method::from_str("*").unwrap()],
+            allow_credentials: false,
+            ..Default::default()
+        };
+        let mut cors = Cors::from(conf);
+        let mut req = mock_req(Method::OPTIONS, Some("https://allowed.com"), Some("PUT"));
+
+        let decision = cors.apply_request(&mut req);
+
+        if let FilterDecision::DirectResponse(resp) = decision {
+            assert_eq!(resp.headers().get(ACCESS_CONTROL_ALLOW_METHODS).unwrap(), "*");
+        } else {
+            panic!("Expected DirectResponse for wildcard methods");
+        }
+    }
+
+    #[test]
+    fn test_preflight_wildcard_methods_with_credentials_echoes_method() {
+        let conf = CorsConfig {
+            allow_origins: vec![StringMatcher::new("https://allowed.com")],
+            allow_methods: vec![Method::from_str("*").unwrap()],
+            allow_credentials: true,
+            ..Default::default()
+        };
+        let mut cors = Cors::from(conf);
+        let mut req = mock_req(Method::OPTIONS, Some("https://allowed.com"), Some("PUT"));
+
+        let decision = cors.apply_request(&mut req);
+
+        if let FilterDecision::DirectResponse(resp) = decision {
+            assert_eq!(resp.headers().get(ACCESS_CONTROL_ALLOW_METHODS).unwrap(), "PUT");
+        } else {
+            panic!("Expected DirectResponse for wildcard methods with credentials");
+        }
     }
 
     #[test]
@@ -455,11 +589,7 @@ mod tests {
         let decision = cors.apply_request(&mut req);
 
         if let FilterDecision::DirectResponse(resp) = decision {
-            // mcp-session-id is always appended so MCP Gateway clients can use it cross-origin.
-            assert_eq!(
-                resp.headers().get(ACCESS_CONTROL_ALLOW_HEADERS).unwrap(),
-                "X-Custom-Header, Content-Type, mcp-session-id"
-            );
+            assert_eq!(resp.headers().get(ACCESS_CONTROL_ALLOW_HEADERS).unwrap(), "X-Custom-Header, Content-Type");
         } else {
             panic!("Expected DirectResponse for valid preflight with headers");
         }
@@ -519,11 +649,30 @@ mod tests {
         let mut resp = Response::new(ArionResponseBody::default());
         cors.apply_response(&mut resp);
 
-        // mcp-session-id is always appended so MCP Gateway clients can read it cross-origin.
-        assert_eq!(
-            resp.headers().get(ACCESS_CONTROL_EXPOSE_HEADERS).unwrap(),
-            "X-Request-Id, X-Trace-Id, mcp-session-id"
-        );
+        assert_eq!(resp.headers().get(ACCESS_CONTROL_EXPOSE_HEADERS).unwrap(), "X-Request-Id, X-Trace-Id");
+    }
+
+    #[test]
+    fn test_response_exposes_mcp_session_id_only_when_present() {
+        let conf = CorsConfig { expose_headers: vec![], ..basic_config() };
+
+        let mut cors = Cors::from(conf.clone());
+        let mut req = mock_req(Method::GET, Some("https://allowed.com"), None);
+        cors.apply_request(&mut req);
+
+        let mut resp = Response::new(ArionResponseBody::default());
+        resp.headers_mut().insert("mcp-session-id", HeaderValue::from_static("abc"));
+        cors.apply_response(&mut resp);
+
+        assert_eq!(resp.headers().get(ACCESS_CONTROL_EXPOSE_HEADERS).unwrap(), "mcp-session-id");
+
+        let mut cors = Cors::from(conf);
+        let mut req = mock_req(Method::GET, Some("https://allowed.com"), None);
+        cors.apply_request(&mut req);
+
+        let mut plain = Response::new(ArionResponseBody::default());
+        cors.apply_response(&mut plain);
+        assert!(plain.headers().get(ACCESS_CONTROL_EXPOSE_HEADERS).is_none());
     }
 
     #[test]
@@ -670,9 +819,7 @@ mod tests {
     }
 
     #[test]
-    fn test_wildcard_allow_headers_with_credentials_not_wildcard() {
-        // "*" with credentials enabled should NOT act as wildcard
-        // It should be treated as a literal "*" header name
+    fn test_wildcard_allow_headers_with_credentials_echoes_requested() {
         let conf = CorsConfig {
             allow_origins: vec![StringMatcher::new("https://allowed.com")],
             allow_methods: vec![Method::POST],
@@ -681,17 +828,16 @@ mod tests {
             ..Default::default()
         };
         let mut cors = Cors::from(conf);
-        let mut req = mock_req_full(
-            Method::OPTIONS,
-            Some("https://allowed.com"),
-            Some("POST"),
-            Some("X-Custom-Header"), // This is not "*"
-        );
+        let mut req =
+            mock_req_full(Method::OPTIONS, Some("https://allowed.com"), Some("POST"), Some("X-Custom-Header"));
 
         let decision = cors.apply_request(&mut req);
 
-        // Should FAIL because "*" is literal when credentials enabled
-        assert!(matches!(decision, FilterDecision::Continue), "Wildcard should not work with credentials enabled");
+        if let FilterDecision::DirectResponse(resp) = decision {
+            assert_eq!(resp.headers().get(ACCESS_CONTROL_ALLOW_HEADERS).unwrap(), "X-Custom-Header");
+        } else {
+            panic!("Expected DirectResponse for wildcard headers with credentials");
+        }
     }
 
     #[test]

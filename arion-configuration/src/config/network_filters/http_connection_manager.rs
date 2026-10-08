@@ -268,14 +268,30 @@ pub enum MatchHostScoreLPM {
     Exact(usize) = 3,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct RequestHost<'a> {
+    full: &'a str,
+    without_port: Option<&'a str>,
+}
+
+impl<'a> RequestHost<'a> {
+    pub fn from_request<B>(req: &'a http::Request<B>) -> Option<Self> {
+        let full = match req.headers().get(http::header::HOST) {
+            Some(header_value) => header_value.to_str().ok()?,
+            // not `uri.host()`: keep the port so domains that name one can match
+            None => req.uri().authority()?.as_str(),
+        };
+        Some(Self { full, without_port: strip_port(full) })
+    }
+}
+
 impl MatchHost {
     pub fn eval_lpm_request<B>(&self, req: &http::Request<B>) -> Option<MatchHostScoreLPM> {
-        if let Some(header_value) = req.headers().get(http::header::HOST) {
-            let host = header_value.to_str().ok()?;
-            self.eval_lpm_host(host)
-        } else {
-            self.eval_lpm_host(req.uri().host()?)
-        }
+        self.eval_lpm(RequestHost::from_request(req)?)
+    }
+
+    pub fn eval_lpm(&self, host: RequestHost<'_>) -> Option<MatchHostScoreLPM> {
+        self.eval_lpm_host(host.full).or_else(|| self.eval_lpm_host(host.without_port?))
     }
 
     pub fn eval_lpm_host(&self, mut host: &str) -> Option<MatchHostScoreLPM> {
@@ -299,6 +315,12 @@ impl MatchHost {
             Self::Wildcard => Some(MatchHostScoreLPM::Wildcard),
         }
     }
+}
+
+fn strip_port(host: &str) -> Option<&str> {
+    let (name, port) = host.rsplit_once(':')?;
+    (!port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) && (name.ends_with(']') || !name.contains(':')))
+        .then_some(name)
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
@@ -458,6 +480,11 @@ mod tests {
         http::Request::builder().uri(uri).body(()).unwrap()
     }
 
+    #[inline]
+    fn request_host(host: &str) -> http::Request<()> {
+        http::Request::builder().header(http::header::HOST, host).body(()).unwrap()
+    }
+
     #[test]
     fn match_host_exact() {
         assert_eq!(MatchHost::from_str("www.example.com").unwrap(), MatchHost::Exact("www.example.com".into()));
@@ -567,6 +594,66 @@ mod tests {
         assert_eq!(rule.eval_lpm_request(&request_uri("http://www.test2.com/bar")), Some(MatchHostScoreLPM::Wildcard));
         assert_eq!(rule.eval_lpm_request(&request_uri("http://www.test./bar")), Some(MatchHostScoreLPM::Wildcard));
         assert_eq!(rule.eval_lpm_request(&request_uri("http://www.test/bar")), Some(MatchHostScoreLPM::Wildcard));
+    }
+
+    #[test]
+    fn test_host_ignores_port() {
+        let exact: MatchHost = "very.specific.com".parse().unwrap();
+        let exact_score = Some(MatchHostScoreLPM::Exact("very.specific.com".len()));
+        assert_eq!(exact.eval_lpm_request(&request_host("very.specific.com:1234")), exact_score);
+        assert_eq!(exact.eval_lpm_request(&request_host("very.specific.com.:1234")), exact_score);
+        assert_eq!(exact.eval_lpm_request(&request_uri("http://very.specific.com:1234/")), exact_score);
+        assert_eq!(exact.eval_lpm_request(&request_host("other.specific.com:1234")), None);
+        assert_eq!(exact.eval_lpm_request(&request_host("very.specific.com:")), None);
+        assert_eq!(exact.eval_lpm_request(&request_host("very.specific.com:http")), None);
+
+        let suffix: MatchHost = "*.specific.com".parse().unwrap();
+        assert_eq!(
+            suffix.eval_lpm_request(&request_host("very.specific.com:1234")),
+            Some(MatchHostScoreLPM::Suffix(".specific.com".len()))
+        );
+        assert_eq!(suffix.eval_lpm_request(&request_host("specific.com:1234")), None);
+    }
+
+    #[test]
+    fn test_host_with_port_in_domain() {
+        let exact: MatchHost = "very.specific.com:8080".parse().unwrap();
+        let exact_score = Some(MatchHostScoreLPM::Exact("very.specific.com:8080".len()));
+        assert_eq!(exact.eval_lpm_request(&request_host("very.specific.com:8080")), exact_score);
+        assert_eq!(exact.eval_lpm_request(&request_uri("http://very.specific.com:8080/")), exact_score);
+        assert_eq!(exact.eval_lpm_request(&request_host("very.specific.com:1234")), None);
+        assert_eq!(exact.eval_lpm_request(&request_host("very.specific.com")), None);
+        assert_eq!(exact.eval_lpm_request(&request_uri("http://very.specific.com/")), None);
+
+        let any_port: MatchHost = "very.specific.com:*".parse().unwrap();
+        assert_eq!(
+            any_port.eval_lpm_request(&request_host("very.specific.com:1234")),
+            Some(MatchHostScoreLPM::Prefix("very.specific.com:".len()))
+        );
+        assert_eq!(any_port.eval_lpm_request(&request_host("very.specific.com")), None);
+    }
+
+    #[test]
+    fn test_host_ipv6() {
+        let v6: MatchHost = "[::1]".parse().unwrap();
+        let v6_score = Some(MatchHostScoreLPM::Exact("[::1]".len()));
+        assert_eq!(v6.eval_lpm_request(&request_host("[::1]")), v6_score);
+        assert_eq!(v6.eval_lpm_request(&request_host("[::1]:8080")), v6_score);
+        assert_eq!(v6.eval_lpm_request(&request_uri("http://[::1]:8080/")), v6_score);
+        assert_eq!(v6.eval_lpm_request(&request_host("[::2]:8080")), None);
+
+        let v6_port: MatchHost = "[::1]:8080".parse().unwrap();
+        assert_eq!(
+            v6_port.eval_lpm_request(&request_host("[::1]:8080")),
+            Some(MatchHostScoreLPM::Exact("[::1]:8080".len()))
+        );
+        assert_eq!(v6_port.eval_lpm_request(&request_host("[::1]:9090")), None);
+        assert_eq!(v6_port.eval_lpm_request(&request_host("[::1]")), None);
+
+        assert_eq!(strip_port("[::1]:8080"), Some("[::1]"));
+        assert_eq!(strip_port("[::1]"), None);
+        assert_eq!(strip_port("[2001:db8::80]"), None);
+        assert_eq!(strip_port("::1"), None);
     }
 
     #[test]
@@ -696,7 +783,12 @@ mod envoy_conversions {
                     None => Ok(()),
                     Some(x) => match (x, &matching_filter.filter) {
                         (FilterConfigOverride::LocalRateLimit(_), HttpFilterType::RateLimit(_))
-                        | (FilterConfigOverride::Rbac(_), HttpFilterType::Rbac(_)) => Ok(()),
+                        | (FilterConfigOverride::Rbac(_), HttpFilterType::Rbac(_))
+                        | (FilterConfigOverride::ExternalProcessor(_), HttpFilterType::ExternalProcessor(_))
+                        | (
+                            FilterConfigOverride::CorsPolicy(_),
+                            HttpFilterType::Cors(_) | HttpFilterType::CorsPolicy(_),
+                        ) => Ok(()),
                         (_, _) => Err(GenericError::from_msg(format!(
                             "can't override http filter \"{name}\" with a different filter type"
                         ))),
@@ -1363,6 +1455,125 @@ mod envoy_conversions {
                 },
                 EnvoyConfigSourceSpecifier::Self_(_) => Err(GenericError::unsupported_variant("Self_")),
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::config::network_filters::http_connection_manager::http_filters::ExtProcPerRoute;
+
+        #[test]
+        fn test_ext_proc_per_route_config() {
+            let envoy: EnvoyHttpConnectionManager = arion_data_plane_api::decode::from_yaml(
+                r#"
+http_filters:
+- name: envoy.filters.http.ext_proc
+  typed_config:
+    "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+    grpc_service: { envoy_grpc: { cluster_name: epp-a } }
+    processing_mode: { request_header_mode: SEND }
+- name: envoy.filters.http.router
+  typed_config:
+    "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+route_config:
+  name: routes
+  virtual_hosts:
+  - name: default
+    domains: ["*"]
+    routes:
+    - match: { prefix: /pool }
+      route: { cluster: pool }
+      typed_per_filter_config:
+        envoy.filters.http.ext_proc:
+          "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+          overrides:
+            grpc_service: { envoy_grpc: { cluster_name: epp-b } }
+            processing_mode: { request_header_mode: SEND }
+            failure_mode_allow: true
+    - match: { prefix: / }
+      route: { cluster: app }
+      typed_per_filter_config:
+        envoy.filters.http.ext_proc:
+          "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+          disabled: true
+"#,
+            )
+            .unwrap();
+
+            let hcm = HttpConnectionManager::try_from(envoy).unwrap();
+            let RouteSpecifier::RouteConfig(route_config) = hcm.route_specifier else {
+                panic!("expected an inline route config");
+            };
+            let per_route: Vec<_> = route_config
+                .virtual_hosts
+                .iter()
+                .flat_map(|vh| &vh.routes)
+                .map(|route| route.typed_per_filter_config.get("envoy.filters.http.ext_proc").cloned())
+                .collect();
+            let [Some(pool), Some(plain)] = per_route.as_slice() else {
+                panic!("expected an ext_proc override on both routes, got {per_route:?}");
+            };
+            assert!(matches!(
+                &pool.filter_settings,
+                Some(FilterConfigOverride::ExternalProcessor(ExtProcPerRoute { disabled: false, overrides: Some(o) }))
+                    if o.failure_mode_allow == Some(true) && o.grpc_service.is_some() && o.processing_mode.is_some()
+            ));
+            assert_eq!(
+                plain.filter_settings,
+                Some(FilterConfigOverride::ExternalProcessor(ExtProcPerRoute { disabled: true, overrides: None }))
+            );
+        }
+
+        #[test]
+        fn test_cors_policy_per_route_config() {
+            let envoy: EnvoyHttpConnectionManager = arion_data_plane_api::decode::from_yaml(
+                r#"
+http_filters:
+- name: envoy.filters.http.cors
+  typed_config:
+    "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors
+- name: envoy.filters.http.router
+  typed_config:
+    "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+route_config:
+  name: routes
+  virtual_hosts:
+  - name: default
+    domains: ["*"]
+    routes:
+    - match: { prefix: /cors }
+      route: { cluster: app }
+      typed_per_filter_config:
+        envoy.filters.http.cors:
+          "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
+          allow_origin_string_match:
+          - exact: https://allowed.example
+          allow_methods: GET,OPTIONS
+          allow_headers: x-test-header
+          max_age: "3600"
+    - match: { prefix: / }
+      route: { cluster: app }
+"#,
+            )
+            .unwrap();
+
+            let hcm = HttpConnectionManager::try_from(envoy).unwrap();
+            let RouteSpecifier::RouteConfig(route_config) = hcm.route_specifier else {
+                panic!("expected an inline route config");
+            };
+            let routes: Vec<_> = route_config.virtual_hosts.iter().flat_map(|vh| &vh.routes).collect();
+            let override_config = routes[0]
+                .typed_per_filter_config
+                .get("envoy.filters.http.cors")
+                .expect("expected a cors override on the first route");
+            let Some(FilterConfigOverride::CorsPolicy(policy)) = &override_config.filter_settings else {
+                panic!("expected a CorsPolicy override, got {override_config:?}");
+            };
+            assert_eq!(policy.allow_methods, vec![http::Method::GET, http::Method::OPTIONS]);
+            assert_eq!(policy.allow_headers, vec!["x-test-header"]);
+            assert_eq!(policy.max_age, Some(3600));
+            assert!(routes[1].typed_per_filter_config.is_empty());
         }
     }
 }

@@ -33,6 +33,7 @@ pub struct ExternalProcessingWorkerConfig {
     pub allow_mode_override: bool,
     pub route_cache_action: RouteCacheAction,
     pub send_body_without_waiting_for_header_response: bool,
+    pub forward_served_endpoint: bool,
     // -- additional configuration options
     pub frame_merge_limit: u32,
     pub frame_merge_window: Duration,

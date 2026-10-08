@@ -25,8 +25,8 @@ use crate::{
     },
 };
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
-    BodyProcessingMode, ExternalProcessor as ExternalProcessorConfig, GoogleGrpc, GrpcService, HeaderProcessingMode,
-    RouteCacheAction, TrailerProcessingMode,
+    BodyProcessingMode, ExtProcOverrides, ExternalProcessor as ExternalProcessorConfig, GoogleGrpc, GrpcService,
+    HeaderProcessingMode, MetadataNamespaces, MetadataOptions, RouteCacheAction, TrailerProcessingMode,
 };
 use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::ext_proc::v3::{
     processing_mode, ProcessingMode as EnvoyProcessingMode,
@@ -34,7 +34,7 @@ use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::core::v3::{
-            header_value_option::HeaderAppendAction, HeaderValue as EnvoyHeaderValue, HeaderValueOption,
+            header_value_option::HeaderAppendAction, HeaderValue as EnvoyHeaderValue, HeaderValueOption, Metadata,
         },
         r#type::v3::HttpStatus as EnvoyHttpStatus,
         service::ext_proc::v3::{
@@ -47,17 +47,18 @@ use arion_data_plane_api::envoy_data_plane_api::{
             TrailersResponse,
         },
     },
+    google::protobuf::{value::Kind, Struct, Value},
     tonic::{
         async_trait,
         transport::{Error as TonicError, Server},
         Request as TonicRequest, Response as TonicResponse,
     },
 };
-use http::{Method, Version};
+use http::{uri::Authority, Method, Version};
 use http_body_util::{Empty, StreamBody};
 use pingora::prelude::fast_timeout::fast_timeout;
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     net::SocketAddr,
     ops::{Deref, DerefMut},
     str::FromStr,
@@ -481,6 +482,7 @@ fn create_default_config_for_ext_proc_filter(
         route_cache_action: RouteCacheAction::Default,
         send_body_without_waiting_for_header_response: false,
         deferred_close_timeout: None,
+        metadata_options: None,
     }
 }
 
@@ -639,6 +641,12 @@ pub async fn to_body_data_chunks(mut body: Collected<Bytes>) -> Vec<Bytes> {
     }
 
     chunks
+}
+
+/// The answer to the empty chunk left to carry `end_of_stream` when the last one was already flushed.
+fn end_of_stream_body_response<M: MessageKind>() -> MockProcessingResponse {
+    create_body_response::<M>(vec![], None, vec![], ResponseStatus::Continue as i32, None)
+        .with_expected_end_of_stream(true)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -841,6 +849,13 @@ fn generate_mock_external_processors_states<M: MessageKind + ModeSelector>(
         has_body && !matches!(<M as ModeSelector>::body_mode(processing_mode), BodyProcessingMode::None);
     let should_send_trailers =
         has_trailers && matches!(<M as ModeSelector>::trailer_mode(processing_mode), TrailerProcessingMode::Send);
+    let should_send_terminal_body = has_trailers
+        && !should_send_trailers
+        && match <M as ModeSelector>::body_mode(processing_mode) {
+            BodyProcessingMode::Streamed | BodyProcessingMode::FullDuplexStreamed => true,
+            BodyProcessingMode::Buffered | BodyProcessingMode::BufferedPartial => !has_body && !should_send_headers,
+            BodyProcessingMode::None => false,
+        };
 
     let mut mock_ext_proc_state = vec![];
     for header_response in generate_header_processing_response::<M>(status) {
@@ -854,7 +869,14 @@ fn generate_mock_external_processors_states<M: MessageKind + ModeSelector>(
                     state = state.add_response(header_response.clone());
                 }
                 if should_send_body {
-                    state = state.add_response(body_response.clone());
+                    state = state.add_response(
+                        body_response
+                            .clone()
+                            .with_expected_end_of_stream(!should_send_trailers && !should_send_terminal_body),
+                    );
+                }
+                if should_send_terminal_body {
+                    state = state.add_response(end_of_stream_body_response::<M>());
                 }
                 if should_send_trailers {
                     state = state.add_response(trailer_response);
@@ -2484,7 +2506,8 @@ async fn test_request_multichunk_body_with_mutation() {
             vec![],
             ResponseStatus::Continue as i32,
             None,
-        ));
+        ))
+        .add_response(end_of_stream_body_response::<RequestMsg>());
 
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
@@ -3338,7 +3361,8 @@ async fn test_request_multichunk_not_merged_body_streaming_mode() {
             // the response for the streaming body is still just a normal Body
             // no need to set end_of_stream, which is only for FULL_DUPLEX_STREAMED
             None,
-        ));
+        ))
+        .add_response(end_of_stream_body_response::<RequestMsg>());
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
         request_header_mode: HeaderProcessingMode::Send,
@@ -3493,7 +3517,8 @@ async fn test_request_body_and_trailer_processing_out_of_order() {
         )
         .add_response(create_body_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None))
         .add_response(create_body_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None))
-        .add_response(create_body_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None));
+        .add_response(create_body_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None))
+        .add_response(end_of_stream_body_response::<RequestMsg>());
 
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
@@ -3530,7 +3555,7 @@ async fn test_request_body_and_trailer_processing_out_of_order() {
         http::HeaderName::from_static("x-custom-trailer"),
         http::HeaderValue::from_static("original-value"),
     )]);
-    let expected_data = &["chunk1".into(), "chunk2".into(), "chunk3".into()];
+    let expected_data = &["chunk1".into(), "chunk2".into(), "chunk3".into(), Bytes::new()];
 
     assert_matches!(assert_body_frames(body, expected_data, Some(expected_trailers)).await, Ok(()));
 }
@@ -3559,7 +3584,8 @@ async fn test_request_multichunk_body_no_truncate_body() {
             vec![],
             ResponseStatus::Continue as i32,
             None,
-        ));
+        ))
+        .add_response(end_of_stream_body_response::<RequestMsg>());
 
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
@@ -4288,7 +4314,8 @@ async fn test_response_multichunk_not_merged_body_streaming_mode() {
             vec![],
             ResponseStatus::Continue as i32,
             None,
-        ));
+        ))
+        .add_response(end_of_stream_body_response::<ResponseMsg>());
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
         request_header_mode: HeaderProcessingMode::Skip,
@@ -4350,7 +4377,8 @@ async fn test_response_multichunk_body_with_mutation() {
             vec![],
             ResponseStatus::Continue as i32,
             None,
-        ));
+        ))
+        .add_response(end_of_stream_body_response::<ResponseMsg>());
 
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
@@ -4436,7 +4464,8 @@ async fn test_response_body_and_trailer_out_of_order() {
         )
         .add_response(create_body_response::<ResponseMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None))
         .add_response(create_body_response::<ResponseMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None))
-        .add_response(create_body_response::<ResponseMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None));
+        .add_response(create_body_response::<ResponseMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None))
+        .add_response(end_of_stream_body_response::<ResponseMsg>());
 
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
@@ -4473,7 +4502,7 @@ async fn test_response_body_and_trailer_out_of_order() {
         http::HeaderName::from_static("x-custom-trailer"),
         http::HeaderValue::from_static("original-value"),
     )]);
-    let expected_data = &["chunk1".into(), "chunk2".into(), "chunk3".into()];
+    let expected_data = &["chunk1".into(), "chunk2".into(), "chunk3".into(), Bytes::new()];
 
     assert_matches!(assert_body_frames(body, expected_data, Some(expected_trailers)).await, Ok(()));
 }
@@ -4502,7 +4531,8 @@ async fn test_response_multichunk_body_no_truncate_body() {
             vec![],
             ResponseStatus::Continue as i32,
             None,
-        ));
+        ))
+        .add_response(end_of_stream_body_response::<ResponseMsg>());
 
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
@@ -6257,6 +6287,7 @@ async fn test_request_mutation_with_streamed_10m_body_4k_chunks() {
             None,
         ));
     }
+    mock_state = mock_state.add_response(end_of_stream_body_response::<RequestMsg>());
 
     let (server_addr, _) = start_mock_server(mock_state).await;
 
@@ -6335,6 +6366,7 @@ async fn test_response_mutation_with_streamed_10m_body_4k_chunks() {
             None,
         ));
     }
+    mock_state = mock_state.add_response(end_of_stream_body_response::<ResponseMsg>());
 
     let (server_addr, _) = start_mock_server(mock_state).await;
 
@@ -6415,6 +6447,7 @@ async fn test_request_and_response_mutation_with_streamed_10m_body_4k_chunks() {
             None,
         ));
     }
+    mock_state = mock_state.add_response(end_of_stream_body_response::<RequestMsg>());
 
     // 3. Mock response for Response Headers
     mock_state = mock_state.add_response(create_headers_response::<ResponseMsg>(
@@ -6435,6 +6468,7 @@ async fn test_request_and_response_mutation_with_streamed_10m_body_4k_chunks() {
             None,
         ));
     }
+    mock_state = mock_state.add_response(end_of_stream_body_response::<ResponseMsg>());
 
     let (server_addr, _) = start_mock_server(mock_state).await;
 
@@ -6562,7 +6596,8 @@ async fn test_forward_rules_allowed_headers() {
 #[tokio::test]
 #[allow(clippy::indexing_slicing)]
 async fn test_header_append_action_append_if_exists_or_add() {
-    // We need to create a custom response to test AppendIfExistsOrAdd
+    // We need to create a custom response to test AppendIfExistsOrAdd. Being the proto3 default,
+    // it only appends with the deprecated `append` set.
     let mut header_mutation = HeaderMutation::default();
     header_mutation.set_headers.push(HeaderValueOption {
         header: Some(EnvoyHeaderValue {
@@ -6573,7 +6608,7 @@ async fn test_header_append_action_append_if_exists_or_add() {
         append_action: HeaderAppendAction::AppendIfExistsOrAdd as i32,
         keep_empty_value: false,
         #[allow(deprecated)]
-        append: None,
+        append: Some(google::protobuf::BoolValue { value: true }),
     });
 
     let response = ProcessingResponseType::RequestHeaders(
@@ -6626,6 +6661,63 @@ async fn test_header_append_action_append_if_exists_or_add() {
     assert_eq!(values.len(), 2);
     assert_eq!(values[0], "original-value");
     assert_eq!(values[1], "new-value");
+}
+
+#[test]
+fn test_set_headers_append_fields() {
+    use HeaderAppendAction::{AddIfAbsent, AppendIfExistsOrAdd, OverwriteIfExists, OverwriteIfExistsOrAdd};
+
+    const NAME: &str = "x-gateway-destination-endpoint";
+    // (append, append_action, header already set by the client, values after the mutation)
+    let cases: [(Option<bool>, HeaderAppendAction, bool, &[&str]); 14] = [
+        (None, AppendIfExistsOrAdd, true, &["epp"]),
+        (None, AppendIfExistsOrAdd, false, &["epp"]),
+        (Some(true), AppendIfExistsOrAdd, true, &["client", "epp"]),
+        (Some(true), OverwriteIfExists, true, &["client", "epp"]),
+        (Some(true), OverwriteIfExists, false, &["epp"]),
+        (Some(false), AppendIfExistsOrAdd, true, &["epp"]),
+        (Some(false), AddIfAbsent, true, &["epp"]),
+        (Some(false), OverwriteIfExists, false, &["epp"]),
+        (None, AddIfAbsent, true, &["client"]),
+        (None, AddIfAbsent, false, &["epp"]),
+        (None, OverwriteIfExistsOrAdd, true, &["epp"]),
+        (None, OverwriteIfExistsOrAdd, false, &["epp"]),
+        (None, OverwriteIfExists, true, &["epp"]),
+        (None, OverwriteIfExists, false, &[]),
+    ];
+
+    for (append, append_action, client_set, expected) in cases {
+        let mutation = HeaderMutation {
+            set_headers: vec![HeaderValueOption {
+                header: Some(EnvoyHeaderValue {
+                    key: NAME.to_owned(),
+                    value: String::new(),
+                    raw_value: b"epp".to_vec(),
+                }),
+                #[allow(deprecated)]
+                append: append.map(|value| google::protobuf::BoolValue { value }),
+                append_action: append_action as i32,
+                keep_empty_value: false,
+            }],
+            remove_headers: vec![],
+        };
+        let mut request = Request::new(());
+        let mut response = Response::new(());
+        if client_set {
+            request.headers_mut().insert(NAME, http::HeaderValue::from_static("client"));
+            response.headers_mut().insert(NAME, http::HeaderValue::from_static("client"));
+        }
+
+        apply_request_header_mutations(&mut request, mutation.clone(), None).unwrap();
+        apply_response_header_mutations(&mut response, mutation, None).unwrap();
+
+        let case = format!("append: {append:?}, append_action: {append_action:?}, client_set: {client_set}");
+        let values = |headers: &http::HeaderMap| -> Vec<String> {
+            headers.get_all(NAME).iter().map(|v| v.to_str().unwrap().to_owned()).collect()
+        };
+        assert_eq!(values(request.headers()), expected, "request, {case}");
+        assert_eq!(values(response.headers()), expected, "response, {case}");
+    }
 }
 
 #[tokio::test]
@@ -6723,4 +6815,360 @@ async fn test_immediate_response_with_grpc_status() {
         // Since we are not running this in a context that eagerly resolves, we might not unwrap it directly,
         // but typically in testing it works or we just check status.
     });
+}
+
+/// Answers every message with a plain CONTINUE and records what it received. With
+/// `hold_until_request_end` it mimics grpc-go servers such as the GIE endpoint picker, which
+/// read the whole request before sending anything — including the gRPC response headers.
+#[derive(Clone)]
+struct RecordingProcessor {
+    hold_until_request_end: bool,
+    received: mpsc::UnboundedSender<ProcessingRequest>,
+}
+
+impl RecordingProcessor {
+    fn answer(&self, request: ProcessingRequest) -> ProcessingResponse {
+        let common = Some(CommonResponse::default());
+        let response = match &request.request {
+            Some(ProcessingRequestType::RequestHeaders(_)) => {
+                ProcessingResponseType::RequestHeaders(HeadersResponse { response: common })
+            },
+            Some(ProcessingRequestType::RequestBody(_)) => {
+                ProcessingResponseType::RequestBody(BodyResponse { response: common })
+            },
+            Some(ProcessingRequestType::RequestTrailers(_)) => {
+                ProcessingResponseType::RequestTrailers(TrailersResponse::default())
+            },
+            Some(ProcessingRequestType::ResponseHeaders(_)) => {
+                ProcessingResponseType::ResponseHeaders(HeadersResponse { response: common })
+            },
+            Some(ProcessingRequestType::ResponseBody(_)) => {
+                ProcessingResponseType::ResponseBody(BodyResponse { response: common })
+            },
+            Some(ProcessingRequestType::ResponseTrailers(_)) | None => {
+                ProcessingResponseType::ResponseTrailers(TrailersResponse::default())
+            },
+        };
+        _ = self.received.send(request);
+        ProcessingResponse { response: Some(response), ..Default::default() }
+    }
+}
+
+fn ends_stream(request: &ProcessingRequest) -> bool {
+    match &request.request {
+        Some(ProcessingRequestType::RequestHeaders(headers) | ProcessingRequestType::ResponseHeaders(headers)) => {
+            headers.end_of_stream
+        },
+        Some(ProcessingRequestType::RequestBody(body) | ProcessingRequestType::ResponseBody(body)) => {
+            body.end_of_stream
+        },
+        Some(ProcessingRequestType::RequestTrailers(_) | ProcessingRequestType::ResponseTrailers(_)) => true,
+        None => false,
+    }
+}
+
+#[async_trait]
+impl ExternalProcessorService for RecordingProcessor {
+    type ProcessStream = ReceiverStream<Result<ProcessingResponse, Status>>;
+
+    async fn process(
+        &self,
+        request: TonicRequest<Streaming<ProcessingRequest>>,
+    ) -> Result<TonicResponse<Self::ProcessStream>, Status> {
+        let mut inbound = request.into_inner();
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        if self.hold_until_request_end {
+            while let Some(request) = inbound.message().await? {
+                let request_end = ends_stream(&request);
+                _ = tx.send(Ok(self.answer(request))).await;
+                if request_end {
+                    break;
+                }
+            }
+        }
+        let processor = self.clone();
+        tokio::spawn(async move {
+            while let Ok(Some(request)) = inbound.message().await {
+                if tx.send(Ok(processor.answer(request))).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(TonicResponse::new(ReceiverStream::new(rx)))
+    }
+}
+
+async fn start_recording_server(
+    hold_until_request_end: bool,
+) -> (SocketAddr, mpsc::UnboundedReceiver<ProcessingRequest>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server_addr = listener.local_addr().unwrap();
+    let (received, receiver) = mpsc::unbounded_channel();
+    let processor = RecordingProcessor { hold_until_request_end, received };
+    tokio::spawn(
+        Server::builder()
+            .add_service(ExternalProcessorServer::new(processor))
+            .serve_with_incoming(TcpListenerStream::new(listener)),
+    );
+    (server_addr, receiver)
+}
+
+/// The `end_of_stream` flags of the request and of the response body messages received so far.
+fn body_end_of_stream_flags(received: &mut mpsc::UnboundedReceiver<ProcessingRequest>) -> (Vec<bool>, Vec<bool>) {
+    let (mut request, mut response) = (vec![], vec![]);
+    while let Ok(message) = received.try_recv() {
+        match message.request {
+            Some(ProcessingRequestType::RequestBody(body)) => request.push(body.end_of_stream),
+            Some(ProcessingRequestType::ResponseBody(body)) => response.push(body.end_of_stream),
+            _ => {},
+        }
+    }
+    (request, response)
+}
+
+/// A body whose frames arrive `gap` apart.
+fn spaced_body(frames: &'static [&'static str], gap: Duration) -> PolyBody {
+    let (tx, rx) = mpsc::channel::<Result<Frame<Bytes>, crate::body::error::BodyError>>(1);
+    tokio::spawn(async move {
+        for frame in frames {
+            tokio::time::sleep(gap).await;
+            if tx.send(Ok(Frame::data(Bytes::from_static(frame.as_bytes())))).await.is_err() {
+                break;
+            }
+        }
+    });
+    let (body, mut bridge) = ChannelBody::new(
+        StreamBody::new(ReceiverStream::new(rx)),
+        None,
+        std::num::NonZeroUsize::new(1).expect("non-zero"),
+    );
+    tokio::spawn(async move { bridge.drain_and_inject().await });
+    PolyBody::from(body)
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_processor_answering_after_the_whole_request() {
+    // Merged by pairs, 13 frames make 7 body messages: more than the request channel holds.
+    const FRAMES: [&str; 13] =
+        ["f00", "f01", "f02", "f03", "f04", "f05", "f06", "f07", "f08", "f09", "f10", "f11", "f12"];
+    const DEADLINE: Duration = Duration::from_secs(3);
+
+    let (server_addr, mut received) = start_recording_server(true).await;
+    let processing_mode = ProcessingMode {
+        request_header_mode: HeaderProcessingMode::Send,
+        request_body_mode: BodyProcessingMode::FullDuplexStreamed,
+        request_trailer_mode: TrailerProcessingMode::Send,
+        response_header_mode: HeaderProcessingMode::Skip,
+        response_body_mode: BodyProcessingMode::None,
+        response_trailer_mode: TrailerProcessingMode::Skip,
+    };
+    let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+    config.send_body_without_waiting_for_header_response = true;
+    let ext_config = ExternalProcessorConfigExt { frame_merge_limit: 2, frame_merge_window: Duration::from_secs(3600) };
+
+    let mut post = build_request_from_mock(&MockMessage::<RequestMsg>::new(vec![], FRAMES.to_vec(), vec![])).await;
+    *post.method_mut() = Method::POST;
+    let mut ext_proc = ExternalProcessor::from((config.clone(), None, Some(ext_config.clone())));
+    let result = fast_timeout(DEADLINE, ext_proc.apply_request(&mut post, &RequestCtx::default())).await;
+    assert_matches!(result, Ok(FilterDecision::Continue));
+    let body = fast_timeout(DEADLINE, std::mem::take(&mut post.body_mut().inner.inner).collect()).await;
+    assert_eq!(body.unwrap().unwrap().to_bytes(), FRAMES.concat());
+    let (request_body_messages, _) = body_end_of_stream_flags(&mut received);
+    assert_eq!(request_body_messages, [false, false, false, false, false, false, true]);
+
+    let mut get = build_request_from_mock(&MockMessage::<RequestMsg>::new(vec![], vec![], vec![])).await;
+    let mut ext_proc = ExternalProcessor::from((config, None, Some(ext_config)));
+    let result = fast_timeout(DEADLINE, ext_proc.apply_request(&mut get, &RequestCtx::default())).await;
+    assert_matches!(result, Ok(FilterDecision::Continue));
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_body_end_of_stream_after_the_merge_window() {
+    // Spaced beyond the merge window, every chunk is flushed before the body ends.
+    const FRAMES: &[&str] = &["one ", "two ", "three"];
+    const GAP: Duration = Duration::from_millis(20);
+
+    let (server_addr, mut received) = start_recording_server(false).await;
+    let processing_mode = ProcessingMode {
+        request_header_mode: HeaderProcessingMode::Send,
+        request_body_mode: BodyProcessingMode::Streamed,
+        request_trailer_mode: TrailerProcessingMode::Skip,
+        response_header_mode: HeaderProcessingMode::Send,
+        response_body_mode: BodyProcessingMode::Streamed,
+        response_trailer_mode: TrailerProcessingMode::Skip,
+    };
+    let config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+    let request_body = |frames| {
+        InstrumentedBody::new(
+            BodyKind::Request,
+            TimeoutBody::new(None, spaced_body(frames, GAP)),
+            None,
+            |_, _, _, _| {},
+        )
+    };
+
+    let mut ext_proc = ExternalProcessor::from(config.clone());
+    let mut request =
+        Request::builder().method(Method::POST).uri("http://example.com/test").body(request_body(FRAMES)).unwrap();
+    assert_matches!(ext_proc.apply_request(&mut request, &RequestCtx::default()).await, FilterDecision::Continue);
+    let body = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
+    assert_eq!(body, FRAMES.concat());
+
+    let mut response = Response::builder().body(TimeoutBody::new(None, spaced_body(FRAMES, GAP)).into()).unwrap();
+    assert_matches!(ext_proc.apply_response(&mut response, &RequestCtx::default()).await, FilterDecision::Continue);
+    let body = std::mem::take(&mut response.body_mut().inner).collect().await.unwrap().to_bytes();
+    assert_eq!(body, FRAMES.concat());
+
+    let (request_eos, response_eos) = body_end_of_stream_flags(&mut received);
+    for eos in [request_eos, response_eos] {
+        assert_eq!(eos.iter().filter(|eos| **eos).count(), 1, "{eos:?}");
+        assert_eq!(eos.last(), Some(&true), "{eos:?}");
+    }
+
+    // A body that turns out empty after headers that did not end the stream.
+    let mut ext_proc = ExternalProcessor::from(config);
+    let mut request =
+        Request::builder().method(Method::POST).uri("http://example.com/test").body(request_body(&[])).unwrap();
+    assert_matches!(ext_proc.apply_request(&mut request, &RequestCtx::default()).await, FilterDecision::Continue);
+    let body = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
+    assert!(body.is_empty());
+    assert_eq!(body_end_of_stream_flags(&mut received), (vec![true], vec![]));
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_body_end_of_stream_with_skipped_trailers() {
+    for body_mode in [BodyProcessingMode::Streamed, BodyProcessingMode::Buffered, BodyProcessingMode::BufferedPartial] {
+        let (server_addr, mut received) = start_recording_server(false).await;
+        let processing_mode = ProcessingMode {
+            request_header_mode: HeaderProcessingMode::Send,
+            request_body_mode: body_mode,
+            request_trailer_mode: TrailerProcessingMode::Skip,
+            response_header_mode: HeaderProcessingMode::Send,
+            response_body_mode: body_mode,
+            response_trailer_mode: TrailerProcessingMode::Skip,
+        };
+        let config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        let mut ext_proc = ExternalProcessor::from(config);
+
+        let mut request = build_request_from_mock(&MockMessage::<RequestMsg>::new(
+            vec![],
+            vec!["request body"],
+            vec![Some(("x-request-trailer", "preserved"))],
+        ))
+        .await;
+        assert_matches!(ext_proc.apply_request(&mut request, &RequestCtx::default()).await, FilterDecision::Continue);
+        let body = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap();
+        assert_eq!(body.trailers().unwrap().get("x-request-trailer").unwrap(), "preserved");
+        assert_eq!(body.to_bytes(), "request body");
+
+        let mut response = build_response_from_mock(&MockMessage::<ResponseMsg>::new(
+            vec![],
+            vec!["response body"],
+            vec![Some(("x-response-trailer", "preserved"))],
+        ))
+        .await;
+        assert_matches!(ext_proc.apply_response(&mut response, &RequestCtx::default()).await, FilterDecision::Continue);
+        let body = std::mem::take(&mut response.body_mut().inner).collect().await.unwrap();
+        assert_eq!(body.trailers().unwrap().get("x-response-trailer").unwrap(), "preserved");
+        assert_eq!(body.to_bytes(), "response body");
+
+        let expected_eos: &[bool] = match body_mode {
+            BodyProcessingMode::Buffered | BodyProcessingMode::BufferedPartial => &[true],
+            _ => &[false, true],
+        };
+        let (request_eos, response_eos) = body_end_of_stream_flags(&mut received);
+        for eos in [request_eos, response_eos] {
+            assert_eq!(eos.as_slice(), expected_eos, "{body_mode:?}");
+        }
+    }
+}
+
+/// Runs a request and a response through `ext_proc`, then returns the `metadata_context` of the
+/// response headers message after checking that no other message carried one.
+async fn response_headers_metadata(
+    mut ext_proc: ExternalProcessor,
+    served_endpoint: Option<&'static str>,
+    received: &mut mpsc::UnboundedReceiver<ProcessingRequest>,
+) -> Option<Metadata> {
+    let mut request = build_request_from_mock(&MockMessage::<RequestMsg>::new(vec![], vec![], vec![])).await;
+    assert_matches!(ext_proc.apply_request(&mut request, &RequestCtx::default()).await, FilterDecision::Continue);
+
+    let mut response = build_response_from_mock(&MockMessage::<ResponseMsg>::new(
+        vec![Some(("content-type", "application/json"))],
+        vec![],
+        vec![],
+    ))
+    .await;
+    if let Some(endpoint) = served_endpoint {
+        response.extensions_mut().insert(ServedEndpoint(Authority::from_static(endpoint)));
+    }
+    assert_matches!(ext_proc.apply_response(&mut response, &RequestCtx::default()).await, FilterDecision::Continue);
+
+    let mut response_headers = None;
+    while let Ok(message) = received.try_recv() {
+        if matches!(message.request, Some(ProcessingRequestType::ResponseHeaders(_))) {
+            response_headers = Some(message.metadata_context);
+        } else {
+            assert_eq!(message.metadata_context, None, "{message:?}");
+        }
+    }
+    response_headers.expect("the processor got no response headers")
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_served_endpoint_metadata_on_response_headers() {
+    let (server_addr, mut received) = start_recording_server(false).await;
+    let processing_mode = ProcessingMode {
+        request_header_mode: HeaderProcessingMode::Send,
+        request_trailer_mode: TrailerProcessingMode::Skip,
+        response_header_mode: HeaderProcessingMode::Send,
+        response_trailer_mode: TrailerProcessingMode::Skip,
+        ..ProcessingMode::default()
+    };
+    let config = |namespaces: Option<&[&str]>| ExternalProcessorConfig {
+        metadata_options: namespaces.map(|namespaces| MetadataOptions {
+            forwarding_namespaces: MetadataNamespaces { untyped: namespaces.iter().map(ToString::to_string).collect() },
+        }),
+        ..create_default_config_for_ext_proc_filter(server_addr, processing_mode.clone())
+    };
+    let served = |endpoint: &str| Metadata {
+        filter_metadata: HashMap::from([(
+            "envoy.lb".to_owned(),
+            Struct {
+                fields: HashMap::from([(
+                    "x-gateway-destination-endpoint-served".to_owned(),
+                    Value { kind: Some(Kind::StringValue(endpoint.to_owned())) },
+                )]),
+            },
+        )]),
+        ..Default::default()
+    };
+
+    let forwarding = ExternalProcessor::from(config(Some(&["other", "envoy.lb"])));
+    let metadata = response_headers_metadata(forwarding, Some("10.0.0.7:3000"), &mut received).await;
+    assert_eq!(metadata, Some(served("10.0.0.7:3000")));
+
+    // Per-route overrides, as the controller sets them, keep the listener's forwarding.
+    let overrides = ExtProcOverrides {
+        processing_mode: Some(processing_mode.clone()),
+        grpc_service: Some(config(None).grpc_service),
+        failure_mode_allow: Some(false),
+    };
+    let per_route = ExtProcPerRoute { disabled: false, overrides: Some(overrides) };
+    let overridden = ExternalProcessor::from((config(Some(&["envoy.lb"])), Some(per_route), None));
+    let metadata = response_headers_metadata(overridden, Some("[fd00::7]:3000"), &mut received).await;
+    assert_eq!(metadata, Some(served("[fd00::7]:3000")));
+
+    // Not asked for, or not a host override cluster: nothing to report.
+    for (namespaces, served_endpoint) in
+        [(None, Some("10.0.0.7:3000")), (Some(&["other"][..]), Some("10.0.0.7:3000")), (Some(&["envoy.lb"][..]), None)]
+    {
+        let ext_proc = ExternalProcessor::from(config(namespaces));
+        let metadata = response_headers_metadata(ext_proc, served_endpoint, &mut received).await;
+        assert_eq!(metadata, None, "{namespaces:?} {served_endpoint:?}");
+    }
 }

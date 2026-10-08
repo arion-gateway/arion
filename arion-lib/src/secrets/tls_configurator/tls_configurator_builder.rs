@@ -314,13 +314,16 @@ impl TlsContextBuilder<WantsToBuildServer> {
 
                         (secret_name, name, CertifiedKey::new(certs_vec, private_key), first_cert_der)
                     })
-                    .map_err(|e| format!("UpstreamContext: Can't load private key {secret_name} {name} - {e}").into())
+                    .map_err(|e| {
+                        let name = name.as_deref().unwrap_or_default();
+                        format!("UpstreamContext: Can't load private key {secret_name} {name} - {e}").into()
+                    })
                     .inspect_err(|e| warn!("{e}"))
             })
             .filter_map(Result::ok)
             .map(|(secret_name, config_name, ck, first_cert_der)| {
                 // Start with the name provided in the configuration
-                let mut names_to_register = vec![config_name.to_owned()];
+                let mut names_to_register: Vec<SmolStr> = config_name.iter().cloned().collect();
 
                 // Extract and append all SANs from the actual certificate, extend the config name and remove
                 // possible duplicates...
@@ -331,6 +334,15 @@ impl TlsContextBuilder<WantsToBuildServer> {
                 // Wrap the CertifiedKey in an StdArc once, so it can be shared across multiple keys
                 let ck_arc = StdArc::new(ck);
                 let mut has_errors = false;
+
+                names_to_register.retain(|n| {
+                    n.as_str() != "*" && (!n.starts_with("*.") || n.trim_end_matches('.').matches('.').count() > 1)
+                });
+                if names_to_register.is_empty() {
+                    debug!("DownstreamTlsContext: certificate for secret '{secret_name}' has no DNS name to match SNI");
+                    resolver.add_default(ck_arc);
+                    return Ok(());
+                }
 
                 // Register the certificate for every extracted name
                 for name in names_to_register {
@@ -447,7 +459,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let server_cert = ServerCert { name: "backend".into(), key: StdArc::new(key), certs: StdArc::new(certs) };
+        let server_cert = ServerCert { name: Some("backend".into()), key: StdArc::new(key), certs: StdArc::new(certs) };
 
         TlsContextBuilder::with_supported_versions(vec![version])
             .with_no_client_auth()

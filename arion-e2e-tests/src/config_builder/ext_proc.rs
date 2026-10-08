@@ -21,8 +21,9 @@ use arion_data_plane_api::envoy_data_plane_api::{
             GrpcService,
         },
         extensions::filters::http::ext_proc::v3::{
+            metadata_options::MetadataNamespaces,
             processing_mode::{BodySendMode, HeaderSendMode},
-            ExternalProcessor as EnvoyExternalProcessor, ProcessingMode,
+            ExternalProcessor as EnvoyExternalProcessor, MetadataOptions, ProcessingMode,
         },
     },
     google::protobuf::Duration as ProtoDuration,
@@ -129,6 +130,18 @@ impl ExtProcBuilder {
     #[must_use]
     pub fn allow_mode_override(mut self, allow: bool) -> Self {
         self.proto.allow_mode_override = allow;
+        self
+    }
+
+    #[must_use]
+    pub fn forward_metadata_namespaces(mut self, untyped: &[&str]) -> Self {
+        self.proto.metadata_options = Some(MetadataOptions {
+            forwarding_namespaces: Some(MetadataNamespaces {
+                untyped: untyped.iter().map(ToString::to_string).collect(),
+                typed: vec![],
+            }),
+            ..Default::default()
+        });
         self
     }
 

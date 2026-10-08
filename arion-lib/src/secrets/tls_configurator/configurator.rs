@@ -153,11 +153,7 @@ impl TryFrom<CertificateSecret> for ServerCert {
     type Error = crate::Error;
     fn try_from(secret: CertificateSecret) -> Result<Self> {
         let CertificateSecret { name, key, certs, .. } = secret;
-        if let Some(name) = name {
-            Ok(ServerCert { name, key: StdArc::new(key.clone_key()), certs })
-        } else {
-            Err("secret doesn't contain server name".into())
-        }
+        Ok(ServerCert { name, key: StdArc::new(key.clone_key()), certs })
     }
 }
 
@@ -184,7 +180,7 @@ impl TryFrom<TlsCertificateConfig> for ClientCert {
 
 #[derive(Clone)]
 pub struct ServerCert {
-    pub name: SmolStr,
+    pub name: Option<SmolStr>,
     pub key: StdArc<PrivateKeyDer<'static>>,
     pub certs: StdArc<Vec<CertificateDer<'static>>>,
 }
@@ -206,6 +202,12 @@ pub struct TlsConfigurator<S: Clone, CtxType> {
 }
 
 impl TlsConfigurator<ClientConfig, WantsToBuildClient> {
+    pub fn uses_secret(&self, secret_id: &str) -> bool {
+        let WantsToBuildClient { certificate_secret_id, validation_context_secret_id, .. } =
+            &self.context_builder.state;
+        [certificate_secret_id, validation_context_secret_id].into_iter().any(|id| id.as_deref() == Some(secret_id))
+    }
+
     pub fn update(self, secret_id: &str, secret: &TransportSecret) -> Result<Self> {
         let TlsContextBuilder { state } = self.context_builder;
         let WantsToBuildClient {
@@ -541,6 +543,12 @@ impl RelaxedResolvesServerCertUsingSni {
 
         Ok(())
     }
+
+    pub fn add_default(&mut self, ck: StdArc<rustls::sign::CertifiedKey>) {
+        if self.default_cert.is_none() {
+            self.default_cert = Some(ck);
+        }
+    }
 }
 
 impl rustls::server::ResolvesServerCert for RelaxedResolvesServerCertUsingSni {
@@ -571,5 +579,146 @@ impl rustls::server::ResolvesServerCert for RelaxedResolvesServerCertUsingSni {
         //
         debug!("Matched with wildcard certificate: {:?}", self.default_cert);
         self.default_cert.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::secrets::no_cert_verification::NoCertificateVerification;
+    use arion_configuration::config::{
+        secret::{Secret, Type},
+        transport::{CommonTlsContext, TlsParameters},
+    };
+    use rustls::{pki_types::ServerName, ClientConnection, ServerConnection};
+
+    const SNI_TEST_CERTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../test_certs/sni-test");
+    const WILDCARD: &str = "wildcard";
+    // "*" and "*.org" only, like the Gateway API conformance certificates.
+    const BARE_WILDCARD: &str = "wildcard-bare";
+    const NO_DNS_SAN: &str = "no-dns-san";
+    const SPECIFIC: &str = "specific";
+
+    fn tls_certificate(name: &str) -> TlsCertificateConfig {
+        serde_json::from_value(serde_json::json!({
+            "certificate_chain": { "path": format!("{SNI_TEST_CERTS}/{name}.cert.pem") },
+            "private_key": { "path": format!("{SNI_TEST_CERTS}/{name}.key.pem") },
+        }))
+        .unwrap()
+    }
+
+    fn certificate_name(name: &str) -> Option<SmolStr> {
+        CertificateSecret::try_from(&tls_certificate(name)).unwrap().name
+    }
+
+    fn leaf_certificate(name: &str) -> CertificateDer<'static> {
+        CertificateSecret::try_from(&tls_certificate(name)).unwrap().certs.first().unwrap().clone()
+    }
+
+    fn server_config(
+        secrets: Secrets,
+        secret_manager: &SecretManager,
+    ) -> Result<TlsConfigurator<ServerConfig, WantsToBuildServer>> {
+        // Fails when another test in this binary already installed it, which is fine.
+        _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let common_tls_context =
+            CommonTlsContext { parameters: TlsParameters::default(), secrets, validation_context: None };
+        let config = TlsServerConfig { require_client_certificate: false, common_tls_context };
+        TlsConfigurator::try_from((config, secret_manager))
+    }
+
+    fn server_config_with(names: &[&str]) -> StdArc<ServerConfig> {
+        let certificates = names.iter().map(|name| tls_certificate(name)).collect();
+        server_config(Secrets::Certificates(certificates), &SecretManager::new()).unwrap().server_config()
+    }
+
+    // An IP address as `server_name` sends no SNI.
+    fn served_certificate(server_config: &StdArc<ServerConfig>, server_name: &str) -> CertificateDer<'static> {
+        let client_config = ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(StdArc::new(NoCertificateVerification {}))
+            .with_no_client_auth();
+        let server_name = ServerName::try_from(server_name.to_owned()).unwrap();
+        let mut client = ClientConnection::new(StdArc::new(client_config), server_name).unwrap();
+        let mut server = ServerConnection::new(StdArc::clone(server_config)).unwrap();
+
+        for _ in 0..8 {
+            if !client.is_handshaking() && !server.is_handshaking() {
+                break;
+            }
+            let mut to_server = Vec::new();
+            while client.wants_write() {
+                client.write_tls(&mut to_server).unwrap();
+            }
+            let mut buf = to_server.as_slice();
+            while !buf.is_empty() {
+                server.read_tls(&mut buf).unwrap();
+                server.process_new_packets().unwrap();
+            }
+            let mut to_client = Vec::new();
+            while server.wants_write() {
+                server.write_tls(&mut to_client).unwrap();
+            }
+            let mut buf = to_client.as_slice();
+            while !buf.is_empty() {
+                client.read_tls(&mut buf).unwrap();
+                client.process_new_packets().unwrap();
+            }
+        }
+        assert!(!client.is_handshaking() && !server.is_handshaking(), "handshake did not complete");
+        client.peer_certificates().unwrap().first().unwrap().clone().into_owned()
+    }
+
+    #[test]
+    fn certificate_name_is_its_non_wildcard_dns_name() {
+        assert_eq!(certificate_name(SPECIFIC).as_deref(), Some("specific.example.com"));
+        assert_eq!(certificate_name(WILDCARD), None);
+        assert_eq!(certificate_name(BARE_WILDCARD), None);
+        assert_eq!(certificate_name(NO_DNS_SAN), None);
+    }
+
+    #[test]
+    fn listener_serves_certificate_without_non_wildcard_dns_name() {
+        for name in [WILDCARD, BARE_WILDCARD, NO_DNS_SAN] {
+            let config = server_config_with(&[name]);
+            assert_eq!(served_certificate(&config, "foo.example.com"), leaf_certificate(name), "{name}");
+            assert_eq!(served_certificate(&config, "other.test"), leaf_certificate(name), "{name}");
+            assert_eq!(served_certificate(&config, "127.0.0.1"), leaf_certificate(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn listener_selects_among_certificates_without_non_wildcard_dns_name() {
+        let config = server_config_with(&[NO_DNS_SAN, WILDCARD, SPECIFIC]);
+        assert_eq!(served_certificate(&config, "specific.example.com"), leaf_certificate(SPECIFIC));
+        assert_eq!(served_certificate(&config, "foo.example.com"), leaf_certificate(WILDCARD));
+        assert_eq!(served_certificate(&config, "other.test"), leaf_certificate(NO_DNS_SAN));
+        assert_eq!(served_certificate(&config, "127.0.0.1"), leaf_certificate(NO_DNS_SAN));
+
+        let config = server_config_with(&[WILDCARD, NO_DNS_SAN, SPECIFIC]);
+        assert_eq!(served_certificate(&config, "other.test"), leaf_certificate(WILDCARD));
+        assert_eq!(served_certificate(&config, "127.0.0.1"), leaf_certificate(WILDCARD));
+    }
+
+    #[test]
+    fn listener_serves_sds_certificate_without_non_wildcard_dns_name() {
+        let secret =
+            |name: &str| Secret { name: "listener-cert".into(), kind: Type::TlsCertificate(tls_certificate(name)) };
+        let mut secret_manager = SecretManager::new();
+        let sds = || Secrets::SdsConfig(vec!["listener-cert".into()]);
+
+        secret_manager.add(&secret(WILDCARD)).unwrap();
+        let config = server_config(sds(), &secret_manager).unwrap();
+        assert_eq!(served_certificate(&config.server_config(), "foo.example.com"), leaf_certificate(WILDCARD));
+
+        for name in [SPECIFIC, NO_DNS_SAN, BARE_WILDCARD] {
+            let config = server_config(sds(), &secret_manager).unwrap();
+            let config = config.update("listener-cert", &secret_manager.add(&secret(name)).unwrap()).unwrap();
+            assert_eq!(
+                served_certificate(&config.server_config(), "foo.example.com"),
+                leaf_certificate(name),
+                "{name}"
+            );
+        }
     }
 }

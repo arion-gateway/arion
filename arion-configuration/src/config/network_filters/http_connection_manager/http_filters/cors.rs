@@ -35,6 +35,13 @@ pub struct CorsConfig {
     pub allow_credentials: bool,
     /// Max age for preflight caching in seconds.
     pub max_age: Option<u64>,
+    /// Whether to forward preflights from an origin that is not allowed to the upstream.
+    #[serde(default = "default_forward_not_matching_preflights")]
+    pub forward_not_matching_preflights: bool,
+}
+
+fn default_forward_not_matching_preflights() -> bool {
+    true
 }
 
 impl Default for CorsConfig {
@@ -54,6 +61,7 @@ impl Default for CorsConfig {
             expose_headers: vec!["*".into()],
             allow_credentials: false,
             max_age: Some(86400),
+            forward_not_matching_preflights: true,
         }
     }
 }
@@ -91,8 +99,7 @@ mod envoy_conversions {
             unsupported_field!(
                 filter_enabled,
                 shadow_enabled,
-                allow_private_network_access,
-                forward_not_matching_preflights
+                allow_private_network_access // forward_not_matching_preflights
             )?;
 
             Ok(CorsConfig {
@@ -103,12 +110,24 @@ mod envoy_conversions {
                 allow_methods: allow_methods
                     .split(',')
                     .map(str::trim)
+                    .filter(|method| !method.is_empty())
                     .map(http::Method::from_str)
                     .collect::<Result<Vec<_>, _>>()?,
-                allow_headers: allow_headers.split(',').map(str::trim).map(Into::into).collect(),
-                expose_headers: expose_headers.split(',').map(str::trim).map(Into::into).collect(),
+                allow_headers: allow_headers
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|header| !header.is_empty())
+                    .map(Into::into)
+                    .collect(),
+                expose_headers: expose_headers
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|header| !header.is_empty())
+                    .map(Into::into)
+                    .collect(),
                 allow_credentials: allow_credentials.unwrap_or_default().value,
                 max_age: (!max_age.is_empty()).then(|| max_age.parse::<u64>()).transpose()?,
+                forward_not_matching_preflights: forward_not_matching_preflights.map_or(true, |value| value.value),
             })
         }
     }

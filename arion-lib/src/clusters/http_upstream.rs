@@ -21,7 +21,7 @@ use http::Request;
 
 use super::{
     balancers::hash_policy::HashState,
-    clusters_manager::{self, RoutingContext, RoutingContextError},
+    clusters_manager::{self, RoutingContext, RoutingContextError, RoutingRequirement},
     decrement_requests, try_increment_requests, CircuitBreakerDenial, RoutingPriority,
 };
 use crate::{transport::HttpChannels, ArionRequestBody};
@@ -42,6 +42,7 @@ use {
 pub struct AcquiredHttpUpstream {
     channels: HttpChannels,
     cluster_id: &'static str,
+    overrides_host: bool,
     _permit: RequestPermit,
 }
 
@@ -54,6 +55,12 @@ impl AcquiredHttpUpstream {
     #[inline]
     pub fn cluster_id(&self) -> &'static str {
         self.cluster_id
+    }
+
+    /// Whether the cluster selects its endpoint by host override.
+    #[inline]
+    pub fn overrides_host(&self) -> bool {
+        self.overrides_host
     }
 }
 
@@ -132,6 +139,7 @@ pub fn acquire_http_upstream(
     let permit = RequestPermit { cluster_id, priority };
 
     let routing_requirement = clusters_manager::get_cluster_routing_requirements(cluster_id);
+    let overrides_host = matches!(routing_requirement, RoutingRequirement::OverrideHost { .. });
     let hash_state = HashState::new(hash_policy, request, source_address);
 
     let routing_context = RoutingContext::try_from((&routing_requirement, request, hash_state))
@@ -139,7 +147,7 @@ pub fn acquire_http_upstream(
     let channels = clusters_manager::get_http_connection(cluster_id, routing_context)
         .map_err(|source| AcquireHttpUpstreamError::Connection { cluster_id, source })?;
 
-    Ok(AcquiredHttpUpstream { channels, cluster_id, _permit: permit })
+    Ok(AcquiredHttpUpstream { channels, cluster_id, overrides_host, _permit: permit })
 }
 
 #[cfg(feature = "metrics")]
@@ -169,6 +177,7 @@ mod tests {
         CircuitBreakerThresholds, CircuitBreakers, Cluster, ClusterDiscoveryType, HttpProtocolOptions, LbPolicy,
         OriginalDstConfig, OriginalDstRoutingMethod, StandardLbPolicy,
     };
+    use arion_data_plane_api::envoy_data_plane_api::envoy::config::cluster::v3::Cluster as EnvoyCluster;
     use http::header::HOST;
 
     use super::*;
@@ -312,5 +321,62 @@ mod tests {
         assert_eq!(error.cluster_id(), None);
 
         clusters_manager::remove_cluster(cluster_name).unwrap();
+    }
+
+    #[tokio::test]
+    async fn host_override_clusters_are_flagged() {
+        const CLUSTER: &str = r#"
+name: http-upstream-override-host-test
+type: STATIC
+load_assignment:
+  endpoints:
+  - lb_endpoints:
+    - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: 18081 } } }
+load_balancing_policy:
+  policies:
+  - typed_extension_config:
+      name: override_host
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.load_balancing_policies.override_host.v3.OverrideHost
+        override_host_sources: [{ header: x-gateway-destination-endpoint }]
+        fallback_policy:
+          policies:
+          - typed_extension_config:
+              name: round_robin
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.load_balancing_policies.round_robin.v3.RoundRobin
+"#;
+        let envoy: EnvoyCluster = arion_data_plane_api::decode::from_yaml(CLUSTER).unwrap();
+        let config = Cluster::try_from(envoy).unwrap();
+        let override_host = config.name.clone();
+        clusters_manager::add_cluster(PartialClusterType::try_from((Box::new(config), &SecretManager::new())).unwrap())
+            .unwrap();
+        let original_dst = "http-upstream-original-dst-flag-test";
+        clusters_manager::add_cluster(build_original_dst_cluster(original_dst, 10)).unwrap();
+
+        let acquire = |cluster: &str, request: &Request<ArionRequestBody>| {
+            let specifier = ClusterSpecifier::Cluster(cluster.into());
+            acquire_http_upstream(
+                &specifier,
+                request,
+                &[],
+                SocketAddr::from(([0, 0, 0, 0], 0)),
+                RoutingPriority::Default,
+            )
+            .unwrap()
+            .overrides_host()
+        };
+        let picked = Request::builder()
+            .uri("http://127.0.0.1:18081/")
+            .header("x-gateway-destination-endpoint", "127.0.0.1:18081")
+            .body(ArionRequestBody::default())
+            .unwrap();
+        let unpicked = Request::builder().uri("http://127.0.0.1:18081/").body(ArionRequestBody::default()).unwrap();
+        assert!(acquire(&override_host, &picked));
+        assert!(acquire(&override_host, &unpicked));
+        assert!(!acquire(original_dst, &picked));
+
+        clusters_manager::remove_cluster(&override_host).unwrap();
+        clusters_manager::remove_cluster(original_dst).unwrap();
     }
 }

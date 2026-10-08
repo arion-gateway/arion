@@ -22,13 +22,15 @@ use crate::listeners::http_connection_manager::ext_proc::r#override::{
 use crate::listeners::http_connection_manager::ext_proc::status::{ProcessingStatus, ReadyStatus};
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
 use crate::listeners::http_connection_manager::ext_proc::EnvoyHeaderMap;
+use crate::transport::ServedEndpoint;
 use crate::utils::truncated_debug::TruncatedDebug;
 use crate::{body::response_flags::ResponseFlags, listeners::synthetic_http_response::SyntheticHttpResponse};
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
     BodyProcessingMode, HeaderProcessingMode, ProcessingMode, RouteCacheAction, TrailerProcessingMode,
 };
-use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::HeaderMap as ProstHeaderMap;
-use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::HeaderValue as ProstHeaderValue;
+use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::{
+    HeaderMap as ProstHeaderMap, HeaderValue as ProstHeaderValue, Metadata,
+};
 use arion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::common_response::ResponseStatus;
 use arion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::{HeaderMutation, HttpTrailers};
 use arion_data_plane_api::envoy_data_plane_api::envoy::{
@@ -38,6 +40,7 @@ use arion_data_plane_api::envoy_data_plane_api::envoy::{
         HttpBody, HttpHeaders, ProcessingRequest, TrailersResponse,
     },
 };
+use arion_data_plane_api::envoy_data_plane_api::google::protobuf::{value::Kind, Struct, Value};
 use bytes::{Bytes, BytesMut};
 use http_body::Frame;
 
@@ -49,6 +52,15 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tracing::{debug, warn};
+
+pub(super) const LB_NAMESPACE: &str = "envoy.lb";
+const SERVED_ENDPOINT_KEY: &str = "x-gateway-destination-endpoint-served";
+
+fn served_endpoint_metadata(ServedEndpoint(authority): ServedEndpoint) -> Metadata {
+    let endpoint = Value { kind: Some(Kind::StringValue(authority.as_str().to_owned())) };
+    let lb = Struct { fields: HashMap::from([(SERVED_ENDPOINT_KEY.to_owned(), endpoint)]) };
+    Metadata { filter_metadata: HashMap::from([(LB_NAMESPACE.to_owned(), lb)]), ..Default::default() }
+}
 
 pub struct RequestProcessing<M: kind::Mode>(Processing<M, kind::RequestMsg>);
 
@@ -77,6 +89,12 @@ impl<M: kind::Mode> Deref for ResponseProcessing<M> {
 impl<M: kind::Mode> DerefMut for ResponseProcessing<M> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
+    }
+}
+
+impl<M: kind::Mode> ResponseProcessing<M> {
+    pub fn set_served_endpoint(&mut self, served_endpoint: Option<ServedEndpoint>) {
+        self.0.served_endpoint = served_endpoint;
     }
 }
 
@@ -115,7 +133,13 @@ impl FramesBuffer {
     }
 
     // merge can either return a DATA frame or None
-    pub fn push(&mut self, frame: Frame<Bytes>, now: tokio::time::Instant) -> Option<Frame<Bytes>> {
+    pub fn push(
+        &mut self,
+        frame: Frame<Bytes>,
+        now: tokio::time::Instant,
+        body_mode: OverridableBodyMode,
+    ) -> Option<Frame<Bytes>> {
+        let buffered = matches!(body_mode, OverridableBodyMode::Buffered | OverridableBodyMode::BufferedPartial);
         let is_data = frame.is_data();
 
         if is_data {
@@ -144,8 +168,9 @@ impl FramesBuffer {
                 self.data_buffer = Some(BufferedData::Single(new_data));
             }
 
-            let emit = self.count >= self.frame_merge_limit
-                || now.duration_since(self.last_merge.unwrap_or(now)) >= self.frame_merge_window;
+            let emit = !buffered
+                && (self.count >= self.frame_merge_limit
+                    || now.duration_since(self.last_merge.unwrap_or(now)) >= self.frame_merge_window);
 
             self.last_merge = Some(now);
 
@@ -160,10 +185,15 @@ impl FramesBuffer {
             }
         } else {
             // TRAILERS
-            let data = self.data_buffer.take().map(|buf| match buf {
-                BufferedData::Single(b) => Frame::data(b),
-                BufferedData::Merged(b) => Frame::data(b.freeze()),
-            });
+            // Keep the buffered body until EOF so its EOS flag accounts for trailer processing.
+            let data = if buffered {
+                None
+            } else {
+                self.data_buffer.take().map(|buf| match buf {
+                    BufferedData::Single(b) => Frame::data(b),
+                    BufferedData::Merged(b) => Frame::data(b.freeze()),
+                })
+            };
             self.count = 0;
             self.last_merge = Some(now);
             self.trailers_buffer = Some(frame);
@@ -182,6 +212,12 @@ impl FramesBuffer {
             })
         } else {
             self.trailers_buffer.take()
+        }
+    }
+
+    fn push_end_of_stream(&mut self) {
+        if self.data_buffer.is_none() && self.trailers_buffer.is_none() {
+            self.data_buffer = Some(BufferedData::Single(Bytes::new()));
         }
     }
 
@@ -213,6 +249,7 @@ pub struct Processing<M: kind::Mode, Msg: kind::MessageKind> {
     pub inflight_frames: SmallVec<[Frame<Bytes>; 2]>,
     pub parked_trailers: Option<Frame<Bytes>>,
     pub headers_ready_status: Option<ReadyStatus>, // ready_status saved headers response and fused with body response before in Action::Return
+    served_endpoint: Option<ServedEndpoint>,
     _mode: std::marker::PhantomData<M>,
     _msg: std::marker::PhantomData<Msg>,
 }
@@ -380,6 +417,7 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind> From<&ExternalProcessingWo
             inflight_frames: SmallVec::new(),
             parked_trailers: None,
             headers_ready_status: None,
+            served_endpoint: None,
             _mode: std::marker::PhantomData,
             _msg: std::marker::PhantomData,
         }
@@ -841,7 +879,7 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
                     attributes: HashMap::default(),
                     end_of_stream: self.end_of_stream(),
                 })),
-                metadata_context: None,
+                metadata_context: self.served_endpoint.take().map(served_endpoint_metadata),
                 attributes: HashMap::default(),
                 observability_mode: M::OBSERVABILITY,
                 protocol_config: None,
@@ -884,6 +922,18 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
 
         _ = self.return_status(ProcessingStatus::ready::<Msg>(), "process_body_and_trailers (ready status)!");
         None
+    }
+
+    /// At the end of the body, leaves an empty chunk to carry `end_of_stream` when nothing is
+    /// buffered (the last chunk was already flushed, or no data came after the headers), as Envoy
+    /// sends one. Trailers, when sent to the processor, end the stream instead.
+    pub fn buffer_end_of_stream(&mut self, override_mode: &OverridableGlobalModes) {
+        if override_mode.should_process_body::<Msg>() && !self.end_of_stream {
+            if !override_mode.should_process_trailers::<Msg>() {
+                self.parked_trailers = self.frames_buffer.trailers_buffer.take();
+            }
+            self.frames_buffer.push_end_of_stream();
+        }
     }
 
     #[must_use = "must handle the returned Action"]

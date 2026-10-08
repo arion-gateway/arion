@@ -18,7 +18,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arion_data_plane_api::envoy_data_plane_api::envoy::{
-    config::core::v3::{header_value_option::HeaderAppendAction, HeaderValue as EnvoyHeaderValue, HeaderValueOption},
+    config::core::v3::{
+        header_value_option::HeaderAppendAction, HeaderValue as EnvoyHeaderValue, HeaderValueOption, Metadata,
+    },
     r#type::v3::HttpStatus as EnvoyHttpStatus,
     service::ext_proc::v3::{
         body_mutation::Mutation,
@@ -211,6 +213,10 @@ impl CapturedProcessingRequest {
             Some(ProcessingRequestType::ResponseBody(b)) => Some(b),
             _ => None,
         }
+    }
+
+    pub fn metadata_context(&self) -> Option<&Metadata> {
+        self.0.metadata_context.as_ref()
     }
 
     pub fn is_request_headers(&self) -> bool {

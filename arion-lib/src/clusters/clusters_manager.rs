@@ -205,12 +205,16 @@ pub fn change_cluster_load_assignment(name: &str, cla: &PartialClusterLoadAssign
         if let Some(cluster) = current.get_mut(name) {
             match cluster {
                 ClusterType::Dynamic(dynamic_cluster) => {
+                    let config = &dynamic_cluster.global.config;
                     let cla = ClusterLoadAssignmentBuilder::builder()
                         .with_cla(cla.clone())
                         .with_transport_socket(dynamic_cluster.transport_socket.clone())
                         .with_cluster_name(dynamic_cluster.global.name)
                         .with_bind_device(dynamic_cluster.global.bind_device.clone())
                         .with_lb_policy(dynamic_cluster.global.load_balancing_policy.clone())
+                        .with_connection_timeout(config.connect_timeout)
+                        .with_idle_timeout(config.http_protocol_options.common.idle_timeout)
+                        .with_protocol_options(Some(config.http_protocol_options.clone()))
                         .prepare();
                     cla.build().map(|cla| dynamic_cluster.change_load_assignment(Some(cla)))?;
                     Ok(cluster.clone())
@@ -272,10 +276,11 @@ pub fn update_endpoint_health(cluster: &str, endpoint: &Authority, health: Healt
 
 pub fn update_tls_context(secret_id: &str, secret: &TransportSecret) -> Result<Vec<ClusterType>> {
     CLUSTERS_MAP.update(|current| {
-        let mut cluster_configs = Vec::with_capacity(current.len());
+        let mut cluster_configs = Vec::new();
         for cluster in current.values_mut() {
-            cluster.change_tls_context(secret_id, secret.clone())?;
-            cluster_configs.push(cluster.clone());
+            if cluster.change_tls_context(secret_id, secret.clone())? {
+                cluster_configs.push(cluster.clone());
+            }
         }
         Ok(cluster_configs)
     })

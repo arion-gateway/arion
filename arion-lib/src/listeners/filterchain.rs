@@ -128,6 +128,7 @@ impl FilterchainBuilder {
         let network_connection_limit = self
             .network_connection_limit
             .map(|cl| NetworkConnectionLimit::from((listener_name, self.filterchain_id, cl)));
+        let downstream_tls = self.tls_configurator.is_some();
         let config = Filterchain {
             name: filterchain_name,
             tls_configurator: self.tls_configurator,
@@ -140,6 +141,7 @@ impl FilterchainBuilder {
                 http_connection_manager
                     .with_listener_name(listener_name)
                     .with_filterchain_id(self.filterchain_id)
+                    .with_downstream_tls(downstream_tls)
                     .build()?,
             )),
             MainFilterBuilder::Tcp(tcp_proxy) => ConnectionHandler::Tcp(

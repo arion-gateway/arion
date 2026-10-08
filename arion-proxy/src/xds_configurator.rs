@@ -245,9 +245,9 @@ impl XdsConfigurationHandler {
                 }
             },
             arion_xds::xds::model::TypeUrl::Secret => {
-                let msg = "Secret removal is not supported";
-                warn!("{msg}");
-                Err(anyhow::anyhow!(msg))
+                // Like Envoy, listeners and clusters keep the TLS context they built until they are updated.
+                self.secret_manager.write().remove(id);
+                Ok(())
             },
             TypeUrl::Extension(ref type_url) => {
                 debug!("Got extension removal for {type_url} resource {id}");
@@ -432,4 +432,59 @@ pub async fn send_change_to_runtimes<Change: Clone>(channels: &[Sender<Change>],
         .collect();
     let _ = join_all(futures).await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arion_configuration::config::secret::Secret;
+
+    const CERTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../test_certs/beefcakeCA-gathered");
+
+    fn secrets() -> Vec<Secret> {
+        serde_json::from_value(serde_json::json!([
+            {
+                "name": "server-cert",
+                "tls_certificate": {
+                    "certificate_chain": { "path": format!("{CERTS}/beefcake-dublin.cert.pem") },
+                    "private_key": { "path": format!("{CERTS}/beefcake-dublin.key.pem") },
+                },
+            },
+            {
+                "name": "client-ca",
+                "validation_context": {
+                    "trusted_ca": { "path": format!("{CERTS}/beefcake.intermediate.ca-chain.cert.pem") },
+                    "trust_chain_verification": "VerifyTrustChain",
+                },
+            },
+        ]))
+        .unwrap()
+    }
+
+    fn update(secret: &Secret) -> XdsResourceUpdate {
+        let payload = XdsResourcePayload::Secret(secret.name.to_string(), secret.clone());
+        XdsResourceUpdate::Update(secret.name.to_string(), Box::new(payload), "1".to_owned())
+    }
+
+    fn remove(secret: &Secret) -> XdsResourceUpdate {
+        XdsResourceUpdate::Remove(secret.name.to_string(), TypeUrl::Secret)
+    }
+
+    #[tokio::test]
+    async fn secret_removal_is_acked_and_secret_can_be_added_again() {
+        let secret_manager = Arc::new(RwLock::new(SecretManager::new()));
+        let mut handler = XdsConfigurationHandler::new(Arc::clone(&secret_manager), vec![]);
+        let secrets = secrets();
+
+        assert!(handler.process_updates(secrets.iter().map(update).collect()).await.is_empty());
+        assert_eq!(secret_manager.read().get_all_secrets().len(), 2);
+
+        for _ in 0..2 {
+            assert!(handler.process_updates(secrets.iter().map(remove).collect()).await.is_empty());
+            assert!(secret_manager.read().get_all_secrets().is_empty());
+        }
+
+        assert!(handler.process_updates(secrets.iter().map(update).collect()).await.is_empty());
+        assert_eq!(secret_manager.read().get_all_secrets().len(), 2);
+    }
 }

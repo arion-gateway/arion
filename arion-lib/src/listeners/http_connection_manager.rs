@@ -128,7 +128,9 @@ use crate::utils::StreamMetrics;
 
 use arion_configuration::config::network_filters::{
     early_header_mutation::EarlyHeaderMutation,
-    http_connection_manager::{HeaderModifiersAdd, HeaderModifiersRemove, Route, VirtualHost, XffSettings},
+    http_connection_manager::{
+        HeaderModifiersAdd, HeaderModifiersRemove, RequestHost, Route, VirtualHost, XffSettings,
+    },
     tracing::{TracingConfig, TracingKey},
 };
 use arion_format::types::ResponseFlags as FmtResponseFlags;
@@ -203,6 +205,7 @@ impl Write for LengthCounter {
 pub struct HttpConnectionManagerBuilder {
     listener_name: Option<&'static str>,
     filterchain_id: Option<u64>,
+    downstream_tls: bool,
     connection_manager: PartialHttpConnectionManager,
 }
 
@@ -210,7 +213,7 @@ impl TryFrom<ConversionContext<'_, HttpConnectionManagerConfig>> for HttpConnect
     type Error = crate::Error;
     fn try_from(ctx: ConversionContext<HttpConnectionManagerConfig>) -> Result<Self> {
         let partial = PartialHttpConnectionManager::try_from(ctx)?;
-        Ok(Self { listener_name: None, filterchain_id: None, connection_manager: partial })
+        Ok(Self { listener_name: None, filterchain_id: None, downstream_tls: false, connection_manager: partial })
     }
 }
 
@@ -226,6 +229,7 @@ impl HttpConnectionManagerBuilder {
         Ok(HttpConnectionManager {
             listener_name,
             filterchain_id,
+            downstream_tls: self.downstream_tls,
             routing_state: ArcSwapOption::new(initial_routing_state),
             codec_type: partial.codec_type,
             dynamic_route_name: partial.dynamic_route_name,
@@ -256,6 +260,11 @@ impl HttpConnectionManagerBuilder {
     #[inline]
     pub fn with_filterchain_id(self, value: u64) -> Self {
         HttpConnectionManagerBuilder { filterchain_id: Some(value), ..self }
+    }
+
+    #[inline]
+    pub fn with_downstream_tls(self, value: bool) -> Self {
+        HttpConnectionManagerBuilder { downstream_tls: value, ..self }
     }
 }
 
@@ -383,6 +392,7 @@ impl RoutingState {
 pub struct HttpConnectionManager {
     pub listener_name: &'static str,
     pub filterchain_id: u64,
+    downstream_tls: bool,
     routing_state: ArcSwapOption<RoutingState>,
     pub codec_type: CodecType,
     dynamic_route_name: Option<SmolStr>,
@@ -1062,8 +1072,9 @@ fn select_virtual_host<'a, T>(
     request: &Request<T>,
     virtual_hosts: &'a [VirtualHost],
 ) -> Option<(usize, &'a VirtualHost)> {
+    let host = RequestHost::from_request(request)?;
     let mapped_vhs = virtual_hosts.iter().enumerate().filter_map(|(idx, vh)| {
-        let maybe_score = vh.domains.iter().map(|domain| domain.eval_lpm_request(request)).max().flatten();
+        let maybe_score = vh.domains.iter().map(|domain| domain.eval_lpm(host)).max().flatten();
         maybe_score.map(|score| (idx, vh, score))
     });
 
@@ -1188,7 +1199,17 @@ impl RequestHandler<Request<ArionRequestBody>, &HttpConnectionManager> for &Rout
                     let mut response = match &cached_route.route.action {
                         Action::DirectResponse(dr) => dr.to_response(ctx, request, &cached_route.route.name).await,
                         Action::Redirect(rd) => {
-                            rd.to_response(ctx, request, (&cached_route.route_match, &cached_route.route.name)).await
+                            let downstream_scheme = if connection_manager.downstream_tls {
+                                ::http::uri::Scheme::HTTPS
+                            } else {
+                                ::http::uri::Scheme::HTTP
+                            };
+                            rd.to_response(
+                                ctx,
+                                request,
+                                (&cached_route.route_match, &cached_route.route.name, downstream_scheme),
+                            )
+                            .await
                         },
                         Action::Route(route) => {
                             apply_mutations_on_request(
@@ -1207,7 +1228,10 @@ impl RequestHandler<Request<ArionRequestBody>, &HttpConnectionManager> for &Rout
                                     (
                                         RouteContext {
                                             route_name: &cached_route.route.name,
-                                            retry_policy: cached_route.vh.retry_policy.as_ref(),
+                                            retry_policy: route
+                                                .retry_policy
+                                                .as_ref()
+                                                .or(cached_route.vh.retry_policy.as_ref()),
                                             route_match: &cached_route.route_match,
                                             remote_address,
                                             websocket_enabled_by_default,
@@ -2206,15 +2230,26 @@ mod tests {
         assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some((2, &vh3)));
 
         let request = Request::builder().header("host", "blah.domain3.com:8000").body(()).unwrap();
-        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), None);
+        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some((2, &vh3)));
 
         let request = Request::builder().header("host", "domain2.com:8000").body(()).unwrap();
-        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), None);
+        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some((1, &vh2)));
+
+        let request = Request::builder().header("host", "domain1.com:9000").body(()).unwrap();
+        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some((0, &vh1)));
 
         let domains2 = vec!["domain2.com:8000"].into_iter().flat_map(MatchHost::try_from).collect();
         let vh2 = VirtualHost { domains: domains2, ..Default::default() };
         let request = Request::builder().header("host", "domain2.com").body(()).unwrap();
         assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), None);
+
+        let domains4 = vec!["domain2.com"].into_iter().flat_map(MatchHost::try_from).collect();
+        let vh4 = VirtualHost { domains: domains4, ..Default::default() };
+        let request = Request::builder().header("host", "domain2.com:8000").body(()).unwrap();
+        assert_eq!(select_virtual_host(&request, &[vh2.clone(), vh4.clone()]), Some((0, &vh2)));
+
+        let request = Request::builder().header("host", "domain2.com:9000").body(()).unwrap();
+        assert_eq!(select_virtual_host(&request, &[vh2.clone(), vh4.clone()]), Some((1, &vh4)));
     }
 
     #[test]

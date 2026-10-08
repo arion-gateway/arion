@@ -31,7 +31,7 @@ use arion_configuration::config::network_filters::http_connection_manager::route
     AuthorityRedirect, RedirectAction, RouteMatchResult,
 };
 use http::{
-    header::LOCATION,
+    header::{HOST, LOCATION},
     uri::{Authority, Parts as UriParts, PathAndQuery, Scheme},
     HeaderValue, StatusCode, Uri,
 };
@@ -39,12 +39,23 @@ use hyper::{Request, Response};
 
 use std::str::FromStr;
 
-impl<'a> RequestHandler<Request<ArionRequestBody>, (&'a RouteMatchResult, &'a str)> for &RedirectAction {
+fn strip_default_port(authority: Authority, scheme: &Scheme) -> Authority {
+    match (authority.port_u16(), scheme.as_str()) {
+        (Some(80), "http") | (Some(443), "https") => Authority::from_str(authority.host()).unwrap_or(authority),
+        _ => authority,
+    }
+}
+
+impl<'a> RequestHandler<Request<ArionRequestBody>, (&'a RouteMatchResult, &'a str, Scheme)> for &RedirectAction {
     async fn to_response(
         self,
         #[allow(unused_variables)] ctx: &RequestCtx,
         request: Request<ArionRequestBody>,
-        #[allow(unused_variables)] (route_match_result, route_name): (&'a RouteMatchResult, &'a str),
+        #[allow(unused_variables)] (route_match_result, route_name, downstream_scheme): (
+            &'a RouteMatchResult,
+            &'a str,
+            Scheme,
+        ),
     ) -> Result<Response<ArionResponseBody>> {
         #[cfg(feature = "access-log")]
         ctx.tx.with_loggers(|loggers| {
@@ -54,8 +65,27 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (&'a RouteMatchResult, &'a st
         let (parts, _) = request.into_parts();
         let mut rsp = Response::builder().status(StatusCode::from(self.response_code)).version(parts.version);
 
-        let UriParts { scheme: orig_scheme, authority: orig_authority, path_and_query: orig_path_and_query, .. } =
+        let UriParts { scheme: uri_scheme, authority: uri_authority, path_and_query: orig_path_and_query, .. } =
             parts.uri.into_parts();
+        // Origin-form URIs have no scheme or authority; fall back to the Host header and listener scheme.
+        let (orig_scheme, orig_authority) =
+            if self.authority_redirect.is_some() || self.scheme_rewrite_specifier.is_some() {
+                let authority = uri_authority.or_else(|| {
+                    parts
+                        .headers
+                        .get(HOST)
+                        .and_then(|host| host.to_str().ok())
+                        .and_then(|host| Authority::from_str(host).ok())
+                });
+                (uri_scheme.or(Some(downstream_scheme)), authority)
+            } else {
+                (uri_scheme, uri_authority)
+            };
+        // A scheme rewrite moves to the new scheme's default port.
+        let orig_authority = match (&self.scheme_rewrite_specifier, orig_authority) {
+            (Some(_), Some(authority)) if authority.port_u16().is_some() => Authority::from_str(authority.host()).ok(),
+            (_, authority) => authority,
+        };
         let orig_host = orig_authority.as_ref().map(Authority::host);
         let orig_port = orig_authority.as_ref().and_then(Authority::port_u16);
         let authority = match (self.authority_redirect.as_ref(), (orig_host, orig_port)) {
@@ -98,6 +128,11 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (&'a RouteMatchResult, &'a st
         };
 
         let scheme = self.scheme_rewrite_specifier.clone().or(orig_scheme);
+
+        let authority = match (authority, scheme.as_ref()) {
+            (Some(authority), Some(scheme)) => Some(strip_default_port(authority, scheme)),
+            (authority, _) => authority,
+        };
 
         // if this replacement yields a query, it will always overwrite the existing query
         let path_and_query = if let Some(prs) = self.path_rewrite_specifier.as_ref() {

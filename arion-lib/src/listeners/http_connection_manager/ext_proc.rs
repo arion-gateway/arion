@@ -35,8 +35,9 @@ use http_body_util::{BodyExt, Collected, LengthLimitError, Limited};
 use crate::listeners::http_connection_manager::ext_proc::mutation::{
     apply_request_header_mutations, apply_response_header_mutations,
 };
-use crate::listeners::http_connection_manager::ext_proc::processing::RequestProcessing;
-use crate::listeners::http_connection_manager::ext_proc::processing::ResponseProcessing;
+use crate::listeners::http_connection_manager::ext_proc::processing::{
+    RequestProcessing, ResponseProcessing, LB_NAMESPACE,
+};
 use crate::listeners::http_connection_manager::ext_proc::r#override::{OverridableBodyMode, OverridableGlobalModes};
 use crate::listeners::http_connection_manager::ext_proc::status::ProcessingStatus;
 use crate::listeners::http_connection_manager::ext_proc::status::ReadyStatus;
@@ -46,6 +47,7 @@ use crate::{
     body::response_flags::ResponseFlags,
     clusters::clusters_manager::{self, RoutingContext},
     listeners::{http_filters::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
+    transport::ServedEndpoint,
     Error, PolyBody,
 };
 use arion_configuration::config::{
@@ -67,12 +69,15 @@ use arion_data_plane_api::envoy_data_plane_api::{
         },
     },
     google,
-    tonic::{codec::Streaming, Status},
+    tonic::{codec::Streaming, Response as TonicResponse, Status},
 };
 use arion_format::types::ResponseFlags as FmtResponseFlags;
 use bytes::Bytes;
 use const_str::parse;
-use futures::{future::Either, StreamExt};
+use futures::{
+    future::{BoxFuture, Either},
+    FutureExt, StreamExt,
+};
 use http::header::CONTENT_LENGTH;
 use http::{Request, Response, StatusCode};
 use http_body::{Body, Frame};
@@ -253,6 +258,9 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>, Option<ExternalProc
             allow_mode_override: config.allow_mode_override,
             route_cache_action: config.route_cache_action,
             send_body_without_waiting_for_header_response: config.send_body_without_waiting_for_header_response,
+            forward_served_endpoint: config
+                .metadata_options
+                .is_some_and(|options| options.forwarding_namespaces.untyped.iter().any(|ns| ns == LB_NAMESPACE)),
             frame_merge_limit: ext_proc_config_ext
                 .as_ref()
                 .map(|e| e.frame_merge_limit)
@@ -560,6 +568,7 @@ impl ExternalProcessor {
         }
 
         let mut ext_proc_headers = None;
+        let mut served_endpoint = None;
 
         if process_headers {
             debug!(target: "ext_proc", "response processing headers");
@@ -588,6 +597,9 @@ impl ExternalProcessor {
             }
 
             ext_proc_headers = Some(EnvoyHeaderMap(ProstHeaderMap { headers: headers_vec }));
+            if self.inner.worker_config.forward_served_endpoint {
+                served_endpoint = response.extensions().get::<ServedEndpoint>().cloned();
+            }
         }
 
         let body: PolyBody = std::mem::take(&mut response.body_mut().inner);
@@ -656,7 +668,7 @@ impl ExternalProcessor {
         debug!(target: "ext_proc", "response headers: {ext_proc_headers:?}");
         debug!(target: "ext_proc", "response body: {ext_proc_frame_bridge:?}");
 
-        Ok(ProcessingData::Response(ext_proc_headers, ext_proc_frame_bridge))
+        Ok(ProcessingData::Response(ext_proc_headers, ext_proc_frame_bridge, served_endpoint))
     }
 
     fn apply_modification_on_response(
@@ -915,12 +927,67 @@ pub struct ProcessingTask {
 #[derive(Debug)]
 pub enum ProcessingData {
     Request(Option<EnvoyHeaderMap>, FrameBridge),
-    Response(Option<EnvoyHeaderMap>, FrameBridge),
+    Response(Option<EnvoyHeaderMap>, FrameBridge, Option<ServedEndpoint>),
 }
 
 struct BidiStream {
     external_sender: mpsc::Sender<ProcessingRequest>,
-    inbound_responses: Streaming<ProcessingResponse>,
+    inbound: Inbound,
+}
+
+/// The `process()` call resolves only when the response headers arrive, which grpc-go servers
+/// may withhold until they have read the whole request — so the call is polled alongside
+/// outbound sends instead of being awaited up front.
+#[allow(clippy::large_enum_variant)]
+enum Inbound {
+    Pending(BoxFuture<'static, Result<Streaming<ProcessingResponse>, Status>>),
+    Ready(Streaming<ProcessingResponse>),
+    Failed(Status),
+}
+
+impl From<Result<Streaming<ProcessingResponse>, Status>> for Inbound {
+    fn from(call: Result<Streaming<ProcessingResponse>, Status>) -> Self {
+        match call {
+            Ok(inbound_responses) => Self::Ready(inbound_responses),
+            Err(status) => Self::Failed(status),
+        }
+    }
+}
+
+impl BidiStream {
+    fn is_pending(&self) -> bool {
+        matches!(self.inbound, Inbound::Pending(_))
+    }
+
+    async fn resolve(&mut self) {
+        if let Inbound::Pending(call) = &mut self.inbound {
+            self.inbound = Inbound::from(call.await);
+        }
+    }
+
+    async fn message(&mut self) -> Result<Option<ProcessingResponse>, Status> {
+        loop {
+            match &mut self.inbound {
+                Inbound::Pending(_) => self.resolve().await,
+                Inbound::Ready(inbound_responses) => return inbound_responses.message().await,
+                Inbound::Failed(status) => return Err(status.clone()),
+            }
+        }
+    }
+
+    #[allow(clippy::result_large_err)]
+    async fn send(&mut self, request: ProcessingRequest) -> Result<(), SendError<ProcessingRequest>> {
+        let send = self.external_sender.send(request);
+        tokio::pin!(send);
+        // While the call is pending, it must be polled to drive the request stream.
+        if let Inbound::Pending(call) = &mut self.inbound {
+            tokio::select! {
+                outcome = &mut send => return outcome,
+                resolved = call => self.inbound = Inbound::from(resolved),
+            }
+        }
+        send.await
+    }
 }
 
 struct TimeoutState {
@@ -1063,8 +1130,9 @@ impl ExternalProcessingWorker<kind::Processing> {
                                 self.forward_to_external_processor(proc_req).await;
                             }
                         }
-                        Some(ProcessingTask{ data: ProcessingData::Response(headers, frame_bridge), reply_channel, http_version}) => {
+                        Some(ProcessingTask{ data: ProcessingData::Response(headers, frame_bridge, served_endpoint), reply_channel, http_version}) => {
                             debug!(target: "ext_proc", "-> starting processing response...");
+                            self.response_processing.set_served_endpoint(served_endpoint);
                             if let Some(proc_req) = self.response_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes).await {
                                 debug!(target: "ext_proc", "processing_response -> forward {outbound:?}", outbound = TruncatedDebug::<_,1024>(&proc_req));
                                 self.forward_to_external_processor(proc_req).await;
@@ -1078,7 +1146,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                 },
 
                 inbound_processing_response = if let Some(stream) = self.bidi_stream.as_mut() {
-                        Either::Left(stream.inbound_responses.message())
+                        Either::Left(stream.message())
                     } else {
                         Either::Right(std::future::pending::<Result<Option<ProcessingResponse>, Status>>())
                     } => {
@@ -1287,7 +1355,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                             let body_mode = self.overridable_modes.request.body_mode();
 
                             debug!(target: "ext_proc", "outbound request body frame: buffering frame...");
-                            if let Some(frame_to_send) = self.request_processing.frames_buffer.push(frame, tokio::time::Instant::now()) {
+                            if let Some(frame_to_send) = self.request_processing.frames_buffer.push(frame, tokio::time::Instant::now(), body_mode) {
                                 // invariant: frame_to_send is always a DATA frame at this point. TRAILERS are sent later.
                                 if let OverridableBodyMode::None = body_mode { // body processing is disabled, just inject back the frame
                                     let proof = self.request_processing.make_proof().unwrap_or_else(|| {
@@ -1317,6 +1385,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                             request_body_to_ext_proc_complete = true;
                             debug!(target: "ext_proc", "outbound request body frame: request body stream completing...");
 
+                            self.request_processing.buffer_end_of_stream(&self.overridable_modes);
                             while let Some(last_frame) = self.request_processing.frames_buffer.take() {
                                 if last_frame.is_data() { // DATA
                                   if self.overridable_modes.request.should_process_body() {
@@ -1376,7 +1445,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                             let body_mode = self.overridable_modes.response.body_mode();
 
                             debug!(target: "ext_proc", "outbound response body frame: buffering frame...");
-                            if let Some(frame_to_send) = self.response_processing.frames_buffer.push(frame, tokio::time::Instant::now()) {
+                            if let Some(frame_to_send) = self.response_processing.frames_buffer.push(frame, tokio::time::Instant::now(), body_mode) {
                                 // invariant: frame_to_send is always a DATA frame at this point. TRAILERS are sent later.
                                 if let OverridableBodyMode::None = body_mode { // body processing is disabled, just inject back the frame
                                     debug!(target: "ext_proc", "outbound response body frame: injecting the frame DATA into the body");
@@ -1405,6 +1474,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                             response_body_to_ext_proc_complete = true;
                             debug!(target: "ext_proc", "outbound response body frame: response body stream completing...");
 
+                            self.response_processing.buffer_end_of_stream(&self.overridable_modes);
                             while let Some(last_frame) = self.response_processing.frames_buffer.take() {
                                 if last_frame.is_data() { // DATA
                                   if self.overridable_modes.response.should_process_body() {
@@ -1522,7 +1592,8 @@ impl ExternalProcessingWorker<kind::Observability> {
                                self.forward_to_external_processor(proc_req).await;
                             }
                         }
-                        Some(ProcessingTask{ data: ProcessingData::Response(headers, frame_bridge), reply_channel, http_version}) => {
+                        Some(ProcessingTask{ data: ProcessingData::Response(headers, frame_bridge, served_endpoint), reply_channel, http_version}) => {
+                            self.response_processing.set_served_endpoint(served_endpoint);
                             if let Some(proc_req) = self.response_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes).await {
                                 debug!(target: "ext_proc", "processing_response -> forward {outbound:?}", outbound = TruncatedDebug::<_,1024>(&proc_req));
                                 self.forward_to_external_processor(proc_req).await;
@@ -1535,12 +1606,18 @@ impl ExternalProcessingWorker<kind::Observability> {
                     }
                 },
 
+                () = if let Some(stream) = self.bidi_stream.as_mut() {
+                        Either::Left(stream.resolve())
+                    } else {
+                        Either::Right(std::future::pending())
+                    }, if self.bidi_stream.as_ref().is_some_and(BidiStream::is_pending) => {},
+
                 outbound_request_body_frame = self.request_processing.frame_bridge.next(), if outbound_req_enabled => {
                     debug!(target: "ext_proc", "outbound request body frame: {:?}", TruncatedDebug::<_,1024>(&outbound_request_body_frame));
                     match outbound_request_body_frame {
                         Some(Ok(frame)) => {
                             debug!(target: "ext_proc", "outbound request body frame: buffering frame...");
-                            if let Some(frame_to_send) = self.request_processing.frames_buffer.push(frame, tokio::time::Instant::now()) {
+                            if let Some(frame_to_send) = self.request_processing.frames_buffer.push(frame, tokio::time::Instant::now(), self.overridable_modes.request.body_mode()) {
 
                                 let proof = self.request_processing.make_proof().unwrap_or_else(|| {
                                     let status = ProcessingStatus::RequestReady(ReadyStatus::default());
@@ -1574,6 +1651,7 @@ impl ExternalProcessingWorker<kind::Observability> {
                                 self.request_processing.return_status(status, "proof for frame injection at end of stream when processing body chunks")
                             });
 
+                            self.request_processing.buffer_end_of_stream(&self.overridable_modes);
                             while let Some(last_frame) = self.request_processing.frames_buffer.take() {
                                 if last_frame.is_data() { // DATA
                                   if self.overridable_modes.request.should_process_body() {
@@ -1620,7 +1698,7 @@ impl ExternalProcessingWorker<kind::Observability> {
                     match outbound_response_body_frame {
                         Some(Ok(frame)) => {
                             debug!(target: "ext_proc", "outbound response body frame: buffering frame...");
-                            if let Some(frame_to_send) = self.response_processing.frames_buffer.push(frame, tokio::time::Instant::now()) {
+                            if let Some(frame_to_send) = self.response_processing.frames_buffer.push(frame, tokio::time::Instant::now(), self.overridable_modes.response.body_mode()) {
                                 let proof = self.response_processing.make_proof().unwrap_or_else(|| {
                                     let status = ProcessingStatus::ResponseReady(ReadyStatus::default());
                                     self.response_processing.return_status(status, "proof for frame injection when body processing is enabled")
@@ -1653,6 +1731,7 @@ impl ExternalProcessingWorker<kind::Observability> {
                                 self.response_processing.return_status(status, "proof for frame injection at end of stream when processing body chunks")
                             });
 
+                            self.response_processing.buffer_end_of_stream(&self.overridable_modes);
                             while let Some(last_frame) = self.response_processing.frames_buffer.take() {
                                 if last_frame.is_data() { // DATA
                                   if self.overridable_modes.response.should_process_body() {
@@ -1712,7 +1791,7 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
                 yield message
             }
         };
-        let response_stream = match grpc_service_specifier {
+        let call = match grpc_service_specifier {
             GrpcServiceSpecifier::Cluster(cluster_grpc) => {
                 let cluster_spec = ClusterSpecifier::Cluster(cluster_grpc.cluster_name.clone());
                 let cluster_id = clusters_manager::resolve_cluster(&cluster_spec, None).ok_or_else(|| {
@@ -1725,11 +1804,7 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
                 let mut client =
                     ExternalProcessorClient::new(grpc_service).max_decoding_message_size(max_receive_message_length);
 
-                client
-                    .process(request_stream)
-                    .await
-                    .map_err(|e| Error::from(format!("Failed to establish external processor stream: {e}")))?
-                    .into_inner()
+                async move { client.process(request_stream).await.map(TonicResponse::into_inner) }.boxed()
             },
             GrpcServiceSpecifier::GoogleGrpc(google_grpc) => {
                 let mut client = ExternalProcessorClient::connect(google_grpc.target_uri.clone())
@@ -1739,19 +1814,18 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
                     })?
                     .max_decoding_message_size(max_receive_message_length);
 
-                client
-                    .process(request_stream)
-                    .await
-                    .map_err(|e| Error::from(format!("Failed to establish external processor stream: {e}")))?
-                    .into_inner()
+                async move { client.process(request_stream).await.map(TonicResponse::into_inner) }.boxed()
             },
         };
 
-        Ok::<_, Error>(BidiStream { external_sender: request_sender, inbound_responses: response_stream })
+        Ok::<_, Error>(BidiStream { external_sender: request_sender, inbound: Inbound::Pending(call) })
     }
 
-    async fn get_bidi_stream(&mut self, pending_request: &mut Option<ProcessingRequest>) -> Result<&BidiStream, Error> {
-        if let Some(ref stream) = self.bidi_stream {
+    async fn get_bidi_stream(
+        &mut self,
+        pending_request: &mut Option<ProcessingRequest>,
+    ) -> Result<&mut BidiStream, Error> {
+        if let Some(ref mut stream) = self.bidi_stream {
             Ok(stream)
         } else {
             let first_request = pending_request.take().ok_or_else(|| {
@@ -1786,7 +1860,7 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
             Ok(stream) => stream,
         };
         let send_outcome = match request_opt {
-            Some(request) => Some(stream.external_sender.send(request).await),
+            Some(request) => Some(stream.send(request).await),
             None => None,
         };
 

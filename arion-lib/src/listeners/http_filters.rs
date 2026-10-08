@@ -43,7 +43,9 @@ use smol_str::SmolStr;
 use tracing::debug;
 
 use arion_configuration::config::network_filters::http_connection_manager::{
-    http_filters::{FilterConfigOverride, FilterOverride, HttpFilter as HttpFilterConfig, HttpFilterType},
+    http_filters::{
+        ExtProcPerRoute, FilterConfigOverride, FilterOverride, HttpFilter as HttpFilterConfig, HttpFilterType,
+    },
     RouteConfiguration,
 };
 
@@ -273,7 +275,8 @@ impl HttpFilterValue {
             Some(filter_settings) => match filter_settings {
                 FilterConfigOverride::LocalRateLimit(rl) => Some(HttpFilterValue::RateLimit(rl.clone().into())),
                 FilterConfigOverride::Rbac(Some(rbac)) => Some(HttpFilterValue::Rbac(HttpRbac::new(rbac))),
-                FilterConfigOverride::Rbac(None) => None,
+                FilterConfigOverride::Rbac(None)
+                | FilterConfigOverride::ExternalProcessor(ExtProcPerRoute { disabled: true, .. }) => None,
                 FilterConfigOverride::ExternalProcessor(ext_proc_per_route) => {
                     if let Some(HttpFilterConfig { filter: HttpFilterType::ExternalProcessor(filter_config), .. }) =
                         filter_config
@@ -286,6 +289,7 @@ impl HttpFilterValue {
                         None
                     }
                 },
+                FilterConfigOverride::CorsPolicy(cors) => Some(HttpFilterValue::Cors(cors.clone().into())),
             },
             None => None,
         }
@@ -337,4 +341,67 @@ pub(crate) fn per_route_http_filters(
         }
     }
     per_route_filters
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arion_configuration::config::network_filters::http_connection_manager::{
+        HttpConnectionManager as HttpConnectionManagerConfig, RouteSpecifier,
+    };
+    use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::network::http_connection_manager::v3::HttpConnectionManager as EnvoyHttpConnectionManager;
+
+    #[test]
+    fn test_ext_proc_per_route_disabled() {
+        let envoy: EnvoyHttpConnectionManager = arion_data_plane_api::decode::from_yaml(
+            r#"
+http_filters:
+- name: envoy.filters.http.ext_proc
+  typed_config:
+    "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+    grpc_service: { envoy_grpc: { cluster_name: epp-a } }
+- name: envoy.filters.http.router
+  typed_config:
+    "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+route_config:
+  name: routes
+  virtual_hosts:
+  - name: default
+    domains: ["*"]
+    routes:
+    - match: { prefix: /pool }
+      route: { cluster: pool }
+      typed_per_filter_config:
+        envoy.filters.http.ext_proc:
+          "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+          overrides: { grpc_service: { envoy_grpc: { cluster_name: epp-b } } }
+    - match: { prefix: /plain }
+      route: { cluster: app }
+      typed_per_filter_config:
+        envoy.filters.http.ext_proc:
+          "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+          disabled: true
+    - match: { prefix: / }
+      route: { cluster: app }
+"#,
+        )
+        .unwrap();
+        let config = HttpConnectionManagerConfig::try_from(envoy).unwrap();
+        let RouteSpecifier::RouteConfig(route_config) = &config.route_specifier else {
+            panic!("expected an inline route config");
+        };
+        let hcm_filters: Vec<_> =
+            config.http_filters.iter().map(|f| Arc::new(HttpFilter::try_from(f.clone()).unwrap())).collect();
+
+        let per_route = per_route_http_filters(route_config, &hcm_filters);
+        let ext_proc_runs = |route_idx| {
+            per_route
+                .get(&RouteIndex { vh_idx: 0, route_idx })
+                .and_then(|filters| filters.first())
+                .map(|filter| !filter.disabled && matches!(filter.filter, Some(HttpFilterValue::ExternalProcessor(_))))
+        };
+        assert_eq!(ext_proc_runs(0), Some(true));
+        assert_eq!(ext_proc_runs(1), Some(false));
+        assert_eq!(ext_proc_runs(2), Some(true));
+    }
 }

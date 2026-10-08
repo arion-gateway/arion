@@ -51,6 +51,7 @@ pub enum FilterConfigOverride {
     LocalRateLimit(LocalRateLimit),
     Rbac(Option<HttpRbac>),
     ExternalProcessor(ExtProcPerRoute),
+    CorsPolicy(CorsConfig),
 }
 
 impl From<FilterConfigOverride> for FilterOverride {
@@ -255,6 +256,7 @@ mod envoy_conversions {
         LocalRateLimit(EnvoyLocalRateLimit),
         Rbac(EnvoyRbacPerRoute),
         ExternalProcessor(EnvoyExtProcPerRoute),
+        CorsPolicy(CorsPolicy),
     }
 
     impl TryFrom<Any> for SupportedEnvoyFilterOverride {
@@ -269,6 +271,9 @@ mod envoy_conversions {
                 },
                 "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute" => {
                     EnvoyExtProcPerRoute::decode(typed_config.value.as_slice()).map(Self::ExternalProcessor)
+                },
+                "type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy" => {
+                    CorsPolicy::decode(typed_config.value.as_slice()).map(Self::CorsPolicy)
                 },
                 _ => return Err(GenericError::unsupported_variant(typed_config.type_url)),
             }
@@ -316,6 +321,7 @@ mod envoy_conversions {
                 SupportedEnvoyFilterOverride::ExternalProcessor(envoy) => {
                     ExtProcPerRoute::try_from(envoy).map(Self::ExternalProcessor)
                 },
+                SupportedEnvoyFilterOverride::CorsPolicy(envoy) => envoy.try_into().map(Self::CorsPolicy),
             }
         }
     }

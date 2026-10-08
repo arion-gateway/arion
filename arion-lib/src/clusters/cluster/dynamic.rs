@@ -135,14 +135,16 @@ impl ClusterOps for DynamicCluster {
         self.load_assignment.as_ref().map_or(Vec::new(), ClusterLoadAssignment::try_all_grpc_channels)
     }
 
-    fn change_tls_context(&mut self, secret_id: &str, secret: TransportSecret) -> Result<()> {
-        self.transport_socket.update_secret(secret_id, &secret)?;
+    fn change_tls_context(&mut self, secret_id: &str, secret: TransportSecret) -> Result<bool> {
+        if !self.transport_socket.update_secret(secret_id, &secret)? {
+            return Ok(false);
+        }
         if let Some(mut load_assignment) = self.load_assignment.take() {
             load_assignment.transport_socket = self.transport_socket.clone();
             let load_assignment = load_assignment.rebuild()?;
             self.load_assignment = Some(load_assignment);
         }
-        Ok(())
+        Ok(true)
     }
 
     fn update_health(&mut self, endpoint: &http::uri::Authority, health: HealthStatus) {

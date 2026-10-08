@@ -270,7 +270,18 @@ pub fn apply_header_mutations(
             http::HeaderValue::from_maybe_shared(bytes::Bytes::from(header.raw_value))
         };
         let Ok(header_value) = header_value else { continue };
-        match header_to_set.append_action() {
+        // set_headers adds or replaces: the deprecated `append` wins when set, and an unset
+        // append_action (its proto3 default, APPEND_IF_EXISTS_OR_ADD) replaces, as in Envoy.
+        #[allow(deprecated)]
+        let append_action = match header_to_set.append.map(|append| append.value) {
+            Some(true) => HeaderAppendAction::AppendIfExistsOrAdd,
+            Some(false) => HeaderAppendAction::OverwriteIfExistsOrAdd,
+            None => match header_to_set.append_action() {
+                HeaderAppendAction::AppendIfExistsOrAdd => HeaderAppendAction::OverwriteIfExistsOrAdd,
+                action => action,
+            },
+        };
+        match append_action {
             HeaderAppendAction::AppendIfExistsOrAdd => {
                 headers.append(header_name, header_value);
             },

@@ -336,6 +336,68 @@ async fn test_redirect_https_upgrade() {
 
 #[tokio::test]
 #[ignore]
+async fn test_redirect_port_only() {
+    let bootstrap = presets::routed_proxy_no_clusters([RouteBuilder::new()
+        .match_prefix("/")
+        .redirect(RedirectBuilder::new().status_302().port(8083))]);
+    let config_path = bootstrap.build_to_temp().unwrap();
+
+    let arion = ArionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.unwrap();
+
+    let client = TestClient::new(arion.listener_addr().unwrap());
+
+    let response = client.get("/path").await.unwrap();
+    response.assert_status(StatusCode::FOUND);
+    response.assert_header("location", "http://127.0.0.1:8083/path");
+
+    arion.shutdown();
+    cleanup_config_file(&config_path);
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_redirect_scheme_only() {
+    let bootstrap = presets::routed_proxy_no_clusters([RouteBuilder::new()
+        .match_prefix("/")
+        .redirect(RedirectBuilder::new().status_301().https())]);
+    let config_path = bootstrap.build_to_temp().unwrap();
+
+    let arion = ArionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.unwrap();
+
+    let client = TestClient::new(arion.listener_addr().unwrap());
+
+    let response = client.get("/path").await.unwrap();
+    response.assert_status(StatusCode::MOVED_PERMANENTLY);
+    response.assert_header("location", "https://127.0.0.1/path");
+
+    arion.shutdown();
+    cleanup_config_file(&config_path);
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_redirect_host_only() {
+    let bootstrap = presets::routed_proxy_no_clusters([RouteBuilder::new()
+        .match_prefix("/")
+        .redirect(RedirectBuilder::new().status_302().host("example.com"))]);
+    let config_path = bootstrap.build_to_temp().unwrap();
+
+    let arion = ArionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.unwrap();
+
+    let client = TestClient::new(arion.listener_addr().unwrap());
+
+    let response = client.get("/path").await.unwrap();
+    response.assert_status(StatusCode::FOUND);
+    let location = response.header("location").expect("Missing location header");
+    let port = arion.listener_addr().unwrap().port();
+    assert_eq!(location, format!("http://example.com:{port}/path"));
+
+    arion.shutdown();
+    cleanup_config_file(&config_path);
+}
+
+#[tokio::test]
+#[ignore]
 async fn test_redirect_strip_query() {
     let bootstrap = presets::routed_proxy_no_clusters([RouteBuilder::new()
         .match_prefix("/old")
