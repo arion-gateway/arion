@@ -296,3 +296,4 @@ must_use_candidate                  = "allow"
 needless_raw_string_hashes          = "allow"
 semicolon_if_nothing_returned       = "allow"
 ignore_without_reason               = "allow" # ignore is used in all arion-e2e tests
+assert_is_empty			    = "allow"

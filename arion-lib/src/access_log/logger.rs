@@ -61,8 +61,8 @@ impl AccessLogger {
                         }
                     }
                 },
-                Err(_) => {
-                    error!("AccessLogger: channel Receiver closed");
+                Err(err) => {
+                    error!("AccessLogger: channel Receiver closed: {err:?}");
                     return;
                 },
             }

@@ -130,10 +130,12 @@ fn detect_available_cpus() -> usize {
     num_cpus::get()
 }
 
+#[cfg(target_os = "linux")]
 fn get_container_cpu_limit() -> crate::Result<usize> {
     get_cgroup_v2_cpu_limit().or_else(|_| get_cgroup_v1_cpu_limit())
 }
 
+#[cfg(target_os = "linux")]
 fn get_cgroup_v2_cpu_limit() -> crate::Result<usize> {
     if !std::path::Path::new("/sys/fs/cgroup/cgroup.controllers").exists() {
         return Err(anyhow::anyhow!("cgroups v2 not available"));
@@ -145,6 +147,7 @@ fn get_cgroup_v2_cpu_limit() -> crate::Result<usize> {
     Err(anyhow::anyhow!("No cgroups v2 CPU limit found"))
 }
 
+#[cfg(target_os = "linux")]
 fn parse_cgroup_v2_cpu_max(content: &str) -> crate::Result<usize> {
     let mut parts = content.split_whitespace();
 
@@ -173,6 +176,7 @@ fn parse_cgroup_v2_cpu_max(content: &str) -> crate::Result<usize> {
     Err(anyhow::anyhow!("No valid cgroups v2 CPU limit found"))
 }
 
+#[cfg(target_os = "linux")]
 fn get_cgroup_v1_cpu_limit() -> crate::Result<usize> {
     let cgroup_path = get_cgroup_v1_cpu_path()?;
     let quota_path = format!("{cgroup_path}/cpu.cfs_quota_us");
@@ -184,6 +188,7 @@ fn get_cgroup_v1_cpu_limit() -> crate::Result<usize> {
     parse_cgroup_v1_cpu_limit(&quota_content, &period_content)
 }
 
+#[cfg(target_os = "linux")]
 fn parse_cgroup_v1_cpu_limit(quota_content: &str, period_content: &str) -> crate::Result<usize> {
     let quota: i64 = quota_content.trim().parse()?;
     let period: i64 = period_content.trim().parse()?;
@@ -199,11 +204,13 @@ fn parse_cgroup_v1_cpu_limit(quota_content: &str, period_content: &str) -> crate
     Err(anyhow::anyhow!("No valid cgroups v1 CPU limit found"))
 }
 
+#[cfg(target_os = "linux")]
 fn get_cgroup_v1_cpu_path() -> crate::Result<String> {
     let cgroup_content = std::fs::read_to_string("/proc/self/cgroup")?;
     parse_cgroup_v1_cpu_path(&cgroup_content)
 }
 
+#[cfg(target_os = "linux")]
 fn parse_cgroup_v1_cpu_path(cgroup_content: &str) -> crate::Result<String> {
     if let Some(path) = cgroup_content.lines().find_map(|line| {
         let mut parts = line.split(':');
@@ -280,6 +287,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_cgroup_v1_cpu_limit_parsing() {
         // Test normal case: 200000/100000 = 2 CPUs
         let quota_content = "200000\n";
@@ -289,6 +297,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_cgroup_v1_cpu_limit_parsing_fractional() {
         // Test fractional case: 150000/100000 = 1.5, should ceil to 2 CPUs
         let quota_content = "150000\n";
@@ -298,6 +307,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_cgroup_v1_cpu_limit_parsing_invalid() {
         // Test with invalid quota (negative or zero)
         let quota_content = "-1\n";
@@ -312,6 +322,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_cgroup_v2_cpu_max_parsing() {
         // Test normal case: 200000/100000 = 2 CPUs
         let content = "200000 100000\n";
@@ -330,6 +341,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_container_cpu_detection_fallback() {
         let system_cpus = num_cpus::get();
         let detected_cpus = detect_available_cpus();

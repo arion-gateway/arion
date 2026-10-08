@@ -201,7 +201,7 @@ mod tests {
             rt.block_on(async move {
                 std::thread::sleep(StdDuration::from_millis(300));
                 let result = arion_lib::ListenersManager::new(listener_rx_2, route_rx_2).start().await;
-                let _ = exited_tx.send(result);
+                _ = exited_tx.send(result);
             });
         });
 

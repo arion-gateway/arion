@@ -537,11 +537,9 @@ impl HcmBuilder {
                     .into(),
             value: config.encode_to_vec(),
         };
-        self.proto.early_header_mutation_extensions.push(TypedExtensionConfig {
-            name: "early_header_mutation".into(),
-            typed_config: Some(any),
-            ..Default::default()
-        });
+        self.proto
+            .early_header_mutation_extensions
+            .push(TypedExtensionConfig { name: "early_header_mutation".into(), typed_config: Some(any) });
     }
 
     fn add_router_filter(&mut self) {

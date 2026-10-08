@@ -40,7 +40,7 @@ pub enum TranscoderError {
 
 #[derive(Debug)]
 pub enum TranscoderType {
-    Rest(RestTranscoder),
+    Rest(Box<RestTranscoder>),
     FunctionGraph(FunctionGraphTranscoder),
     // No transcoding for MCP usptreams
     NoTranscoder,

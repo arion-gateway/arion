@@ -413,7 +413,7 @@ pub struct HttpConnectionManager {
 
 impl fmt::Display for HttpConnectionManager {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "HttpConnectionManager {}", &self.listener_name)
+        write!(f, "HttpConnectionManager {}", self.listener_name)
     }
 }
 
@@ -670,8 +670,9 @@ impl TransactionContext {
     ) {
         #[cfg(feature = "access-log")]
         {
-            self.has_access_log = !access_log.is_empty();
-        }
+            self.has_access_log = !access_log.is_empty()
+        };
+
         self.start_instant = std::time::Instant::now();
         self.request_id = request_id;
         self.user_partition_key = user_partition_key;
@@ -681,27 +682,27 @@ impl TransactionContext {
             *self.trans_state.get_mut() = TransactionState::new(
                 #[cfg(feature = "access-log")]
                 access_log,
-            );
-        }
+            )
+        };
 
         #[cfg(feature = "tracing")]
         {
             self.trace_ctx = trace_ctx;
             self.upstream_tracing_key = upstream_tracing_key;
-            self.span_state = server_span.map(|span| Arc::new(SpanState::new(Some(span))));
-        }
+            self.span_state = server_span.map(|span| Arc::new(SpanState::new(Some(span))))
+        };
 
         self.shard_id = thread_id;
 
         #[cfg(any(feature = "access-log", feature = "metrics", feature = "tracing"))]
         {
-            self.trans_phase = TransactionPhase::new();
-        }
+            self.trans_phase = TransactionPhase::new()
+        };
 
         #[cfg(feature = "instrumentation")]
         {
-            self.clock = quanta::Clock::new();
-        }
+            self.clock = quanta::Clock::new()
+        };
     }
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -939,7 +940,7 @@ impl HttpPipelineSvc {
         http_modifiers::apply_prerouting_functions(
             &mut request,
             downstream_addr,
-            &manager.xff_settings,
+            manager.xff_settings,
             &ctx.conn,
             &manager.early_header_mutation,
         );
@@ -975,8 +976,8 @@ impl HttpPipelineSvc {
                             response_head_size: response_head_size(&response)
                         }
                     )
-                });
-            }
+                })
+            };
 
             #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
             let trans_ctx = ctx.tx;
@@ -1383,7 +1384,7 @@ fn apply_mutations_on_response<B>(
 // --- Typed request envelope (Service stack) ---
 
 /// Per-request context always present after `TransactionLifecycleSvc`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct RequestCtx {
     pub conn: ConnMeta,
     pub tx: PooledTxCtx,
@@ -1403,12 +1404,6 @@ impl RequestCtx {
     #[inline]
     pub(crate) fn begin_upstream_span(&self, span_name: &str) -> ScopedClientSpan {
         self.tx.begin_upstream_span(span_name)
-    }
-}
-
-impl Default for RequestCtx {
-    fn default() -> Self {
-        Self { conn: ConnMeta::default(), tx: PooledTxCtx::default() }
     }
 }
 
@@ -1849,7 +1844,7 @@ impl OnFlush for HttpTxnFlush {
                     event_kind: ctx_event.or(self.extra_event),
                     response_flags: ctx_flags | self.extra_flags,
                 },
-                access_loggers: trans_state.loggers.as_mut().map(|b| &mut **b),
+                access_loggers: trans_state.loggers.as_deref_mut(),
             },
         });
     }
@@ -1984,7 +1979,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
         if !loggers.is_empty() {
             with_access_log!(&mut *loggers, WireContext { wire_bytes_received, wire_bytes_sent });
             let messages = loggers.iter_mut().map(|l| l.clone().into_message()).collect::<Vec<_>>();
-            let _ = blocking_log_access(
+            _ = blocking_log_access(
                 Target::ListenerFilterChain(params.listener_name.into(), params.filterchain_id),
                 messages,
             );

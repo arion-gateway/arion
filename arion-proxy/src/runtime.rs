@@ -59,9 +59,10 @@ pub fn build_tokio_runtime(
 ) -> Runtime {
     let config = runtime_config();
 
-    match runtime_id {
-        Some(runtime_id) => info!("{thread_name}: building runtime[{runtime_id}]..."),
-        None => info!("{thread_name}: building runtime..."),
+    if let Some(runtime_id) = runtime_id {
+        info!("{thread_name}: building runtime[{runtime_id}]...");
+    } else {
+        info!("{thread_name}: building runtime...");
     }
 
     // Incoming name is already `proxy_RTn` / `services`. Only append a suffix

@@ -485,44 +485,41 @@ mod envoy_conversions {
         fn sample_envoy_oauth2_config() -> EnvoyOAuth2Config {
             EnvoyOAuth2Config {
                 token_endpoint: Some(EnvoyHttpUri {
-                    uri: "https://auth.example.com/oauth/token".to_string(),
-                    http_upstream_type: Some(HttpUpstreamType::Cluster("oauth_cluster".to_string())),
+                    uri: "https://auth.example.com/oauth/token".to_owned(),
+                    http_upstream_type: Some(HttpUpstreamType::Cluster("oauth_cluster".to_owned())),
                     timeout: Some(EnvoyDuration { seconds: 5, nanos: 0 }),
                 }),
                 retry_policy: None,
-                authorization_endpoint: "https://auth.example.com/oauth/authorize".to_string(),
-                end_session_endpoint: "https://auth.example.com/oauth/logout".to_string(),
+                authorization_endpoint: "https://auth.example.com/oauth/authorize".to_owned(),
+                end_session_endpoint: "https://auth.example.com/oauth/logout".to_owned(),
                 credentials: Some(EnvoyOAuth2Credentials {
-                    client_id: "test-client-id".to_string(),
-                    token_secret: Some(EnvoySdsSecretConfig {
-                        name: "client-secret-sds".to_string(),
-                        sds_config: None,
-                    }),
+                    client_id: "test-client-id".to_owned(),
+                    token_secret: Some(EnvoySdsSecretConfig { name: "client-secret-sds".to_owned(), sds_config: None }),
                     token_formation: Some(EnvoyTokenFormation::HmacSecret(EnvoySdsSecretConfig {
-                        name: "hmac-secret-sds".to_string(),
+                        name: "hmac-secret-sds".to_owned(),
                         sds_config: None,
                     })),
                     cookie_names: None,
-                    cookie_domain: "example.com".to_string(),
+                    cookie_domain: "example.com".to_owned(),
                 }),
-                redirect_uri: "https://app.example.com/callback".to_string(),
+                redirect_uri: "https://app.example.com/callback".to_owned(),
                 redirect_path_matcher: Some(EnvoyTypePathMatcher {
                     rule: Some(EnvoyPathMatcherRule::Path(EnvoyStringMatcher {
                         ignore_case: false,
-                        match_pattern: Some(EnvoyStringMatcherPattern::Exact("/callback".to_string())),
+                        match_pattern: Some(EnvoyStringMatcherPattern::Exact("/callback".to_owned())),
                     })),
                 }),
                 signout_path: Some(EnvoyTypePathMatcher {
                     rule: Some(EnvoyPathMatcherRule::Path(EnvoyStringMatcher {
                         ignore_case: false,
-                        match_pattern: Some(EnvoyStringMatcherPattern::Exact("/signout".to_string())),
+                        match_pattern: Some(EnvoyStringMatcherPattern::Exact("/signout".to_owned())),
                     })),
                 }),
                 forward_bearer_token: true,
                 preserve_authorization_header: false,
                 pass_through_matcher: vec![],
-                auth_scopes: vec!["openid".to_string(), "profile".to_string()],
-                resources: vec!["https://api.example.com".to_string()],
+                auth_scopes: vec!["openid".to_owned(), "profile".to_owned()],
+                resources: vec!["https://api.example.com".to_owned()],
                 auth_type: EnvoyAuthType::BasicAuth as i32,
                 use_refresh_token: None,
                 default_expires_in: None,
@@ -532,7 +529,7 @@ mod envoy_conversions {
                 disable_access_token_set_cookie: false,
                 disable_refresh_token_set_cookie: false,
                 cookie_configs: None,
-                stat_prefix: "custom_oauth".to_string(),
+                stat_prefix: "custom_oauth".to_owned(),
                 csrf_token_expires_in: None,
                 code_verifier_token_expires_in: None,
                 disable_token_encryption: false,
@@ -575,7 +572,7 @@ mod envoy_conversions {
             envoy_cfg.preserve_authorization_header = true;
 
             let result = OAuth2Config::try_from(envoy_cfg);
-            assert!(result.is_err());
+            result.unwrap_err();
         }
 
         #[test]

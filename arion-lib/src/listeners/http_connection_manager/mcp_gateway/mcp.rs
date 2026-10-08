@@ -23,9 +23,12 @@ use parking_lot::Mutex;
 use serde_json::{json, Value};
 use smallvec::{smallvec, SmallVec};
 use smol_str::{format_smolstr, SmolStr, ToSmolStr};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc as StdArc,
+use std::{
+    future::Future,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc as StdArc,
+    },
 };
 use tracing::{debug, info};
 use uuid::Uuid;
@@ -315,9 +318,11 @@ impl McpGateway {
         }
     }
 
-    #[allow(clippy::unused_async)]
-    pub async fn apply_response(&mut self, _response: &mut Response<ArionResponseBody>) -> FilterDecision {
-        FilterDecision::Continue
+    pub fn apply_response(
+        &mut self,
+        _response: &mut Response<ArionResponseBody>,
+    ) -> impl Future<Output = FilterDecision> {
+        std::future::ready(FilterDecision::Continue)
     }
 
     fn handle_mcp_delete_endpoint(
@@ -734,7 +739,7 @@ impl McpGateway {
                                     None,
                                 )
                             },
-                            CallToolError::ClientInitializeError(ref init_err) => match init_err {
+                            CallToolError::ClientInitializeError(ref init_err) => match &**init_err {
                                 ClientInitializeError::JsonRpcError(error_data) => error_data.clone(),
                                 ClientInitializeError::ConnectionClosed(ref msg) => {
                                     model::ErrorData::internal_error(format!("Upstream connection closed: {msg}"), None)
@@ -757,7 +762,7 @@ impl McpGateway {
                             CallToolError::SerdeError(ref e) => {
                                 model::ErrorData::parse_error(format!("Serialization error: {e}"), None)
                             },
-                            CallToolError::ServiceError(ref svc_err) => match svc_err {
+                            CallToolError::ServiceError(ref svc_err) => match &**svc_err {
                                 ServiceError::McpError(error_data) => error_data.clone(),
                                 ServiceError::TransportSend(ref e) => model::ErrorData::internal_error(
                                     format!("Upstream transport send error: {e}"),

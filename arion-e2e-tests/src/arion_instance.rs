@@ -52,24 +52,22 @@ impl ArionInstance {
         listener_addr: SocketAddr,
         options: SpawnOptions,
     ) -> Result<Self> {
-        let mut instance = Self::spawn_no_wait(config_path, listener_addr, options.clone()).await?;
+        let mut instance = Self::spawn_no_wait(config_path, listener_addr, &options)?;
         instance.wait_for_listener(options.ready_timeout).await?;
         info!(?listener_addr, "Arion instance is ready");
         Ok(instance)
     }
 
-    #[allow(clippy::unused_async)]
-    pub async fn spawn_no_wait(
+    pub fn spawn_no_wait(
         config_path: impl AsRef<Path>,
         listener_addr: SocketAddr,
-        options: SpawnOptions,
+        options: &SpawnOptions,
     ) -> Result<Self> {
-        Self::spawn_internal(config_path, Some(listener_addr), options).await
+        Self::spawn_internal(config_path, Some(listener_addr), options)
     }
 
-    #[allow(clippy::unused_async)]
-    pub async fn spawn_no_listener(config_path: impl AsRef<Path>, options: SpawnOptions) -> Result<Self> {
-        Self::spawn_internal(config_path, None, options).await
+    pub fn spawn_no_listener(config_path: impl AsRef<Path>, options: &SpawnOptions) -> Result<Self> {
+        Self::spawn_internal(config_path, None, options)
     }
 
     #[allow(
@@ -374,11 +372,10 @@ impl ArionInstance {
         })
     }
 
-    #[allow(clippy::unused_async)]
-    async fn spawn_internal(
+    fn spawn_internal(
         config_path: impl AsRef<Path>,
         listener_addr: Option<SocketAddr>,
-        options: SpawnOptions,
+        options: &SpawnOptions,
     ) -> Result<Self> {
         let config_path = config_path.as_ref().to_path_buf();
         let shutdown_requested = Arc::new(AtomicBool::new(false));

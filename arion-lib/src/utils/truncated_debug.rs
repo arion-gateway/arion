@@ -24,7 +24,7 @@ struct TruncatingWriter<'a, 'b> {
     truncated: bool,
 }
 
-impl<'a, 'b> Write for TruncatingWriter<'a, 'b> {
+impl Write for TruncatingWriter<'_, '_> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         if self.chars_remaining == 0 {
             self.truncated = true;

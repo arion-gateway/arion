@@ -597,6 +597,7 @@ impl HttpChannel {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
     async fn send_with_retry<F, Fut>(
         &self,
         req: Request<ArionRequestBody>,
@@ -822,7 +823,7 @@ fn prepare_http1_request(request: &mut Request<ArionRequestBody>) -> Result<()> 
         if uri.scheme().is_none() && uri.authority().is_none() {
             if let Some(host) = request.headers().get(http::header::HOST) {
                 if host.as_bytes().is_empty() {
-                    return Err(format!("Empty Host header").into());
+                    return Err("Empty Host header".into());
                 }
             }
             return Ok(());
@@ -838,7 +839,7 @@ fn prepare_http1_request(request: &mut Request<ArionRequestBody>) -> Result<()> 
         }
     } else if let Some(host) = request.headers().get(http::header::HOST) {
         if host.as_bytes().is_empty() {
-            return Err(format!("Empty Host header").into());
+            return Err("Empty Host header".into());
         }
     }
 

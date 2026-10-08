@@ -237,7 +237,7 @@ async fn test_user_metrics_header() {
         Some(user1_expected_rx as u64)
     );
     assert_eq!(parse_user_metric_value(metrics, "user_connections", &[("user", "user-1")]), Some(8));
-    assert!(parse_user_metric_value(metrics, "user_connections_active", &[("user", "user-1")]).unwrap_or(0) == 0);
+    assert_eq!(parse_user_metric_value(metrics, "user_connections_active", &[("user", "user-1")]).unwrap_or(0), 0);
 
     // Assertions for USER 2 (separate partition)
     assert_eq!(parse_user_metric_value(metrics, "user_invocations", &[("user", "user-2")]), Some(2));
@@ -256,7 +256,7 @@ async fn test_user_metrics_header() {
         Some(user2_expected_rx as u64)
     );
     assert_eq!(parse_user_metric_value(metrics, "user_connections", &[("user", "user-2")]), Some(2));
-    assert!(parse_user_metric_value(metrics, "user_connections_active", &[("user", "user-2")]).unwrap_or(0) == 0);
+    assert_eq!(parse_user_metric_value(metrics, "user_connections_active", &[("user", "user-2")]).unwrap_or(0), 0);
 
     arion.shutdown();
     cleanup_config_file(&config_path);
@@ -419,7 +419,7 @@ async fn test_user_metrics_sni() {
             > expected_rx as u64
     );
     assert_eq!(parse_user_metric_value(metrics, "user_connections", &[("user", sni_name)]), Some(8));
-    assert!(parse_user_metric_value(metrics, "user_connections_active", &[("user", sni_name)]).unwrap_or(0) == 0);
+    assert_eq!(parse_user_metric_value(metrics, "user_connections_active", &[("user", sni_name)]).unwrap_or(0), 0);
 
     arion.shutdown();
     cleanup_config_file(&config_path);
@@ -545,7 +545,7 @@ async fn test_user_metrics_websocket() {
     assert_eq!(inbound_streaming, 10);
     assert_eq!(outbound_streaming, 10);
     assert_eq!(parse_user_metric_value(metrics, "user_connections", &[("user", user_name)]), Some(1));
-    assert!(parse_user_metric_value(metrics, "user_connections_active", &[("user", user_name)]).unwrap_or(0) == 0);
+    assert_eq!(parse_user_metric_value(metrics, "user_connections_active", &[("user", user_name)]).unwrap_or(0), 0);
 
     arion.shutdown();
     cleanup_config_file(&config_path);

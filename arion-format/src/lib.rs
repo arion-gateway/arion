@@ -405,7 +405,7 @@ mod tests {
             server_name: None,
             socket_address: SocketAddrContext::default(),
         });
-        let actual = format!("{}", &formatter.into_message());
+        let actual = formatter.into_message().to_string();
         assert_eq!(actual, expected);
     }
 
@@ -425,7 +425,7 @@ mod tests {
             server_name: None,
             socket_address: SocketAddrContext::default(),
         });
-        let actual = format!("{}", &formatter.into_message());
+        let actual = formatter.into_message().to_string();
         assert_eq!(actual, expected);
     }
 
@@ -443,7 +443,7 @@ mod tests {
             server_name: None,
             socket_address: SocketAddrContext::default(),
         });
-        let actual = format!("{}", &formatter.into_message());
+        let actual = formatter.into_message().to_string();
         assert_eq!(actual, expected);
     }
 
@@ -461,7 +461,7 @@ mod tests {
             server_name: None,
             socket_address: SocketAddrContext::default(),
         });
-        let actual = format!("{}", &formatter.into_message());
+        let actual = formatter.into_message().to_string();
         assert_eq!(actual, expected);
     }
 
@@ -473,7 +473,7 @@ mod tests {
         println!("FORMATTER: {formatter:?}");
         let expected = "HTTP/1.1";
         formatter.with_context(&UpstreamRequestContext(&req));
-        let actual = format!("{}", &formatter.into_message());
+        let actual = formatter.into_message().to_string();
         assert_eq!(actual, expected);
     }
 
@@ -490,7 +490,7 @@ mod tests {
             server_name: None,
             socket_address: SocketAddrContext::default(),
         });
-        let actual = format!("{}", &formatter.into_message());
+        let actual = formatter.into_message().to_string();
         assert_eq!(actual, expected);
     }
 
@@ -507,7 +507,7 @@ mod tests {
             server_name: None,
             socket_address: SocketAddrContext::default(),
         });
-        let actual = format!("{}", &formatter.into_message());
+        let actual = formatter.into_message().to_string();
         assert_eq!(actual, expected);
     }
 
@@ -524,7 +524,7 @@ mod tests {
             server_name: None,
             socket_address: SocketAddrContext::default(),
         });
-        let actual = format!("{}", &formatter.into_message());
+        let actual = formatter.into_message().to_string();
         assert_eq!(actual, expected);
     }
 
@@ -532,7 +532,7 @@ mod tests {
     fn test_unevaluated_operator() {
         let source = LogFormatter::try_new("%REQ(USER-AGENT)%", false).unwrap();
         let formatter = source.clone();
-        let actual = format!("{}", &formatter.into_message());
+        let actual = formatter.into_message().to_string();
         println!("{actual}");
     }
 
@@ -540,7 +540,7 @@ mod tests {
     fn test_raw_string() {
         let source = LogFormatter::try_new("raw string", false).unwrap();
         let formatter = source.clone();
-        let actual = format!("{}", &formatter.into_message());
+        let actual = formatter.into_message().to_string();
         assert_eq!(actual, "raw string");
     }
 
@@ -573,7 +573,7 @@ mod tests {
             response_code_details: None,
             connection_termination_details: None,
         });
-        println!("{}", &formatter.into_message());
+        println!("{}", formatter.into_message());
     }
 
     #[test]
@@ -605,7 +605,7 @@ mod tests {
             response_code_details: None,
             connection_termination_details: None,
         });
-        println!("{}", &formatter.into_message());
+        println!("{}", formatter.into_message());
     }
 
     #[test]

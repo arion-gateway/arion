@@ -349,7 +349,7 @@ impl TryFrom<(TlsServerConfig, &SecretManager)> for TlsConfigurator<ServerConfig
                         let server_cert: ServerCert = certificate.try_into()?;
                         let secret = SecretHolder::new(sds_config_name.clone(), server_cert);
                         if certs_and_secret_ids.contains(&secret) {
-                            let msg = format!("DownstreamTlsContext : Duplicate secret name {}", &sds_config_name);
+                            let msg = format!("DownstreamTlsContext : Duplicate secret name {sds_config_name}");
                             warn!("{msg}");
                             return Err(msg.into());
                         }

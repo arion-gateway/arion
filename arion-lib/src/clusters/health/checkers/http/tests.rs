@@ -34,6 +34,7 @@ use crate::{
     clusters::health::checkers::tests::{deref, TestFixture},
     PolyBody, Result,
 };
+use std::future::Future;
 
 /// Channels to report every time an HTTP request is made, `requests`,
 /// and will respond with the items in `responses`.
@@ -55,18 +56,18 @@ impl MockHttpStack {
 }
 
 impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &MockHttpStack {
-    async fn to_response(
+    fn to_response(
         self,
         _req_ctx: &RequestCtx,
         request: Request<ArionRequestBody>,
         _ctx: UpstreamCallOpts<'a>,
-    ) -> Result<Response<ArionResponseBody>> {
+    ) -> impl Future<Output = Result<Response<ArionResponseBody>>> {
         let state = &mut self.0.lock();
         // Log this request
         state.requests.send(request).unwrap();
         // Return the predefined response, if any
-        let response = state.responses.try_recv()?;
-        Ok(response)
+        let response = state.responses.try_recv().map_err(Into::into);
+        std::future::ready(response)
     }
 }
 

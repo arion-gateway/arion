@@ -252,7 +252,7 @@ mod test {
             rng,
         );
         let mut counts = vec![0; items.len()];
-        (0..20).filter_map(|_| balancer.next_item(None).map(|item| item.value())).for_each(|val| {
+        (0..20).filter_map(|_| balancer.next_item(None).map(TestEndpoint::value)).for_each(|val| {
             if let Some(slot) = counts.get_mut(val) {
                 *slot += 1;
             }
@@ -279,7 +279,7 @@ mod test {
             WeightedLeastRequestBalancer::new_with_settings_and_rng(lb_items, DEFAULT_ACTIVE_REQUEST_BIAS, 10, rng);
 
         let _load: Vec<_> = items.iter().take(5).map(TestEndpoint::load_reference).collect();
-        assert!((0..10).filter_map(|_| balancer.next_item(None).map(|item| item.value())).all(|item| item >= 5));
+        assert!((0..10).filter_map(|_| balancer.next_item(None).map(TestEndpoint::value)).all(|item| item >= 5));
     }
 
     #[test]
@@ -327,7 +327,7 @@ mod test {
             let mut counts = vec![0; expected_counts.len()];
             for _ in 0..requests {
                 // Map the Arc to its content to not increase the load factor
-                if let Some(index) = balancer.next_item(None).map(|item| item.value()) {
+                if let Some(index) = balancer.next_item(None).map(TestEndpoint::value) {
                     counts[index] += 1;
                 }
             }

@@ -693,7 +693,7 @@ mod tests {
         assert!(MatchHostScoreLPM::Wildcard < MatchHostScoreLPM::Exact("test.com".len()));
         assert!(MatchHostScoreLPM::Wildcard < MatchHostScoreLPM::Prefix("foo.bar.test.".len()));
         assert!(MatchHostScoreLPM::Wildcard < MatchHostScoreLPM::Suffix("foo.bar.test.com".len()));
-        assert!(MatchHostScoreLPM::Wildcard == MatchHostScoreLPM::Wildcard);
+        assert_eq!(MatchHostScoreLPM::Wildcard, MatchHostScoreLPM::Wildcard);
     }
 
     #[test]

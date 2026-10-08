@@ -1230,7 +1230,7 @@ mod envoy_conversions {
             let envoy_pm = EnvoyTypePathMatcher {
                 rule: Some(EnvoyPathMatcherRule::Path(EnvoyStringMatcher {
                     ignore_case: false,
-                    match_pattern: Some(EnvoyStringMatcherPattern::Exact("/callback".to_string())),
+                    match_pattern: Some(EnvoyStringMatcherPattern::Exact("/callback".to_owned())),
                 })),
             };
 

@@ -233,7 +233,7 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
             HttpFilterType::CedarPolicy(conf) => HttpFilterValue::CedarPolicy(CedarHttpFilter::try_from_config(&conf)?),
             HttpFilterType::OAuth2(conf) => {
                 let builder = OAuth2FilterBuilder::new(*conf);
-                HttpFilterValue::OAuth2(builder.build())
+                HttpFilterValue::OAuth2(builder.build()?)
             },
         };
         Ok(Self { name, disabled, filter: Some(filter), filter_config: hcm_config.map(Box::new) })

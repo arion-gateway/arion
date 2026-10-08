@@ -259,6 +259,8 @@ fn launch_runtimes(
 
 type RuntimeHandle = JoinHandle<Result<()>>;
 
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
 fn spawn_proxy_runtime_from_thread(
     thread_name: &'static str,
     num_threads: usize,
@@ -335,9 +337,10 @@ fn spawn_services_runtime_from_thread(
 
 #[inline]
 fn build_thread_name(thread_name: &'static str, runtime_id: Option<RuntimeId>) -> String {
-    match runtime_id {
-        Some(id) => format!("{thread_name}_RT{id}"),
-        None => thread_name.to_string(),
+    if let Some(id) = runtime_id {
+        format!("{thread_name}_RT{id}")
+    } else {
+        thread_name.to_owned()
     }
 }
 

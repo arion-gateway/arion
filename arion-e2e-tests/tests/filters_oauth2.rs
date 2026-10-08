@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! OAuth2 authentication filter e2e integration tests.
+//! `Auth2` authentication filter e2e integration tests.
 //!
 //! Covers:
 //! - Unauthenticated 302 redirection to authorization endpoint with state & nonce cookies.

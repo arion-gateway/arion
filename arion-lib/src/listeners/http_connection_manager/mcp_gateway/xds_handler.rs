@@ -253,7 +253,7 @@ impl XdsExtensionHandler for McpXdsHandler {
                         tool.name = name.into();
                     }
                     for registry in &registries {
-                        registry.add_tool(tool.clone()).await.map_err(|e| {
+                        registry.add_tool(tool.clone()).map_err(|e| {
                             XdsExtensionError::HandlerError(format!("Failed to add tool '{name}': {e}"))
                         })?;
                     }

@@ -773,6 +773,7 @@ impl From<&ConnectError> for UpstreamError {
 impl From<&(dyn std::error::Error + 'static)> for UpstreamError {
     #[cold]
     #[inline(never)]
+    #[allow(clippy::too_many_lines)]
     fn from(err: &(dyn std::error::Error + 'static)) -> Self {
         enum ProtocolErr<'a> {
             H2(h2::Reason),
