@@ -8,8 +8,10 @@ on:
 
 env:
   # Replaces the rustflags in .cargo/config.toml, minus target-cpu=native: the cached
-  # target/ is restored on runners with different CPUs, causing SIGILL
-  RUSTFLAGS: -C force-frame-pointers=no
+  # target/ is restored on runners with different CPUs, causing SIGILL. Also switches
+  # to the lld linker (installed below), which is much faster at linking the large
+  # number of e2e test binaries than the default bfd linker.
+  RUSTFLAGS: -C force-frame-pointers=no -C link-arg=-fuse-ld=lld
 
 jobs:
   # Fast checks that run in parallel (no build artifacts needed)
@@ -22,8 +24,8 @@ jobs:
       - name: Initialize git submodules
         run: git submodule update --init --recursive
 
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protoc and lld
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler lld
 
       - name: Setup Rust
         uses: actions-rs/toolchain@v1
@@ -55,8 +57,8 @@ jobs:
       - name: Initialize git submodules
         run: git submodule update --init --recursive
 
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protoc and lld
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler lld
 
       - name: Setup Rust
         uses: actions-rs/toolchain@v1
@@ -88,8 +90,8 @@ jobs:
       - name: Initialize git submodules
         run: git submodule update --init --recursive
 
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protoc and lld
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler lld
 
       - name: Setup Rust
         uses: actions-rs/toolchain@v1
