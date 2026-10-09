@@ -172,16 +172,14 @@ impl OAuth2Filter {
         };
         let path = req.uri().path();
 
-        // 2. Signout path: clear authentication cookies and redirect to end_session_endpoint or /.
         if let Some(pq) = req.uri().path_and_query() {
+            // 2. Signout path: clear authentication cookies and redirect to end_session_endpoint or /.
             if config.signout_path.matches(pq).matched() {
                 debug!(target: "oauth2", "request matched signout_path: {path}");
                 return self.handle_signout(req);
             }
-        }
 
-        // 3. Callback / redirect path matcher: handle OAuth2 provider authorization code response.
-        if let Some(pq) = req.uri().path_and_query() {
+            // 3. Callback / redirect path matcher: handle OAuth2 provider authorization code response.
             if config.redirect_path_matcher.matches(pq).matched() {
                 debug!(target: "oauth2", "request matched redirect_path_matcher: {path}");
                 let is_https = request_is_https(req);
@@ -260,7 +258,7 @@ impl OAuth2Filter {
         {
             return None;
         }
-        HeaderValue::from_str(&format!("Bearer {token}")).ok()
+        HeaderValue::try_from(format!("Bearer {token}")).ok()
     }
 
     fn format_redirect_uri(&self, req: &Request<ArionRequestBody>) -> Option<SmolStr> {
