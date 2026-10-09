@@ -7,12 +7,11 @@ on:
     branches: [ main, master ]
 
 env:
-  CARGO_CACHE_PATH: ~/.cargo/registry
-  CARGO_GIT_PATH: ~/.cargo/git
-  TARGET_DIR: target
   # Replaces the rustflags in .cargo/config.toml, minus target-cpu=native: the cached
-  # target/ is restored on runners with different CPUs, causing SIGILL
-  RUSTFLAGS: -C force-frame-pointers=no
+  # target/ is restored on runners with different CPUs, causing SIGILL. Also switches
+  # to the lld linker (installed below), which is much faster at linking the large
+  # number of e2e test binaries than the default bfd linker.
+  RUSTFLAGS: -C force-frame-pointers=no -C link-arg=-fuse-ld=lld
 
 jobs:
   # Fast checks that run in parallel (no build artifacts needed)
@@ -25,16 +24,8 @@ jobs:
       - name: Initialize git submodules
         run: git submodule update --init --recursive
 
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ env.CARGO_CACHE_PATH }}
-            ${{ env.CARGO_GIT_PATH }}
-          key: ${{ runner.os }}-cargo-checks-${{ hashFiles('**/Cargo.lock', 'envoy-data-plane-api/build.rs') }}
-
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protoc and lld
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler lld
 
       - name: Setup Rust
         uses: actions-rs/toolchain@v1
@@ -42,6 +33,13 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
           profile: minimal
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Make sure a RUSTFLAGS change busts the cache, regardless of the defaults
+          env-vars: RUSTFLAGS
+          cache-on-failure: true
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -59,17 +57,8 @@ jobs:
       - name: Initialize git submodules
         run: git submodule update --init --recursive
 
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ env.CARGO_CACHE_PATH }}
-            ${{ env.CARGO_GIT_PATH }}
-            ${{ env.TARGET_DIR }}
-          key: ${{ runner.os }}-cargo-build-generic-cpu-${{ hashFiles('**/Cargo.lock', 'envoy-data-plane-api/build.rs') }}
-
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protoc and lld
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler lld
 
       - name: Setup Rust
         uses: actions-rs/toolchain@v1
@@ -78,13 +67,20 @@ jobs:
           target: wasm32-unknown-unknown # for the Wasm test filters
           profile: minimal
 
-      - name: Build (release)
-        run: cargo build --all-features --workspace --release --locked
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Make sure a RUSTFLAGS change busts the cache, regardless of the defaults
+          env-vars: RUSTFLAGS
+          cache-on-failure: true
+
+      - name: Build
+        run: cargo build --all-features --locked
 
       - name: Run tests
-        run: cargo test --all-features --workspace --release --locked
+        run: cargo test --all-features --locked
 
-  # E2E tests spawn the arion binary, so build it (release, all features) first
+  # E2E tests spawn the arion binary, so build it (all features) first
   e2e-test:
     name: build + e2e-test
     runs-on: ubuntu-latest
@@ -94,18 +90,8 @@ jobs:
       - name: Initialize git submodules
         run: git submodule update --init --recursive
 
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ env.CARGO_CACHE_PATH }}
-            ${{ env.CARGO_GIT_PATH }}
-            ${{ env.TARGET_DIR }}
-            arion-wasm-sdk/target
-          key: ${{ runner.os }}-cargo-e2e-generic-cpu-${{ hashFiles('**/Cargo.lock', 'envoy-data-plane-api/build.rs') }}
-
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protoc and lld
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler lld
 
       - name: Setup Rust
         uses: actions-rs/toolchain@v1
@@ -114,8 +100,20 @@ jobs:
           target: wasm32-unknown-unknown # for the Wasm test filters
           profile: minimal
 
-      - name: Build arion (release, all features)
-        run: cargo build -p arion-proxy --all-features --release --locked
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # arion-wasm-sdk is its own workspace (kept out of the main one), so it needs
+          # its own entry here too
+          workspaces: |
+            . -> target
+            arion-wasm-sdk -> target
+          # Make sure a RUSTFLAGS change busts the cache, regardless of the defaults
+          env-vars: RUSTFLAGS
+          cache-on-failure: true
+
+      - name: Build arion (all features)
+        run: cargo build -p arion-proxy --all-features --locked
 
       # arion-e2e-tests/build.rs builds these too, but only warns if that fails. It also
       # strips RUSTFLAGS, so unset it here to match and avoid compiling the filters twice.
@@ -125,7 +123,4 @@ jobs:
         run: env -u RUSTFLAGS cargo build --target wasm32-unknown-unknown --workspace
 
       - name: Run e2e tests
-        env:
-          # The harness prefers target/debug/arion when present, so pin the release build
-          ARION_BIN: ${{ github.workspace }}/target/release/arion
-        run: cargo test -p arion-e2e-tests --release --no-fail-fast -- --test-threads 1 --ignored --no-capture
+        run: cargo test -p arion-e2e-tests --no-fail-fast -- --test-threads 1 --ignored --no-capture

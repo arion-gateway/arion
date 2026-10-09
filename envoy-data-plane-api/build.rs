@@ -23,6 +23,8 @@ use std::path::{Path, PathBuf};
 
 /// std::env::set_var("PROTOC", The Path of Protoc);
 fn main() -> std::io::Result<()> {
+    println!("cargo:rerun-if-changed=build.rs");
+
     let descriptor_path = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("proto_descriptor.bin");
 
     let mut protos: Vec<PathBuf> = glob("data-plane-api/envoy/**/v3/*.proto").unwrap().filter_map(Result::ok).collect();
@@ -32,6 +34,10 @@ fn main() -> std::io::Result<()> {
 
     let custom_protos: Vec<PathBuf> = glob("arion/**/*.proto").unwrap().filter_map(Result::ok).collect();
     protos.extend(custom_protos);
+
+    for proto in &protos {
+        println!("cargo:rerun-if-changed={}", proto.display());
+    }
 
     let include_paths = [
         "./data-plane-api/",

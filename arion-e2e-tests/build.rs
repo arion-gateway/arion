@@ -16,6 +16,9 @@
 // limitations under the License.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=proto/test_service.proto");
+
     // 1. Build test protobufs
     tonic_prost_build::configure()
         .build_server(true)

@@ -17,12 +17,10 @@
 
 #![allow(clippy::expect_used, reason = "test infrastructure — panicking on setup failure is intentional")]
 
-use std::time::Duration;
-
 use arion_e2e_tests::config_builder::presets;
 use arion_e2e_tests::{
     cleanup_config_file, ArionInstance, PartialSendClient, PreConfiguredResponse, RawHttpRequestBuilder,
-    RawHttpResponse, SpawnOptions, TcpTestClient, TestBackend,
+    RawHttpResponse, SpawnOptions, TcpTestClient, TestBackend, READ_TIMEOUT,
 };
 
 async fn setup() -> (ArionInstance, TestBackend, TcpTestClient, std::path::PathBuf) {
@@ -93,14 +91,14 @@ async fn test_tc1102_expect_100_continue() {
     client.send_bytes(&headers).await.expect("Failed to send headers");
 
     // Wait for 100 Continue or other response
-    let response = client.read_response(Duration::from_secs(5)).await.expect("Failed to read");
+    let response = client.read_response(*READ_TIMEOUT).await.expect("Failed to read");
 
     let resp = RawHttpResponse::parse(&response).expect("Expected a 100 Continue response");
     // Arion honors Expect: 100-continue and sends an interim 100 before the body is sent.
     resp.assert_status(100);
 
     client.send_bytes(b"hello").await.expect("Failed to send body");
-    let final_response = client.read_response(Duration::from_secs(5)).await.expect("Failed to read");
+    let final_response = client.read_response(*READ_TIMEOUT).await.expect("Failed to read");
     let final_resp = RawHttpResponse::parse(&final_response).expect("Expected final response");
     final_resp.assert_status(200);
 
@@ -142,7 +140,7 @@ async fn test_tc1104_data_after_connection_close() {
     client.send_bytes(&first_req).await.expect("Failed to send first request");
 
     // Read first response
-    let response = client.read_response(Duration::from_secs(3)).await.expect("Failed to read");
+    let response = client.read_response(*READ_TIMEOUT).await.expect("Failed to read");
     let resp = RawHttpResponse::parse(&response).expect("Expected a response");
     resp.assert_status(200);
 

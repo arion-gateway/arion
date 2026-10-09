@@ -58,7 +58,7 @@ pub use pp_test_client::ProxyProtocolTcpClient;
 pub use raw_http::{assert_rejected, PartialSendClient, RawHttpRequestBuilder, RawHttpResponse};
 pub use rls_test_server::{rls_responses, RlsTestServer, RlsTestServerBuilder};
 pub use tcp_test_backend::{CapturedTcpConnection, TcpTestBackend};
-pub use tcp_test_client::TcpTestClient;
+pub use tcp_test_client::{TcpTestClient, READ_TIMEOUT};
 pub use test_backend::{CapturedRequest, PreConfiguredResponse, TestBackend};
 pub use test_certs::TestCerts;
 pub use test_client::{RequestBuilder, TestClient, TestResponse};

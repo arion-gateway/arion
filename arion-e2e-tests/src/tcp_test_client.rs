@@ -17,6 +17,7 @@
 
 use pingora::prelude::fast_timeout::fast_timeout;
 use std::net::SocketAddr;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -24,8 +25,36 @@ use tokio::net::TcpStream;
 
 use crate::Result;
 
-const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(5);
+/// Env var to override [`READ_TIMEOUT`] without touching source, e.g. if CI runners turn
+/// out to be slower than the default below. Takes a plain integer number of milliseconds.
+const READ_TIMEOUT_ENV_VAR: &str = "E2E_READ_TIMEOUT_MS";
+const READ_TIMEOUT_DEFAULT_MS: u64 = 500;
 const READ_BUFFER_SIZE: usize = 4096;
+
+/// Ceiling for raw-socket reads that loop until the peer closes the connection (EOF) or this
+/// timeout fires, whichever comes first (see `send_and_receive` below). Tests that expect Arion
+/// to keep the connection alive after responding never see that EOF, so they always pay this
+/// ceiling in full. It is not tied to any real Arion-side timing, so the default is small: real
+/// local round trips in this suite complete in well under 50ms, even including spawning Arion
+/// itself. Override with the `E2E_READ_TIMEOUT_MS` env var (milliseconds) if a given
+/// environment (e.g. a slower CI runner) needs more headroom. Read once and cached on first use:
+/// changing the env var mid-run has no effect, only set it before the test binary starts.
+pub static READ_TIMEOUT: LazyLock<Duration> = LazyLock::new(|| {
+    let ms = std::env::var(READ_TIMEOUT_ENV_VAR)
+        .ok()
+        .and_then(|v| match v.parse() {
+            Ok(ms) => Some(ms),
+            Err(e) => {
+                tracing::warn!(
+                    value = %v, error = %e,
+                    "{READ_TIMEOUT_ENV_VAR} is set but not a valid number of milliseconds, using the default"
+                );
+                None
+            },
+        })
+        .unwrap_or(READ_TIMEOUT_DEFAULT_MS);
+    Duration::from_millis(ms)
+});
 
 #[derive(Debug, Clone)]
 pub struct TcpTestClient {
@@ -80,7 +109,7 @@ impl TcpTestClient {
     }
 
     pub async fn receive_on_connect(&self) -> Result<Vec<u8>> {
-        self.send_and_receive(None, DEFAULT_READ_TIMEOUT).await
+        self.send_and_receive(None, *READ_TIMEOUT).await
     }
 
     pub async fn receive_on_connect_with_timeout(&self, timeout: Duration) -> Result<Vec<u8>> {
@@ -88,7 +117,7 @@ impl TcpTestClient {
     }
 
     pub async fn send(&self, data: &[u8]) -> Result<Vec<u8>> {
-        self.send_and_receive(Some(data), DEFAULT_READ_TIMEOUT).await
+        self.send_and_receive(Some(data), *READ_TIMEOUT).await
     }
 
     pub async fn send_with_timeout(&self, data: &[u8], timeout: Duration) -> Result<Vec<u8>> {
