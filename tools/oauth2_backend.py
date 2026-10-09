@@ -15,6 +15,7 @@ Usage:
 """
 
 import argparse
+import base64
 import http.server
 import json
 import secrets
@@ -42,10 +43,11 @@ HTML_LOGIN_PAGE = """<!DOCTYPE html>
     <title>Mock OAuth2 Authorization Server</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-        .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 32px; width: 440px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5); }
+        .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 32px; width: 460px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5); }
         h2 { margin-top: 0; color: #38bdf8; font-size: 22px; }
         .info { background: #0f172a; border-radius: 8px; padding: 14px; margin: 18px 0; font-size: 13px; line-height: 1.6; }
         .badge { display: inline-block; background: #0284c7; color: white; border-radius: 4px; padding: 2px 8px; font-weight: bold; }
+        .badge-pkce { background: #10b981; }
         .btn-group { display: flex; gap: 12px; margin-top: 24px; }
         button { flex: 1; padding: 12px; border-radius: 8px; font-weight: bold; cursor: pointer; border: none; font-size: 14px; }
         .btn-primary { background: #38bdf8; color: #0f172a; }
@@ -63,7 +65,8 @@ HTML_LOGIN_PAGE = """<!DOCTYPE html>
             <div><strong>Client ID:</strong> <code>{client_id}</code></div>
             <div><strong>Scopes:</strong> <span class="badge">{scope}</span></div>
             <div><strong>Redirect URI:</strong> <span style="word-break: break-all; color: #cbd5e1;">{redirect_uri}</span></div>
-            <div><strong>State:</strong> <code style="color: #a78bfa;">{state}</code></div>
+            <div><strong>State:</strong> <code style="color: #a78bfa; word-break: break-all;">{state}</code></div>
+            {pkce_row}
         </div>
 
         <form method="POST" action="/oauth/authorize/confirm">
@@ -95,11 +98,16 @@ class OAuthHandler(http.server.BaseHTTPRequestHandler):
             redirect_uri = params.get("redirect_uri", ["http://localhost:8080/callback"])[0]
             state = params.get("state", ["/"])[0]
             scope = params.get("scope", ["openid profile"])[0]
+            code_challenge = params.get("code_challenge", [""])[0]
+            code_challenge_method = params.get("code_challenge_method", [""])[0]
 
             log("AUTHORIZE", CYAN, f"Received authorization request from client '{client_id}'")
-            log("AUTHORIZE", CYAN, f"  ↳ redirect_uri : {redirect_uri}")
-            log("AUTHORIZE", CYAN, f"  ↳ state        : {state}")
-            log("AUTHORIZE", CYAN, f"  ↳ scopes       : {scope}")
+            log("AUTHORIZE", CYAN, f"  ↳ redirect_uri         : {redirect_uri}")
+            log("AUTHORIZE", CYAN, f"  ↳ state                : {state}")
+            log("AUTHORIZE", CYAN, f"  ↳ scopes               : {scope}")
+            if code_challenge:
+                log("AUTHORIZE", CYAN, f"  ↳ PKCE challenge       : {code_challenge}")
+                log("AUTHORIZE", CYAN, f"  ↳ PKCE method          : {code_challenge_method or 'plain'}")
 
             code = f"auth_code_{secrets.token_hex(16)}"
             ACTIVE_CODES.add(code)
@@ -113,12 +121,21 @@ class OAuthHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 return
 
+            if code_challenge:
+                pkce_row = (
+                    f"<div><strong>PKCE:</strong> <span class=\"badge badge-pkce\">{code_challenge_method or 'plain'}</span> "
+                    f"<code style=\"font-size: 11px; color: #94a3b8; word-break: break-all;\">{code_challenge}</code></div>"
+                )
+            else:
+                pkce_row = ""
+
             # Display mock HTML approval screen
             body = (HTML_LOGIN_PAGE
                 .replace("{client_id}", client_id)
                 .replace("{redirect_uri}", redirect_uri)
                 .replace("{state}", state)
                 .replace("{scope}", scope)
+                .replace("{pkce_row}", pkce_row)
             ).encode("utf-8")
 
             self.send_response(200)
@@ -164,14 +181,39 @@ class OAuthHandler(http.server.BaseHTTPRequestHandler):
         if parsed.path == "/oauth/token":
             grant_type = params.get("grant_type", [""])[0]
             code = params.get("code", [""])[0]
-            client_id = params.get("client_id", [""])[0]
-            client_secret = params.get("client_secret", [""])[0]
+            redirect_uri = params.get("redirect_uri", [""])[0]
+            code_verifier = params.get("code_verifier", [""])[0]
+
+            client_id = ""
+            client_secret = ""
+            auth_source = ""
+
+            auth_header = self.headers.get("Authorization", "")
+            if auth_header.startswith("Basic "):
+                try:
+                    raw_b64 = auth_header.split(" ", 1)[1].strip()
+                    decoded = base64.b64decode(raw_b64).decode("utf-8")
+                    if ":" in decoded:
+                        client_id, client_secret = decoded.split(":", 1)
+                        auth_source = " [via Basic Auth header]"
+                except Exception:
+                    pass
+
+            if not client_id:
+                client_id = params.get("client_id", [""])[0]
+                client_secret = params.get("client_secret", [""])[0]
+                if client_id:
+                    auth_source = " [via URL-encoded body]"
 
             log("TOKEN", MAGENTA, f"Received token exchange request:")
             log("TOKEN", MAGENTA, f"  ↳ grant_type    : {grant_type}")
-            log("TOKEN", MAGENTA, f"  ↳ client_id     : {client_id}")
-            log("TOKEN", MAGENTA, f"  ↳ client_secret : {client_secret}")
+            log("TOKEN", MAGENTA, f"  ↳ client_id     : {client_id or '[NONE]'}{auth_source}")
+            log("TOKEN", MAGENTA, f"  ↳ client_secret : {'***' if client_secret else '[NONE]'}")
             log("TOKEN", MAGENTA, f"  ↳ code          : {code}")
+            if redirect_uri:
+                log("TOKEN", MAGENTA, f"  ↳ redirect_uri  : {redirect_uri}")
+            if code_verifier:
+                log("TOKEN", MAGENTA, f"  ↳ code_verifier : {code_verifier}")
 
             if grant_type != "authorization_code":
                 self.send_response(400)
