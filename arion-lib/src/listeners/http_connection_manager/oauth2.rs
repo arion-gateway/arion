@@ -119,13 +119,8 @@ impl OAuth2FilterBuilder {
             .map_err(|err| format!("failed to initialize OAuth2 AES-256-GCM key: {err}"))?;
         let token_cipher = aead::LessSafeKey::new(unbound_key);
 
-        let inner = Arc::new(OAuth2FilterInner {
-            config: self.config,
-            hmac_key,
-            token_cipher,
-            redirect_uri_formatter,
-            client,
-        });
+        let inner =
+            Arc::new(OAuth2FilterInner { config: self.config, hmac_key, token_cipher, redirect_uri_formatter, client });
         Ok(OAuth2Filter { inner })
     }
 }
@@ -292,11 +287,7 @@ impl OAuth2Filter {
         Some(request.set_pkce_challenge(pkce_challenge).url().0)
     }
 
-    fn decrypt_token_cookie<'a, 'b>(
-        &self,
-        value: Option<&'a str>,
-        buf: &'b mut [u8],
-    ) -> Option<Cow<'b, str>>
+    fn decrypt_token_cookie<'a, 'b>(&self, value: Option<&'a str>, buf: &'b mut [u8]) -> Option<Cow<'b, str>>
     where
         'a: 'b,
     {
@@ -925,9 +916,8 @@ fn decrypt_cookie_value<'b>(key: &aead::LessSafeKey, value: &str, buf: &'b mut [
         }
         let (nonce_bytes, ciphertext) = buf[..decoded_len].split_at_mut(AEAD_NONCE_LEN);
         let nonce: [u8; AEAD_NONCE_LEN] = nonce_bytes.try_into().ok()?;
-        let plaintext = key
-            .open_in_place(aead::Nonce::assume_unique_for_key(nonce), aead::Aad::empty(), ciphertext)
-            .ok()?;
+        let plaintext =
+            key.open_in_place(aead::Nonce::assume_unique_for_key(nonce), aead::Aad::empty(), ciphertext).ok()?;
         std::str::from_utf8(plaintext).ok().map(Cow::Borrowed)
     } else {
         let mut payload = BASE64_URL_SAFE_NO_PAD.decode(encoded).ok()?;
@@ -936,7 +926,11 @@ fn decrypt_cookie_value<'b>(key: &aead::LessSafeKey, value: &str, buf: &'b mut [
         }
         let nonce: [u8; AEAD_NONCE_LEN] = payload[..AEAD_NONCE_LEN].try_into().ok()?;
         let plaintext = key
-            .open_in_place(aead::Nonce::assume_unique_for_key(nonce), aead::Aad::empty(), &mut payload[AEAD_NONCE_LEN..])
+            .open_in_place(
+                aead::Nonce::assume_unique_for_key(nonce),
+                aead::Aad::empty(),
+                &mut payload[AEAD_NONCE_LEN..],
+            )
             .ok()?;
         std::str::from_utf8(plaintext).ok().map(|s| Cow::Owned(s.to_owned()))
     }
