@@ -38,7 +38,7 @@ use http::{
 use hyper::{Request, Response};
 use smol_str::format_smolstr;
 
-use std::{future::Future, str::FromStr};
+use std::str::FromStr;
 
 fn strip_default_port(authority: Authority, scheme: &Scheme) -> Authority {
     match (authority.port_u16(), scheme.as_str()) {

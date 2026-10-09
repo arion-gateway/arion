@@ -26,7 +26,6 @@ use crate::{body::timeout_body::TimeoutBody, ArionRequestBody, ArionResponseBody
 use arion_configuration::config::network_filters::http_connection_manager::route::DirectResponseAction;
 use http_body_util::Full;
 use hyper::{Request, Response};
-use std::future::Future;
 
 #[cfg(feature = "access-log")]
 use arion_format::context::UpstreamContext;

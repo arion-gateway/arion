@@ -35,7 +35,7 @@ pub enum RetryCondition<'a, B> {
 impl<'a, B: Body> RetryCondition<'a, B> {
     pub fn from_upstream_result(result: &'a crate::Result<Response<B>>) -> Option<Self> {
         match result {
-            Ok(ref resp) => {
+            Ok(resp) => {
                 // exclude a priori the evaluation of the retry policy for 1xx, and 2xx.
                 if resp.status().is_informational() || resp.status().is_success() {
                     return None;

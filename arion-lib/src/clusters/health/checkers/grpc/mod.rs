@@ -31,7 +31,6 @@ use arion_xds::grpc_deps::{
     Response as TonicResponse, Status as TonicStatus,
 };
 use futures::{future::BoxFuture, FutureExt};
-use std::future::Future;
 use tokio::{
     sync::{mpsc, Notify},
     task::JoinHandle,

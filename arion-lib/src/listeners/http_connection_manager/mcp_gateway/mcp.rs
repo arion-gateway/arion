@@ -24,7 +24,6 @@ use serde_json::{json, Value};
 use smallvec::{smallvec, SmallVec};
 use smol_str::{format_smolstr, SmolStr, ToSmolStr};
 use std::{
-    future::Future,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc as StdArc,
@@ -742,10 +741,10 @@ impl McpGateway {
                             },
                             CallToolError::ClientInitializeError(ref init_err) => match &**init_err {
                                 ClientInitializeError::JsonRpcError(error_data) => error_data.clone(),
-                                ClientInitializeError::ConnectionClosed(ref msg) => {
+                                ClientInitializeError::ConnectionClosed(msg) => {
                                     model::ErrorData::internal_error(format!("Upstream connection closed: {msg}"), None)
                                 },
-                                ClientInitializeError::TransportError { ref error, ref context } => {
+                                ClientInitializeError::TransportError { error, context } => {
                                     model::ErrorData::internal_error(
                                         format!("Upstream transport error ({context}): {error}"),
                                         None,
@@ -765,7 +764,7 @@ impl McpGateway {
                             },
                             CallToolError::ServiceError(ref svc_err) => match &**svc_err {
                                 ServiceError::McpError(error_data) => error_data.clone(),
-                                ServiceError::TransportSend(ref e) => model::ErrorData::internal_error(
+                                ServiceError::TransportSend(e) => model::ErrorData::internal_error(
                                     format!("Upstream transport send error: {e}"),
                                     None,
                                 ),
@@ -775,7 +774,7 @@ impl McpGateway {
                                 ServiceError::UnexpectedResponse => {
                                     model::ErrorData::internal_error("Unexpected response from upstream", None)
                                 },
-                                ServiceError::Cancelled { ref reason } => model::ErrorData::internal_error(
+                                ServiceError::Cancelled { reason } => model::ErrorData::internal_error(
                                     format!("Upstream request cancelled: {}", reason.as_deref().unwrap_or("<unknown>")),
                                     None,
                                 ),

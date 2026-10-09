@@ -19,7 +19,6 @@
 //
 
 use std::{
-    future::Future,
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     pin::Pin,

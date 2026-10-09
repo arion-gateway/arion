@@ -139,7 +139,7 @@ use route::RouteContext;
 use smol_str::SmolStr;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::{fmt, future::Future, result::Result as StdResult, sync::Arc as StdArc};
+use std::{fmt, result::Result as StdResult, sync::Arc as StdArc};
 use triomphe::{Arc, UniqueArc};
 
 use tracing::{debug, error};

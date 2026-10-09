@@ -61,7 +61,7 @@ use rustls::ClientConfig;
 #[cfg(feature = "metrics")]
 use smallvec::SmallVec;
 use smol_str::ToSmolStr;
-use std::{future::Future, io, mem, time::Duration};
+use std::{io, mem, time::Duration};
 use tracing::debug;
 use webpki::types::ServerName;
 

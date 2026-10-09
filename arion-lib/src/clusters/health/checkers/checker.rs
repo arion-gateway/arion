@@ -18,7 +18,7 @@
 //
 //
 
-use std::{future::Future, time::Duration};
+use std::time::Duration;
 use triomphe::Arc;
 
 use arion_configuration::config::cluster::{health_check::ClusterHealthCheck, HealthStatus};

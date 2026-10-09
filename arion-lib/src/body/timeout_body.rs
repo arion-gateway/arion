@@ -37,7 +37,7 @@ use pingora_timeout::{
 };
 use std::any::type_name;
 use std::{
-    future::{pending, Future, Pending},
+    future::{pending, Pending},
     pin::Pin,
     task::{ready, Context, Poll},
     time::Duration,

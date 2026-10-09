@@ -77,7 +77,7 @@ pub use typestate::*;
 // ============================================================================
 // Allocator
 // ============================================================================
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn arion_malloc(size: u32) -> *mut u8 {
     let mut buf = Vec::with_capacity(size as usize);
     let ptr = buf.as_mut_ptr();

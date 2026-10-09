@@ -18,7 +18,6 @@
 //
 //
 
-use std::future::IntoFuture;
 
 use arion_data_plane_api::envoy_data_plane_api::envoy::{
     config::core::v3::{data_source::Specifier, DataSource},

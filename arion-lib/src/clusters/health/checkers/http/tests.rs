@@ -34,7 +34,6 @@ use crate::{
     clusters::health::checkers::tests::{deref, TestFixture},
     PolyBody, Result,
 };
-use std::future::Future;
 
 /// Channels to report every time an HTTP request is made, `requests`,
 /// and will respond with the items in `responses`.

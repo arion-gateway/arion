@@ -121,7 +121,7 @@ typed_extension_protocol_options:
 
     let upstream_opts = proto_opts.upstream_protocol_options.unwrap();
     if let UpstreamProtocolOptions::ExplicitHttpConfig(cfg) = upstream_opts {
-        if let ProtocolConfig::Http2ProtocolOptions(ref h2_opts) = cfg.protocol_config.as_ref().unwrap() {
+        if let ProtocolConfig::Http2ProtocolOptions(h2_opts) = cfg.protocol_config.as_ref().unwrap() {
             let ka = h2_opts.connection_keepalive.as_ref().unwrap();
             assert_eq!(ka.interval.as_ref().unwrap(), &Duration { seconds: 30, nanos: 0 });
             assert_eq!(ka.timeout.as_ref().unwrap(), &Duration { seconds: 5, nanos: 0 });

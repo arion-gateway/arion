@@ -1,6 +1,6 @@
 [package]
 description            = "Envoy xDS protobuf and gRPC definitions"
-edition.workspace      = true
+edition                = "2021"
 license-file.workspace = true
 name                   = "envoy-data-plane-api"
 rust-version.workspace = true

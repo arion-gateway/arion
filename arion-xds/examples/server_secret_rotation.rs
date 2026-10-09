@@ -18,7 +18,7 @@
 //
 //
 
-use std::{future::IntoFuture, time::Duration};
+use std::time::Duration;
 
 use arion_data_plane_api::envoy_data_plane_api::envoy::{
     config::core::v3::{data_source::Specifier, DataSource},

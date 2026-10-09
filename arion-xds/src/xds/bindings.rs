@@ -20,7 +20,7 @@
 
 #![allow(dead_code)]
 
-use std::{future::Future, pin::Pin};
+use std::pin::Pin;
 
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::service::{
