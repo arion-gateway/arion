@@ -26,6 +26,7 @@ pub mod http_rbac;
 pub mod jwt;
 pub mod local_rate_limit;
 pub mod mcp_gateway;
+pub mod oauth2;
 pub mod router;
 pub mod user_rate_limit;
 
@@ -83,13 +84,14 @@ pub enum HttpFilterType {
     McpGateway(McpGateway),
     UserRateLimit(UserRateLimiter),
     CedarPolicy(CedarPolicy),
+    OAuth2(Box<OAuth2Config>),
 }
 
 #[cfg(feature = "envoy-conversions")]
 pub(crate) use envoy_conversions::*;
 
 use crate::config::network_filters::http_connection_manager::http_filters::{
-    cors::CorsConfig, jwt::JwtAuthentication, user_rate_limit::UserRateLimiter, wasm::WasmConfig,
+    cors::CorsConfig, jwt::JwtAuthentication, oauth2::OAuth2Config, user_rate_limit::UserRateLimiter, wasm::WasmConfig,
 };
 
 use super::is_default;
@@ -117,6 +119,7 @@ mod envoy_conversions {
                     },
                     jwt_authn::v3::JwtAuthentication as EnvoyJwtAuthentication,
                     local_ratelimit::v3::LocalRateLimit as EnvoyLocalRateLimit,
+                    oauth2::v3::OAuth2 as EnvoyOAuth2,
                     rbac::v3::{Rbac as EnvoyRbac, RbacPerRoute as EnvoyRbacPerRoute},
                     router::v3::Router as EnvoyRouter,
                 },
@@ -182,6 +185,7 @@ mod envoy_conversions {
                     user_rate_limit.try_into().map(Self::UserRateLimit)
                 },
                 SupportedEnvoyFilter::CedarPolicy(cedar) => cedar.try_into().map(Self::CedarPolicy),
+                SupportedEnvoyFilter::OAuth2(oauth2) => oauth2.try_into().map(Box::new).map(Self::OAuth2),
             }
         }
     }
@@ -200,6 +204,7 @@ mod envoy_conversions {
         McpGateway(ArionMcpGateway),
         UserRateLimiter(ArionUserRateLimiter),
         CedarPolicy(ProtoCedarPolicy),
+        OAuth2(EnvoyOAuth2),
     }
 
     impl TryFrom<Any> for SupportedEnvoyFilter {
@@ -238,6 +243,9 @@ mod envoy_conversions {
                 },
                 "type.googleapis.com/arion.extensions.filters.http.cedar.cedar_policy.v3.CedarPolicy" => {
                     ProtoCedarPolicy::decode(typed_config.value.as_slice()).map(Self::CedarPolicy)
+                },
+                "type.googleapis.com/envoy.extensions.filters.http.oauth2.v3.OAuth2" => {
+                    EnvoyOAuth2::decode(typed_config.value.as_slice()).map(Self::OAuth2)
                 },
                 _ => return Err(GenericError::unsupported_variant(typed_config.type_url)),
             }

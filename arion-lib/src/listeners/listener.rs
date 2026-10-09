@@ -440,7 +440,7 @@ impl Listener {
 
                                                    if !conn_formatters.is_empty() {
                                                        let messages = conn_formatters.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-                                                       let _ = blocking_log_access(Target::Listener(listener_name.into()), messages);
+                                                       _ = blocking_log_access(Target::Listener(listener_name.into()), messages);
                                                    }
                                                }
                                             })

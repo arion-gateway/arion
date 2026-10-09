@@ -732,7 +732,10 @@ mod envoy_conversions {
             DirectResponseAction as EnvoyDirectResponseAction, QueryParameterMatcher as EnvoyQueryParameterMatcher,
             RedirectAction as EnvoyRedirectAction, RouteAction as EnvoyRouteAction, RouteMatch as EnvoyRouteMatch,
         },
-        r#type::matcher::v3::RegexMatchAndSubstitute as EnvoyRegexMatchAndSubstitute,
+        r#type::matcher::v3::{
+            path_matcher::Rule as EnvoyPathMatcherRule, string_matcher::MatchPattern as EnvoyStringMatcherPattern,
+            PathMatcher as EnvoyTypePathMatcher, RegexMatchAndSubstitute as EnvoyRegexMatchAndSubstitute,
+        },
     };
     use http::{
         uri::{Authority, PathAndQuery, Scheme},
@@ -1152,6 +1155,36 @@ mod envoy_conversions {
             }
         }
     }
+
+    impl TryFrom<EnvoyTypePathMatcher> for PathMatcher {
+        type Error = GenericError;
+        fn try_from(value: EnvoyTypePathMatcher) -> Result<Self, Self::Error> {
+            let EnvoyTypePathMatcher { rule } = value;
+            let rule = required!(rule).with_node("rule")?;
+            match rule {
+                EnvoyPathMatcherRule::Path(string_matcher) => {
+                    let ignore_case = string_matcher.ignore_case;
+                    let match_pattern = string_matcher.match_pattern;
+                    let pattern = required!(match_pattern).with_node("match_pattern")?;
+                    let specifier = match pattern {
+                        EnvoyStringMatcherPattern::Exact(s) => PathSpecifier::Exact(s.into()),
+                        EnvoyStringMatcherPattern::Prefix(s) => PathSpecifier::Prefix(s.into()),
+                        EnvoyStringMatcherPattern::SafeRegex(r) => PathSpecifier::Regex(regex_from_envoy(r)?),
+                        EnvoyStringMatcherPattern::Suffix(_) => {
+                            return Err(GenericError::unsupported_variant("Suffix"))
+                        },
+                        EnvoyStringMatcherPattern::Contains(_) => {
+                            return Err(GenericError::unsupported_variant("Contains"))
+                        },
+                        EnvoyStringMatcherPattern::Custom(_) => {
+                            return Err(GenericError::unsupported_variant("Custom"))
+                        },
+                    };
+                    Ok(PathMatcher { specifier, ignore_case })
+                },
+            }
+        }
+    }
     #[cfg(test)]
     mod tests {
         use arion_data_plane_api::envoy_data_plane_api::envoy::config::route::v3::route_match::PathSpecifier as EnvoyPathSpecifier;
@@ -1186,6 +1219,24 @@ mod envoy_conversions {
             let pq = PathAndQuery::from_static("/api/devdfdffd/");
             let res = pm.matches(&pq);
             assert!(!res.matched());
+        }
+        #[test]
+        fn test_type_path_matcher() {
+            use arion_data_plane_api::envoy_data_plane_api::envoy::r#type::matcher::v3::{
+                path_matcher::Rule as EnvoyPathMatcherRule, string_matcher::MatchPattern as EnvoyStringMatcherPattern,
+                PathMatcher as EnvoyTypePathMatcher, StringMatcher as EnvoyStringMatcher,
+            };
+
+            let envoy_pm = EnvoyTypePathMatcher {
+                rule: Some(EnvoyPathMatcherRule::Path(EnvoyStringMatcher {
+                    ignore_case: false,
+                    match_pattern: Some(EnvoyStringMatcherPattern::Exact("/callback".to_owned())),
+                })),
+            };
+
+            let pm = PathMatcher::try_from(envoy_pm).unwrap();
+            assert_eq!(pm.specifier, PathSpecifier::Exact("/callback".into()));
+            assert!(!pm.ignore_case);
         }
     }
 }

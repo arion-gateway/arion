@@ -1,0 +1,88 @@
+runtime:
+  num_cpus: 2
+  num_runtimes: 2
+
+logging:
+  log_level: "info"
+
+envoy_bootstrap:
+  static_resources:
+    listeners:
+      - name: listener_http
+        address:
+          socket_address:
+            address: 0.0.0.0
+            port_value: 8080
+        filter_chains:
+          - name: filter_chain_http
+            filters:
+              - name: http_gateway
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                  codec_type: HTTP1
+                  http_filters:
+                    - name: envoy.filters.http.oauth2
+                      typed_config:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.oauth2.v3.OAuth2
+                        config:
+                          token_endpoint:
+                            uri: "http://127.0.0.1:8089/oauth/token"
+                            cluster: "oauth_cluster"
+                            timeout: 5s
+                          authorization_endpoint: "http://127.0.0.1:8089/oauth/authorize"
+                          credentials:
+                            client_id: "test-client"
+                            token_secret:
+                              name: "test-secret"
+                            hmac_secret:
+                              name: "my-local-hmac-secret-key"
+                          redirect_uri: "http://%REQ(:authority)%/callback"
+                          redirect_path_matcher:
+                            path:
+                              exact: "/callback"
+                          signout_path:
+                            path:
+                              exact: "/signout"
+                          forward_bearer_token: true
+                    - name: envoy.filters.http.router
+                      typed_config:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                  route_config:
+                    name: local_route
+                    virtual_hosts:
+                      - name: local_service
+                        domains: ["*"]
+                        routes:
+                          - match:
+                              prefix: "/"
+                            route:
+                              cluster: "backend_cluster"
+
+    clusters:
+      - name: backend_cluster
+        type: STATIC
+        lb_policy: ROUND_ROBIN
+        connect_timeout: 2s
+        load_assignment:
+          cluster_name: backend_cluster
+          endpoints:
+            - lb_endpoints:
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 8090
+
+      - name: oauth_cluster
+        type: STATIC
+        lb_policy: ROUND_ROBIN
+        connect_timeout: 2s
+        load_assignment:
+          cluster_name: oauth_cluster
+          endpoints:
+            - lb_endpoints:
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 8089

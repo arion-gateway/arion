@@ -6,3 +6,4 @@
 *.html
 *.log.*
 .fastembed_cache/
+rules/**

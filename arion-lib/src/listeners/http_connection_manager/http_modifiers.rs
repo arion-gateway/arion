@@ -57,7 +57,7 @@ const HOP_BY_HOP_HEADERS: &[HeaderName] = &[
 pub fn apply_prerouting_functions<T>(
     request: &mut Request<T>,
     downstream_addr: SocketAddr,
-    xff_settings: &XffSettings,
+    xff_settings: XffSettings,
     conn: &ConnMeta,
     early_mutations: &[EarlyHeaderMutation],
 ) {
@@ -121,7 +121,7 @@ pub fn strip_trailers_headers(http_version: Codec, headers: &mut HeaderMap) {
     }
 }
 
-fn apply_xff_headers<T>(request: &mut Request<T>, downstream_addr: SocketAddr, xff_settings: &XffSettings) {
+fn apply_xff_headers<T>(request: &mut Request<T>, downstream_addr: SocketAddr, xff_settings: XffSettings) {
     let headers = request.headers_mut();
     let downstream_is_internal = is_internal_ip(downstream_addr.ip());
     let downstream_is_external = !downstream_is_internal;
@@ -203,7 +203,7 @@ fn append_hop_to_xff(existing_xff: Option<&str>, downstream_ip: IpAddr) -> Strin
 fn determine_trusted_client_address(
     existing_xff: Option<&str>,
     downstream_addr: SocketAddr,
-    xff_settings: &XffSettings,
+    xff_settings: XffSettings,
 ) -> (IpAddr, bool) {
     let downstream_ip = downstream_addr.ip();
 
@@ -306,6 +306,7 @@ impl<B> HeaderMapModifier<(&[EarlyHeaderMutation], &ConnMeta)> for Request<B> {
 // the match is case-insensitive (header names are case-insensitive per
 // RFC 9110; the pattern alone carries no case flag). `Regex` is unaffected
 // by this, matching Envoy semantics where `ignore_case` does not apply to it.
+#[allow(clippy::similar_names)]
 fn remove_matching_headers(headers: &mut HeaderMap, pattern: &StringMatcherPattern) {
     let matcher = StringMatcher { ignore_case: true, pattern: pattern.clone() };
     let matched: Vec<HeaderName> = headers.keys().filter(|name| matcher.matches(name.as_str())).cloned().collect();
@@ -525,7 +526,7 @@ mod tests {
         let downstream_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 5)), 80);
         let xff_settings = XffSettings { use_remote_address: true, skip_xff_append: false, xff_num_trusted_hops: 0 };
 
-        apply_xff_headers(&mut request, downstream_addr, &xff_settings);
+        apply_xff_headers(&mut request, downstream_addr, xff_settings);
 
         assert_eq!(request.headers().get("x-envoy-external-address").unwrap(), "192.0.2.5");
         assert_eq!(
@@ -544,7 +545,7 @@ mod tests {
         let downstream_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 11, 12, 13)), 80);
         let xff_settings = XffSettings { use_remote_address: false, skip_xff_append: false, xff_num_trusted_hops: 0 };
 
-        apply_xff_headers(&mut request, downstream_addr, &xff_settings);
+        apply_xff_headers(&mut request, downstream_addr, xff_settings);
 
         assert!(request.headers().get("x-envoy-external-address").is_none());
         assert_eq!(
@@ -561,7 +562,7 @@ mod tests {
         let downstream_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 5)), 80);
         let xff_settings = XffSettings { use_remote_address: true, skip_xff_append: false, xff_num_trusted_hops: 2 };
 
-        apply_xff_headers(&mut request, downstream_addr, &xff_settings);
+        apply_xff_headers(&mut request, downstream_addr, xff_settings);
 
         assert_eq!(request.headers().get("x-envoy-external-address").unwrap(), "203.0.113.10");
         assert_eq!(
@@ -580,7 +581,7 @@ mod tests {
         let downstream_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 11, 12, 13)), 80);
         let xff_settings = XffSettings { use_remote_address: false, skip_xff_append: false, xff_num_trusted_hops: 0 };
 
-        apply_xff_headers(&mut request, downstream_addr, &xff_settings);
+        apply_xff_headers(&mut request, downstream_addr, xff_settings);
 
         assert!(request.headers().get("x-envoy-external-address").is_none());
         assert_eq!(
@@ -596,7 +597,7 @@ mod tests {
         let downstream_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 20, 30, 40)), 80);
         let xff_settings = XffSettings { use_remote_address: false, skip_xff_append: false, xff_num_trusted_hops: 0 };
 
-        apply_xff_headers(&mut request, downstream_addr, &xff_settings);
+        apply_xff_headers(&mut request, downstream_addr, xff_settings);
 
         assert!(request.headers().get("x-envoy-external-address").is_none());
         assert!(request.headers().get("x-forwarded-for").is_none());
@@ -610,7 +611,7 @@ mod tests {
         let downstream_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 20, 30, 50)), 80);
         let xff_settings = XffSettings { use_remote_address: false, skip_xff_append: false, xff_num_trusted_hops: 0 };
 
-        apply_xff_headers(&mut request, downstream_addr, &xff_settings);
+        apply_xff_headers(&mut request, downstream_addr, xff_settings);
 
         assert!(request.headers().get("x-envoy-external-address").is_none());
         assert_eq!(request.headers().get("x-forwarded-for").unwrap(), "10.20.30.40");
@@ -838,7 +839,7 @@ mod tests {
         // whatever the header contains.
         for xff in [None, Some(""), Some("203.0.113.7"), Some("garbage, also-garbage, 1.1.1.1")] {
             assert_eq!(
-                determine_trusted_client_address(xff, downstream, &settings(true, 0)),
+                determine_trusted_client_address(xff, downstream, settings(true, 0)),
                 (downstream_ip, false),
                 "fast path, xff={xff:?}"
             );
@@ -848,7 +849,7 @@ mod tests {
         for (use_remote, hops) in [(true, 1), (true, 5), (false, 0), (false, 2)] {
             for xff in [None, Some(""), Some("   "), Some("not-an-ip, ???")] {
                 assert_eq!(
-                    determine_trusted_client_address(xff, downstream, &settings(use_remote, hops)),
+                    determine_trusted_client_address(xff, downstream, settings(use_remote, hops)),
                     (downstream_ip, false),
                     "fallback, use_remote={use_remote} hops={hops} xff={xff:?}"
                 );
@@ -857,40 +858,37 @@ mod tests {
 
         // `!use_remote`, 0 hops: last valid entry + single-entry flag.
         let no_trusted = settings(false, 0);
+        assert_eq!(determine_trusted_client_address(Some("10.0.0.1"), downstream, no_trusted), (v4(10, 0, 0, 1), true));
         assert_eq!(
-            determine_trusted_client_address(Some("10.0.0.1"), downstream, &no_trusted),
-            (v4(10, 0, 0, 1), true)
-        );
-        assert_eq!(
-            determine_trusted_client_address(Some("10.0.0.1, 10.0.0.2"), downstream, &no_trusted),
+            determine_trusted_client_address(Some("10.0.0.1, 10.0.0.2"), downstream, no_trusted),
             (v4(10, 0, 0, 2), false)
         );
         assert_eq!(
-            determine_trusted_client_address(Some("  10.0.0.1  ,  10.0.0.2 "), downstream, &no_trusted),
+            determine_trusted_client_address(Some("  10.0.0.1  ,  10.0.0.2 "), downstream, no_trusted),
             (v4(10, 0, 0, 2), false)
         );
         // Invalid entries are skipped; a single remaining valid entry still counts as single.
         assert_eq!(
-            determine_trusted_client_address(Some("10.0.0.1, garbage"), downstream, &no_trusted),
+            determine_trusted_client_address(Some("10.0.0.1, garbage"), downstream, no_trusted),
             (v4(10, 0, 0, 1), true)
         );
         assert_eq!(
-            determine_trusted_client_address(Some("garbage, 10.0.0.1, 10.0.0.2"), downstream, &no_trusted),
+            determine_trusted_client_address(Some("garbage, 10.0.0.1, 10.0.0.2"), downstream, no_trusted),
             (v4(10, 0, 0, 2), false)
         );
         assert_eq!(
-            determine_trusted_client_address(Some("::1"), downstream, &no_trusted),
+            determine_trusted_client_address(Some("::1"), downstream, no_trusted),
             (IpAddr::from([0, 0, 0, 0, 0, 0, 0, 1]), true)
         );
 
         // `!use_remote` with trusted hops: index `len-hops-1` over valid entries only.
         let xff = Some("10.0.0.1, 10.0.0.2, 10.0.0.3");
-        assert_eq!(determine_trusted_client_address(xff, downstream, &settings(false, 1)), (v4(10, 0, 0, 2), false));
-        assert_eq!(determine_trusted_client_address(xff, downstream, &settings(false, 2)), (v4(10, 0, 0, 1), false));
+        assert_eq!(determine_trusted_client_address(xff, downstream, settings(false, 1)), (v4(10, 0, 0, 2), false));
+        assert_eq!(determine_trusted_client_address(xff, downstream, settings(false, 2)), (v4(10, 0, 0, 1), false));
         // Hops beyond the list length fall back to downstream.
         for hops in [3, 99, u32::MAX] {
             assert_eq!(
-                determine_trusted_client_address(xff, downstream, &settings(false, hops)),
+                determine_trusted_client_address(xff, downstream, settings(false, hops)),
                 (downstream_ip, false),
                 "out-of-range hops={hops}"
             );
@@ -900,22 +898,18 @@ mod tests {
             determine_trusted_client_address(
                 Some("10.0.0.1, junk, 10.0.0.2, 10.0.0.3"),
                 downstream,
-                &settings(false, 1)
+                settings(false, 1)
             ),
             (v4(10, 0, 0, 2), false)
         );
 
         // `use_remote` with trusted hops: index `len-hops` over valid entries only.
-        assert_eq!(determine_trusted_client_address(xff, downstream, &settings(true, 1)), (v4(10, 0, 0, 3), false));
-        assert_eq!(determine_trusted_client_address(xff, downstream, &settings(true, 2)), (v4(10, 0, 0, 2), false));
-        assert_eq!(determine_trusted_client_address(xff, downstream, &settings(true, 3)), (v4(10, 0, 0, 1), false));
-        assert_eq!(determine_trusted_client_address(xff, downstream, &settings(true, 4)), (downstream_ip, false));
+        assert_eq!(determine_trusted_client_address(xff, downstream, settings(true, 1)), (v4(10, 0, 0, 3), false));
+        assert_eq!(determine_trusted_client_address(xff, downstream, settings(true, 2)), (v4(10, 0, 0, 2), false));
+        assert_eq!(determine_trusted_client_address(xff, downstream, settings(true, 3)), (v4(10, 0, 0, 1), false));
+        assert_eq!(determine_trusted_client_address(xff, downstream, settings(true, 4)), (downstream_ip, false));
         assert_eq!(
-            determine_trusted_client_address(
-                Some("junk, 10.0.0.1, 10.0.0.2, 10.0.0.3"),
-                downstream,
-                &settings(true, 3)
-            ),
+            determine_trusted_client_address(Some("junk, 10.0.0.1, 10.0.0.2, 10.0.0.3"), downstream, settings(true, 3)),
             (v4(10, 0, 0, 1), false)
         );
     }
@@ -1007,7 +1001,7 @@ mod tests {
 
         let mutations =
             vec![EarlyHeaderMutation::Remove("x-remove-me".parse().unwrap()), append_mutation(LOCATION, "hello")];
-        apply_prerouting_functions(&mut request, downstream_addr, &xff_settings, &ConnMeta::default(), &mutations);
+        apply_prerouting_functions(&mut request, downstream_addr, xff_settings, &ConnMeta::default(), &mutations);
 
         // early mutations applied ...
         assert!(request.headers().get("x-remove-me").is_none());

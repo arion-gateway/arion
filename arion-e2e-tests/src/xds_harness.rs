@@ -103,7 +103,7 @@ impl XdsEnabledHarness {
         let bootstrap = BootstrapBuilder::new().xds("127.0.0.1", xds_port).log_level(&options.log_level);
         let config_path = bootstrap.build_to_temp()?;
 
-        let arion = ArionInstance::spawn_no_listener(&config_path, options.arion_options).await?;
+        let arion = ArionInstance::spawn_no_listener(&config_path, &options.arion_options)?;
 
         event_receiver.wait_for_connection(options.timeouts.connection).await?;
         info!("Arion connected to xDS server");

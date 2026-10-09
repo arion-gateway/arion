@@ -36,6 +36,7 @@ pub mod wasm;
 pub mod http_modifiers;
 pub mod jwt_authn;
 pub mod mcp_gateway;
+pub mod oauth2;
 mod redirect;
 mod route;
 mod upgrades;
@@ -412,7 +413,7 @@ pub struct HttpConnectionManager {
 
 impl fmt::Display for HttpConnectionManager {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "HttpConnectionManager {}", &self.listener_name)
+        write!(f, "HttpConnectionManager {}", self.listener_name)
     }
 }
 
@@ -656,7 +657,7 @@ struct EventInfo {
 }
 
 impl TransactionContext {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::unnecessary_operation)]
     pub fn reset(
         &mut self,
         request_id: Option<RequestId>,
@@ -669,8 +670,9 @@ impl TransactionContext {
     ) {
         #[cfg(feature = "access-log")]
         {
-            self.has_access_log = !access_log.is_empty();
-        }
+            self.has_access_log = !access_log.is_empty()
+        };
+
         self.start_instant = std::time::Instant::now();
         self.request_id = request_id;
         self.user_partition_key = user_partition_key;
@@ -680,27 +682,27 @@ impl TransactionContext {
             *self.trans_state.get_mut() = TransactionState::new(
                 #[cfg(feature = "access-log")]
                 access_log,
-            );
-        }
+            )
+        };
 
         #[cfg(feature = "tracing")]
         {
             self.trace_ctx = trace_ctx;
             self.upstream_tracing_key = upstream_tracing_key;
-            self.span_state = server_span.map(|span| Arc::new(SpanState::new(Some(span))));
-        }
+            self.span_state = server_span.map(|span| Arc::new(SpanState::new(Some(span))))
+        };
 
         self.shard_id = thread_id;
 
         #[cfg(any(feature = "access-log", feature = "metrics", feature = "tracing"))]
         {
-            self.trans_phase = TransactionPhase::new();
-        }
+            self.trans_phase = TransactionPhase::new()
+        };
 
         #[cfg(feature = "instrumentation")]
         {
-            self.clock = quanta::Clock::new();
-        }
+            self.clock = quanta::Clock::new()
+        };
     }
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -895,7 +897,7 @@ impl HttpPipelineSvc {
         Self
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::large_futures)]
     async fn call(
         &self,
         manager: &HttpConnectionManager,
@@ -938,7 +940,7 @@ impl HttpPipelineSvc {
         http_modifiers::apply_prerouting_functions(
             &mut request,
             downstream_addr,
-            &manager.xff_settings,
+            manager.xff_settings,
             &ctx.conn,
             &manager.early_header_mutation,
         );
@@ -974,8 +976,8 @@ impl HttpPipelineSvc {
                             response_head_size: response_head_size(&response)
                         }
                     )
-                });
-            }
+                })
+            };
 
             #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
             let trans_ctx = ctx.tx;
@@ -1110,11 +1112,12 @@ impl RequestHandler<Request<ArionRequestBody>, &HttpConnectionManager> for &Rout
         self,
         ctx: &RequestCtx,
         mut request: Request<ArionRequestBody>,
-        connection_manager: &HttpConnectionManager,
+        arg: &HttpConnectionManager,
     ) -> Result<Response<ArionResponseBody>> {
         let route_conf = &self.route_configuration;
         let mut cached_route = match_request_route(&request, route_conf);
         let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
+        let connection_manager = arg;
 
         let mut filter_start_idx = 0;
         let filter_response = 'filter_loop: loop {
@@ -1382,7 +1385,7 @@ fn apply_mutations_on_response<B>(
 // --- Typed request envelope (Service stack) ---
 
 /// Per-request context always present after `TransactionLifecycleSvc`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct RequestCtx {
     pub conn: ConnMeta,
     pub tx: PooledTxCtx,
@@ -1402,12 +1405,6 @@ impl RequestCtx {
     #[inline]
     pub(crate) fn begin_upstream_span(&self, span_name: &str) -> ScopedClientSpan {
         self.tx.begin_upstream_span(span_name)
-    }
-}
-
-impl Default for RequestCtx {
-    fn default() -> Self {
-        Self { conn: ConnMeta::default(), tx: PooledTxCtx::default() }
     }
 }
 
@@ -1457,6 +1454,7 @@ impl TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
     // `StdArc` (rather than `&self`) is also required: hyper-util bounds the per-request future
     // with `S::Future: 'static`, so it must own — not borrow — the connection state. Cloning the
     // `Arc` (one atomic inc) is cheaper than cloning the whole struct (three: conn x2 + manager).
+    #[allow(clippy::large_futures)]
     pub async fn handle_request(
         self: StdArc<Self>,
         incoming_request: Request<Incoming>,
@@ -1578,7 +1576,7 @@ impl<S> TransactionSvc<S> {
 }
 
 impl TransactionSvc<HttpPipelineSvc> {
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::large_futures)]
     async fn call(
         &self,
         manager: &HttpConnectionManager,
@@ -1820,8 +1818,9 @@ pub(crate) struct HttpTxnFlush {
 
 #[cfg(any(feature = "access-log", feature = "metrics"))]
 impl OnFlush for HttpTxnFlush {
-    fn run(self, stream_metrics: &StreamMetrics) {
+    fn run(self, metrics: &StreamMetrics) {
         let mut trans_state = self.trans_ctx.trans_state.lock();
+        let stream_metrics = metrics;
         let ctx_bytes = trans_state.bytes;
         #[cfg(feature = "access-log")]
         let ctx_flags = trans_state.flags;
@@ -1848,7 +1847,7 @@ impl OnFlush for HttpTxnFlush {
                     event_kind: ctx_event.or(self.extra_event),
                     response_flags: ctx_flags | self.extra_flags,
                 },
-                access_loggers: trans_state.loggers.as_mut().map(|b| &mut **b),
+                access_loggers: trans_state.loggers.as_deref_mut(),
             },
         });
     }
@@ -1902,7 +1901,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
 
     #[cfg(feature = "access-log")]
     with_access_log!(
-        params.al_ctx.access_loggers.as_mut().map(|x| &mut **x).unwrap_or(&mut []),
+        params.al_ctx.access_loggers.as_deref_mut().unwrap_or(&mut []),
         FinishContext {
             duration,
             bytes_received: params.bytes_received,
@@ -1983,7 +1982,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
         if !loggers.is_empty() {
             with_access_log!(&mut *loggers, WireContext { wire_bytes_received, wire_bytes_sent });
             let messages = loggers.iter_mut().map(|l| l.clone().into_message()).collect::<Vec<_>>();
-            let _ = blocking_log_access(
+            _ = blocking_log_access(
                 Target::ListenerFilterChain(params.listener_name.into(), params.filterchain_id),
                 messages,
             );
@@ -2150,7 +2149,7 @@ fn reject_request_if_invalid(
     // check if uri/line is too long...
     //
     let mut counter = LengthCounter(0);
-    let _ = write!(&mut counter, "{}", request.uri());
+    _ = write!(&mut counter, "{}", request.uri());
     if counter.0 > MAX_URI_LENGTH {
         debug!("Too long uri: {} bytes", counter.0);
         let r = SyntheticHttpResponse::custom_error(

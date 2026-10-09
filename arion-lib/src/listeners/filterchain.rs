@@ -309,8 +309,8 @@ impl FilterchainType {
                 let mut hyper_server = HyperServerBuilder::new(TokioExecutor::new());
                 {
                     let mut http1 = hyper_server.http1();
-                    http1.writev(false);
-                }
+                    http1.writev(false)
+                };
                 hyper_server.http2().adaptive_window(true);
                 let stream_metrics = stream.shared_metrics();
                 let stream = TokioIo::new(stream);

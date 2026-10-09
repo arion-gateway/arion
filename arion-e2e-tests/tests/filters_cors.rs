@@ -44,7 +44,7 @@ fn cors_policy(origin: &str) -> CorsPolicy {
     }
 }
 
-fn cors_hcm_filter(policy: CorsPolicy) -> HttpFilter {
+fn cors_hcm_filter(policy: &CorsPolicy) -> HttpFilter {
     let any = Any {
         type_url: "type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy".into(),
         value: policy.encode_to_vec(),
@@ -56,7 +56,7 @@ fn cors_hcm_filter(policy: CorsPolicy) -> HttpFilter {
     }
 }
 
-fn cors_route_override(route: RouteBuilder, policy: CorsPolicy) -> RouteBuilder {
+fn cors_route_override(route: RouteBuilder, policy: &CorsPolicy) -> RouteBuilder {
     let any = Any {
         type_url: "type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy".into(),
         value: policy.encode_to_vec(),
@@ -66,7 +66,7 @@ fn cors_route_override(route: RouteBuilder, policy: CorsPolicy) -> RouteBuilder 
     })
 }
 
-async fn spawn_cors_proxy(routes: Vec<RouteBuilder>, hcm_policy: CorsPolicy) -> (TestBackend, ArionInstance) {
+async fn spawn_cors_proxy(routes: Vec<RouteBuilder>, hcm_policy: &CorsPolicy) -> (TestBackend, ArionInstance) {
     let backend = TestBackend::start().await.unwrap();
     backend.set_default_response(PreConfiguredResponse::with_body("backend ok")).await;
 
@@ -96,7 +96,7 @@ async fn spawn_cors_proxy(routes: Vec<RouteBuilder>, hcm_policy: CorsPolicy) -> 
 async fn test_cors_hcm_filter_preflight_and_response() {
     let (_backend, arion) = spawn_cors_proxy(
         vec![RouteBuilder::new().match_prefix("/").cluster("backend")],
-        cors_policy("https://allowed.example"),
+        &cors_policy("https://allowed.example"),
     )
     .await;
     let client = TestClient::new(arion.listener_addr().unwrap());
@@ -138,11 +138,11 @@ async fn test_cors_per_route_policy_override() {
     let routes = vec![
         cors_route_override(
             RouteBuilder::new().match_prefix("/override").cluster("backend"),
-            cors_policy("https://route.example"),
+            &cors_policy("https://route.example"),
         ),
         RouteBuilder::new().match_prefix("/").cluster("backend"),
     ];
-    let (_backend, arion) = spawn_cors_proxy(routes, cors_policy("https://hcm.example")).await;
+    let (_backend, arion) = spawn_cors_proxy(routes, &cors_policy("https://hcm.example")).await;
     let client = TestClient::new(arion.listener_addr().unwrap());
 
     let preflight = client

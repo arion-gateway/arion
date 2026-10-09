@@ -280,6 +280,24 @@ impl HcmBuilder {
     }
 
     #[must_use]
+    pub fn oauth2(
+        mut self,
+        oauth2: impl Into<arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::oauth2::v3::OAuth2>,
+    ) -> Self {
+        let proto = oauth2.into();
+        let any = Any {
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.oauth2.v3.OAuth2".to_owned(),
+            value: proto.encode_to_vec(),
+        };
+        self.proto.http_filters.push(HttpFilter {
+            name: "envoy.filters.http.oauth2".into(),
+            config_type: Some(HttpFilterConfigType::TypedConfig(any)),
+            ..Default::default()
+        });
+        self
+    }
+
+    #[must_use]
     pub fn jwt_authn(mut self, jwt: impl Into<EnvoyJwtAuthentication>) -> Self {
         let proto: EnvoyJwtAuthentication = jwt.into();
         let any = Any {
@@ -519,11 +537,9 @@ impl HcmBuilder {
                     .into(),
             value: config.encode_to_vec(),
         };
-        self.proto.early_header_mutation_extensions.push(TypedExtensionConfig {
-            name: "early_header_mutation".into(),
-            typed_config: Some(any),
-            ..Default::default()
-        });
+        self.proto
+            .early_header_mutation_extensions
+            .push(TypedExtensionConfig { name: "early_header_mutation".into(), typed_config: Some(any) });
     }
 
     fn add_router_filter(&mut self) {

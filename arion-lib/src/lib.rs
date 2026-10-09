@@ -139,6 +139,8 @@ pub enum FilterError {
     #[cfg(feature = "wasm")]
     #[error("wasm filter error: {0}")]
     Wasm(#[from] crate::listeners::http_connection_manager::wasm::WasmError),
+    #[error("oauth2 filter error: {0}")]
+    OAuth2(#[from] reqwest::Error),
 }
 
 #[derive(Debug, Error)]
@@ -354,6 +356,12 @@ impl From<crate::listeners::http_connection_manager::mcp_gateway::tools::ToolBui
 impl From<crate::listeners::http_connection_manager::wasm::WasmError> for Error {
     fn from(err: crate::listeners::http_connection_manager::wasm::WasmError) -> Self {
         Self::Filter(FilterError::Wasm(err))
+    }
+}
+
+impl From<reqwest::Error> for Error {
+    fn from(err: reqwest::Error) -> Self {
+        Self::Filter(FilterError::OAuth2(err))
     }
 }
 

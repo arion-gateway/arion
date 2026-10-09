@@ -156,6 +156,7 @@ fn cache_lookup(
     (hit.shard_id == shard_id).then_some(hit.cell)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cache_store(
     tls: &mut HashMap<usize, PerMetric, RandomState>,
     owner: usize,

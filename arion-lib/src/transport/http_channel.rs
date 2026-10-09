@@ -597,6 +597,7 @@ impl HttpChannel {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
     async fn send_with_retry<F, Fut>(
         &self,
         req: Request<ArionRequestBody>,
@@ -822,7 +823,7 @@ fn prepare_http1_request(request: &mut Request<ArionRequestBody>) -> Result<()> 
         if uri.scheme().is_none() && uri.authority().is_none() {
             if let Some(host) = request.headers().get(http::header::HOST) {
                 if host.as_bytes().is_empty() {
-                    return Err(format!("Empty Host header").into());
+                    return Err("Empty Host header".into());
                 }
             }
             return Ok(());
@@ -838,7 +839,7 @@ fn prepare_http1_request(request: &mut Request<ArionRequestBody>) -> Result<()> 
         }
     } else if let Some(host) = request.headers().get(http::header::HOST) {
         if host.as_bytes().is_empty() {
-            return Err(format!("Empty Host header").into());
+            return Err("Empty Host header".into());
         }
     }
 
@@ -876,13 +877,11 @@ fn prepare_http2_request(request: &mut Request<ArionRequestBody>, is_tls: bool) 
     let has_authority = uri.authority().is_some();
 
     if !has_scheme || !has_authority {
-        let authority_from_host = if !has_authority {
-            if let Some(host_header) = request.headers().get(http::header::HOST) {
-                let authority_str = host_header.to_str().map_err(|e| format!("Can't parse Host header: {e}"))?;
-                Some(authority_str.parse::<Authority>().map_err(|e| format!("Can't parse authority: {e}"))?)
-            } else {
-                None
-            }
+        let authority_from_host = if has_authority {
+            None
+        } else if let Some(host_header) = request.headers().get(http::header::HOST) {
+            let authority_str = host_header.to_str().map_err(|e| format!("Can't parse Host header: {e}"))?;
+            Some(authority_str.parse::<Authority>().map_err(|e| format!("Can't parse authority: {e}"))?)
         } else {
             None
         };

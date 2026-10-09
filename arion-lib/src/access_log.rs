@@ -287,10 +287,9 @@ pub fn blocking_log_access(target: Target, vec: Vec<FormattedMessage>) -> Result
     if let Some(sender) = get_sender() {
         if is_blocking() {
             return sender.send(AccessLogMessage::Message(target, vec));
-        } else {
-            let _ = sender.try_send(AccessLogMessage::Message(target, vec));
-            return Ok(());
         }
+        _ = sender.try_send(AccessLogMessage::Message(target, vec));
+        return Ok(());
     }
 
     error!("Failed to send access log message: no available sender (channel closed)");

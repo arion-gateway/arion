@@ -39,13 +39,13 @@ use opentelemetry::KeyValue;
 use papaya::HashMap as PapayaMap;
 use pingora_timeout::fast_timeout::fast_timeout;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use rmcp::transport::{DynamicTransportError, StreamableHttpClientTransport};
 use rmcp::{
     model::{
         CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, ContentBlock, Implementation,
         InitializeRequestParams, JsonRpcNotification, ServerNotification, ToolListChangedNotification,
     },
     service::ClientInitializeError,
-    transport::StreamableHttpClientTransport,
     ServiceError, ServiceExt,
 };
 
@@ -74,7 +74,7 @@ thread_local! {
     /// TCP (+TLS) connection even when the `RunningService` is reused. Each thread-local
     /// client keeps its own keep-alive pool, while each transport keeps its own MCP
     /// session state (session id, protocol version) in its worker.
-    static UPSTREAM_REQWEST_CLIENT: reqwest::Client = reqwest::Client::builder()
+    static UPSTREAM_REQWEST_CLIENT: Result<reqwest::Client, StdArc<reqwest::Error>> = reqwest::Client::builder()
         // Keep-alive pool enabled (rmcp's default disables it with
         // `pool_max_idle_per_host(0)`; omitting that call restores reuse).
         // Values below mirror reqwest defaults; written out so the intent
@@ -84,14 +84,25 @@ thread_local! {
         // Same as rmcp's default: never replay caller headers to a redirect target.
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .expect("failed to build upstream reqwest client");
+        .map_err(StdArc::new);
 }
 
 /// Clone the calling thread's HTTP client. Clones share that thread's keep-alive
 /// pool; pools are never shared across OS threads.
-fn upstream_http_client() -> reqwest::Client {
-    UPSTREAM_REQWEST_CLIENT.with(|client| client.clone())
+fn upstream_http_client() -> Result<reqwest::Client, Box<ClientInitializeError>> {
+    UPSTREAM_REQWEST_CLIENT.with(|res| match res {
+        Ok(client) => Ok(client.clone()),
+        Err(err) => Err(Box::new(ClientInitializeError::TransportError {
+            error: DynamicTransportError::from_parts(
+                "reqwest",
+                std::any::TypeId::of::<reqwest::Client>(),
+                Box::new(StdArc::clone(err)),
+            ),
+            context: "failed to build upstream reqwest client".into(),
+        })),
+    })
 }
+
 static SEMANTIC_SEARCH_TOOL_INPUT_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
     json!({
         "type": "object",
@@ -179,13 +190,31 @@ pub enum CallToolError {
     #[error("Transcoder: tool: {tool} reason: {reason}")]
     TranscoderError { tool: SmolStr, reason: String },
     #[error("Client initialization error: {0}")]
-    ClientInitializeError(#[from] ClientInitializeError),
+    ClientInitializeError(#[source] Box<ClientInitializeError>),
     #[error("ServiceError: {0}")]
-    ServiceError(#[from] ServiceError),
+    ServiceError(#[source] Box<ServiceError>),
     #[error("SerdeError: {0}")]
     SerdeError(#[from] serde_json::Error),
     #[error("Validation error: {0}")]
     ValidationError(Cow<'static, str>),
+}
+
+impl From<ClientInitializeError> for CallToolError {
+    fn from(err: ClientInitializeError) -> Self {
+        Self::ClientInitializeError(Box::new(err))
+    }
+}
+
+impl From<Box<ClientInitializeError>> for CallToolError {
+    fn from(err: Box<ClientInitializeError>) -> Self {
+        Self::ClientInitializeError(err)
+    }
+}
+
+impl From<ServiceError> for CallToolError {
+    fn from(err: ServiceError) -> Self {
+        Self::ServiceError(Box::new(err))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -194,9 +223,27 @@ pub enum ListToolsError {
     #[error("Unsupported transport")]
     UnsupportedTransport,
     #[error("Client: {0}")]
-    ClientError(#[from] ClientInitializeError),
+    ClientError(Box<ClientInitializeError>),
     #[error("ServiceError: {0}")]
-    ServiceError(#[from] ServiceError),
+    ServiceError(Box<ServiceError>),
+}
+
+impl From<ClientInitializeError> for ListToolsError {
+    fn from(value: ClientInitializeError) -> Self {
+        ListToolsError::ClientError(Box::new(value))
+    }
+}
+
+impl From<Box<ClientInitializeError>> for ListToolsError {
+    fn from(value: Box<ClientInitializeError>) -> Self {
+        ListToolsError::ClientError(value)
+    }
+}
+
+impl From<ServiceError> for ListToolsError {
+    fn from(value: ServiceError) -> Self {
+        ListToolsError::ServiceError(Box::new(value))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -206,7 +253,7 @@ pub enum ToolBuilderError {
     #[error("Invalid output schema")]
     InvalidOutputSchema(String),
     #[error("Failed compiling template: {0}")]
-    FailedCompilingTemplate(#[from] upon::Error),
+    FailedCompilingTemplate(Box<upon::Error>),
     #[error("Duplicate tool name: {0}")]
     DuplicateTool(SmolStr),
     #[error("Duplicate dynamic MCP server name: {0}")]
@@ -221,6 +268,18 @@ pub enum ToolBuilderError {
     EmbeddingNotFinite(SmolStr),
     #[error("Invalid embeddings config: {0}")]
     InvalidEmbeddingsConfig(String),
+}
+
+impl From<upon::Error> for ToolBuilderError {
+    fn from(value: upon::Error) -> Self {
+        ToolBuilderError::FailedCompilingTemplate(Box::new(value))
+    }
+}
+
+impl From<Box<upon::Error>> for ToolBuilderError {
+    fn from(value: Box<upon::Error>) -> Self {
+        ToolBuilderError::FailedCompilingTemplate(value)
+    }
 }
 
 impl ToolEntry {
@@ -346,7 +405,7 @@ impl ToolsRegistry {
         let mut texts: Vec<String> = Vec::new();
         {
             let pinned = self.tools.pin();
-            for (_, entry) in pinned.iter() {
+            for (_, entry) in &pinned {
                 if let Some(allowed) = restrict_to {
                     if !allowed.contains(&entry.conf.name) {
                         continue;
@@ -402,7 +461,7 @@ impl ToolsRegistry {
     }
 
     #[allow(clippy::unused_async)]
-    pub async fn add_tool(&self, tool: McpTool) -> Result<(), ToolBuilderError> {
+    pub fn add_tool(&self, tool: McpTool) -> Result<(), ToolBuilderError> {
         let name = tool.name.clone();
         if let Some(existing) = self.tools.pin().get(&name).map(StdArc::clone) {
             if !matches!(existing.source, ToolSource::Provided) {
@@ -503,7 +562,7 @@ impl ToolsRegistry {
 
         let pinned = self.tools.pin();
         let active = session.active_tools.pin();
-        for (_, entry) in pinned.iter() {
+        for (_, entry) in &pinned {
             if !entry.rbac.as_ref().is_none_or(|rbac| rbac.is_permitted(req_ext)) {
                 continue;
             }
@@ -626,17 +685,21 @@ impl ToolsRegistry {
 
     async fn get_mcp_client(
         url: &str,
-    ) -> Result<RunningService<RoleClient, InitializeRequestParams>, ClientInitializeError> {
+    ) -> Result<RunningService<RoleClient, InitializeRequestParams>, Box<ClientInitializeError>> {
         debug!(target: "mcp_gateway", "Creating MCP client for URL: {url}...");
         let transport = StreamableHttpClientTransport::with_client(
-            upstream_http_client(),
+            upstream_http_client()?,
             StreamableHttpClientTransportConfig::with_uri(url),
         );
         let client_info =
             ClientConfig::new(ClientCapabilities::default(), Implementation::new(DEFAULT_USER_AGENT, "0.1.0"));
-        client_info.serve(transport).await.inspect_err(|e| {
-            info!(target: "mcp_gateway", "get_mcp_client error: {}!", e);
-        })
+        client_info
+            .serve(transport)
+            .await
+            .inspect_err(|e| {
+                info!(target: "mcp_gateway", "get_mcp_client error: {}!", e);
+            })
+            .map_err(Box::new)
     }
 
     pub async fn call_semantic_search_tool(
@@ -725,7 +788,7 @@ impl ToolsRegistry {
         let candidates: Vec<StdArc<ToolEntry>> = {
             let pinned = self.tools.pin();
             let mut candidates = Vec::with_capacity(pinned.len());
-            for (_, entry) in pinned.iter() {
+            for (_, entry) in &pinned {
                 let entry = StdArc::clone(entry);
                 if !entry.rbac.as_ref().is_none_or(|r| r.is_permitted(req_ext)) {
                     continue;
@@ -892,7 +955,7 @@ impl ToolsRegistry {
                                 info!(target: "mcp_gateway", "removing MCP client for URL {url} due to transport error!");
                                 session.mcp_upstreams.pin().remove(url);
                             }
-                            Err(CallToolError::ServiceError(err))
+                            Err(CallToolError::ServiceError(Box::new(err)))
                         },
                     }
                 };
@@ -976,9 +1039,9 @@ fn build_tool_entry(tool_conf: McpTool, source: ToolSource) -> Result<ToolEntry,
         )
     };
     let transcoder = match &tool_conf.backend {
-        UpstreamBackend::Rest { method, path, query_params, body_template, .. } => TranscoderType::Rest(
+        UpstreamBackend::Rest { method, path, query_params, body_template, .. } => TranscoderType::Rest(Box::new(
             RestTranscoder::new(method.clone(), query_params.clone(), path.clone(), body_template.clone())?,
-        ),
+        )),
         UpstreamBackend::FunctionGraph => TranscoderType::FunctionGraph(FunctionGraphTranscoder {}),
         UpstreamBackend::McpServer { .. } => TranscoderType::NoTranscoder,
     };
@@ -1365,7 +1428,7 @@ mod tests {
         let registry = ToolsRegistry::with_config(Vec::new(), Vec::new(), None, None).unwrap();
         let tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
 
-        registry.add_tool(tool).await.unwrap();
+        registry.add_tool(tool).unwrap();
         assert!(registry.get_tool_by_name("test_tool").is_some());
 
         assert!(registry.remove_tool("test_tool"));
@@ -1447,7 +1510,7 @@ mod tests {
 
         // And a provided tool that must be left alone
         let provided = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
-        registry.add_tool(provided).await.unwrap();
+        registry.add_tool(provided).unwrap();
 
         assert!(registry.remove_dynamic_server("srv"));
         assert!(registry.get_tool_by_name("srv__alpha").is_none());
@@ -1554,7 +1617,7 @@ mod tests {
         tool_b.description = "Billing invoices and payment records".into();
 
         let registry = ToolsRegistry::with_config(vec![tool_a], Vec::new(), semantic_search, None).unwrap();
-        registry.add_tool(tool_b).await.unwrap();
+        registry.add_tool(tool_b).unwrap();
 
         let req_ext = http::Extensions::new();
         let req_ctx = RequestCtx::default();
@@ -1567,7 +1630,7 @@ mod tests {
         let mut replacement = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
         replacement.name = "alpha".into();
         replacement.description = "Billing billing billing invoices invoices ledger reconciliation".into();
-        registry.add_tool(replacement).await.unwrap();
+        registry.add_tool(replacement).unwrap();
 
         let ranked = registry
             .rank_tools_for_query(&req_ext, &req_ctx, "billing invoices")
@@ -1630,7 +1693,7 @@ mod tests {
         let mut tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
         tool.name = "tds_tool".into();
 
-        let res = registry.add_tool(tool).await;
+        let res = registry.add_tool(tool);
         assert!(res.is_ok(), "embeddings failure should not block insertion: {res:?}");
         assert!(registry.get_tool_by_name("tds_tool").is_some());
         assert!(registry.get_tool_by_name("tds_tool").unwrap().embedding.load_full().is_none());
@@ -1736,5 +1799,15 @@ mod tests {
             registry.get_tool_by_name("flaky_tool").unwrap().embedding.load_full().is_some(),
             "embedding should be stored after a successful retry"
         );
+    }
+
+    #[test]
+    fn test_upstream_http_client_initialization() {
+        let client_res = upstream_http_client();
+        assert!(client_res.is_ok(), "upstream_http_client should initialize without error: {client_res:?}");
+        let client_a = client_res.unwrap();
+        let client_b = upstream_http_client().unwrap();
+        drop(client_a);
+        drop(client_b);
     }
 }

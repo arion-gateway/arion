@@ -127,7 +127,7 @@ mod envoy_conversions {
                     .collect(),
                 allow_credentials: allow_credentials.unwrap_or_default().value,
                 max_age: (!max_age.is_empty()).then(|| max_age.parse::<u64>()).transpose()?,
-                forward_not_matching_preflights: forward_not_matching_preflights.map_or(true, |value| value.value),
+                forward_not_matching_preflights: forward_not_matching_preflights.is_none_or(|value| value.value),
             })
         }
     }

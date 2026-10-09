@@ -75,6 +75,7 @@ assert_matches.workspace = true
 base64.workspace = true
 pastey.workspace = true
 owning_ref.workspace = true
+oauth2.workspace = true
 quanta.workspace = true
 hyperlocal.workspace = true
 jsonschema.workspace = true
@@ -98,6 +99,7 @@ chrono = { workspace = true, features = ["serde"] }
 schemars = { workspace = true, features = ["std", "derive", "chrono04"] }
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 reqwest.workspace = true
+aws-lc-rs.workspace = true
 moka = { workspace = true, features = ["sync"] }
 rustls-platform-verifier = { workspace = true }
 contatori = { workspace = true, optional = true }

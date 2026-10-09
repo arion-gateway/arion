@@ -331,7 +331,7 @@ impl ToolInvocationOutcome {
                 }
                 Ok(Value::Object(map))
             },
-            Self::Failure(failure) => serde_json::to_value(&failure.into_call_tool_result()),
+            Self::Failure(failure) => serde_json::to_value(failure.into_call_tool_result()),
         }
     }
 }

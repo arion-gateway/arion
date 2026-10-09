@@ -978,7 +978,7 @@ mod envoy_conversions {
             }
             .with_node("common_tls_context")
             .with_node("secrets")?;
-            let sni = required!(sni)?.into();
+            let sni = required!(sni)?;
             Ok(Self { sni, parameters, secret, validation_context })
         }
     }

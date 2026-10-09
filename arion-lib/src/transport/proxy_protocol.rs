@@ -206,7 +206,7 @@ impl ProxyProtocolReader {
 
             if !end_found {
                 return Err(ProxyProtocolError::InvalidHeader(
-                    "Invalid V1 header: terminator not found or header too long".to_string(),
+                    "Invalid V1 header: terminator not found or header too long".to_owned(),
                 )
                 .into());
             }
@@ -407,7 +407,7 @@ impl ProxyProtocolConfigurator {
             },
             _ => {
                 return Err(ProxyProtocolError::UnsupportedAddress(
-                    "Mixed IPv4/IPv6 addresses not supported in proxy protocol v1".to_string(),
+                    "Mixed IPv4/IPv6 addresses not supported in proxy protocol v1".to_owned(),
                 )
                 .into());
             },

@@ -28,6 +28,7 @@ use crate::{
             ext_proc::ExternalProcessor,
             jwt_authn::{JwtAuthentication, JwtAuthenticationBuilder},
             mcp_gateway::mcp::McpGateway,
+            oauth2::{OAuth2Filter, OAuth2FilterBuilder},
             user_rate_limiter::UserRateLimiter,
             RequestCtx,
         },
@@ -172,6 +173,7 @@ pub enum HttpFilterValue {
     McpGateway(Box<McpGateway>),
     UserRateLimit(UserRateLimiter),
     CedarPolicy(CedarHttpFilter),
+    OAuth2(OAuth2Filter),
 }
 
 pub trait FilterFactory {
@@ -191,6 +193,7 @@ impl FilterFactory for HttpFilterValue {
             HttpFilterValue::CedarPolicy(conf) => HttpFilterValue::CedarPolicy(conf.clone()),
             #[cfg(feature = "wasm")]
             HttpFilterValue::Wasm(conf) => HttpFilterValue::Wasm(conf.new_from()),
+            HttpFilterValue::OAuth2(conf) => HttpFilterValue::OAuth2(conf.new_from()),
         }
     }
 }
@@ -228,6 +231,10 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
                 HttpFilterValue::UserRateLimit(user_rate_limit.try_into()?)
             },
             HttpFilterType::CedarPolicy(conf) => HttpFilterValue::CedarPolicy(CedarHttpFilter::try_from_config(&conf)?),
+            HttpFilterType::OAuth2(conf) => {
+                let builder = OAuth2FilterBuilder::new(*conf);
+                HttpFilterValue::OAuth2(builder.build()?)
+            },
         };
         Ok(Self { name, disabled, filter: Some(filter), filter_config: hcm_config.map(Box::new) })
     }
@@ -246,6 +253,7 @@ impl HttpFilterValue {
             HttpFilterValue::CedarPolicy(cedar) => cedar.apply_request(request),
             #[cfg(feature = "wasm")]
             HttpFilterValue::Wasm(wasm) => wasm.apply_request(request, ctx).await,
+            HttpFilterValue::OAuth2(oauth2) => oauth2.apply_request(request).await,
         }
     }
     pub async fn apply_response(
@@ -264,7 +272,8 @@ impl HttpFilterValue {
             | HttpFilterValue::RateLimit(_)
             | HttpFilterValue::UserRateLimit(_)
             | HttpFilterValue::JwtAuthentication(_)
-            | HttpFilterValue::CedarPolicy(_) => FilterDecision::Continue,
+            | HttpFilterValue::CedarPolicy(_)
+            | HttpFilterValue::OAuth2(_) => FilterDecision::Continue,
         }
     }
     pub(crate) fn from_filter_override(

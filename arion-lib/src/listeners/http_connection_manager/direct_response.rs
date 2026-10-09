@@ -26,17 +26,18 @@ use crate::{body::timeout_body::TimeoutBody, ArionRequestBody, ArionResponseBody
 use arion_configuration::config::network_filters::http_connection_manager::route::DirectResponseAction;
 use http_body_util::Full;
 use hyper::{Request, Response};
+use std::future::Future;
 
 #[cfg(feature = "access-log")]
 use arion_format::context::UpstreamContext;
 
 impl<'a> RequestHandler<Request<ArionRequestBody>, &'a str> for &DirectResponseAction {
-    async fn to_response(
+    fn to_response(
         self,
         #[allow(unused_variables)] ctx: &RequestCtx,
         request: Request<ArionRequestBody>,
         #[allow(unused_variables)] arg: &'a str,
-    ) -> Result<Response<ArionResponseBody>> {
+    ) -> impl Future<Output = Result<Response<ArionResponseBody>>> {
         #[cfg(feature = "access-log")]
         let route_name = arg;
         #[cfg(feature = "access-log")]
@@ -48,6 +49,6 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, &'a str> for &DirectResponseA
         let mut resp = Response::new(TimeoutBody::new(None, body.into()).into());
         *resp.status_mut() = self.status;
         *resp.version_mut() = request.version();
-        Ok(resp)
+        std::future::ready(Ok(resp))
     }
 }

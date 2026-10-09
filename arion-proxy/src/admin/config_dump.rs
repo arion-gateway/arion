@@ -232,6 +232,7 @@ mod config_dump_tests {
 
     #[tokio::test]
     #[allow(clippy::indexing_slicing)]
+    #[allow(clippy::too_many_lines)]
     async fn config_dump_listeners_and_routes() {
         use arion_configuration::config::{
             listener::{FilterChain, FilterChainMatch, Listener, MainFilter},

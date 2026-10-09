@@ -693,7 +693,7 @@ mod tests {
         assert!(MatchHostScoreLPM::Wildcard < MatchHostScoreLPM::Exact("test.com".len()));
         assert!(MatchHostScoreLPM::Wildcard < MatchHostScoreLPM::Prefix("foo.bar.test.".len()));
         assert!(MatchHostScoreLPM::Wildcard < MatchHostScoreLPM::Suffix("foo.bar.test.com".len()));
-        assert!(MatchHostScoreLPM::Wildcard == MatchHostScoreLPM::Wildcard);
+        assert_eq!(MatchHostScoreLPM::Wildcard, MatchHostScoreLPM::Wildcard);
     }
 
     #[test]
@@ -1563,7 +1563,9 @@ route_config:
                 panic!("expected an inline route config");
             };
             let routes: Vec<_> = route_config.virtual_hosts.iter().flat_map(|vh| &vh.routes).collect();
-            let override_config = routes[0]
+            let override_config = routes
+                .first()
+                .unwrap()
                 .typed_per_filter_config
                 .get("envoy.filters.http.cors")
                 .expect("expected a cors override on the first route");
@@ -1573,7 +1575,8 @@ route_config:
             assert_eq!(policy.allow_methods, vec![http::Method::GET, http::Method::OPTIONS]);
             assert_eq!(policy.allow_headers, vec!["x-test-header"]);
             assert_eq!(policy.max_age, Some(3600));
-            assert!(routes[1].typed_per_filter_config.is_empty());
+            let second = routes.get(1);
+            assert!(second.unwrap().typed_per_filter_config.is_empty());
         }
     }
 }

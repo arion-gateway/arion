@@ -183,6 +183,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[allow(clippy::similar_names)]
     async fn a_busy_runtime_survives_a_config_query() {
         use std::time::Duration as StdDuration;
 
@@ -201,7 +202,7 @@ mod tests {
             rt.block_on(async move {
                 std::thread::sleep(StdDuration::from_millis(300));
                 let result = arion_lib::ListenersManager::new(listener_rx_2, route_rx_2).start().await;
-                let _ = exited_tx.send(result);
+                _ = exited_tx.send(result);
             });
         });
 

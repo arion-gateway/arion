@@ -29,7 +29,7 @@ pub(crate) fn bind_device(s: &tokio::net::TcpSocket, binddev: &BindDevice) -> st
 
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn bind_device(_: &tokio::net::TcpSocket, _: &BindDevice) -> std::io::Result<()> {
-    Err(std::io::Error::new(std::io::ErrorKind::Other, "BINDTODEVICE is not supported"))
+    Err(std::io::Error::other("BINDTODEVICE is not supported"))
 }
 
 #[cfg(test)]
