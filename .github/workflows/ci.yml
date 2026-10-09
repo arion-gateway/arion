@@ -74,13 +74,13 @@ jobs:
           env-vars: RUSTFLAGS
           cache-on-failure: true
 
-      - name: Build (release)
-        run: cargo build --all-features --workspace --release --locked
+      - name: Build
+        run: cargo build --all-features --locked
 
       - name: Run tests
-        run: cargo test --all-features --workspace --release --locked
+        run: cargo test --all-features --locked
 
-  # E2E tests spawn the arion binary, so build it (release, all features) first
+  # E2E tests spawn the arion binary, so build it (all features) first
   e2e-test:
     name: build + e2e-test
     runs-on: ubuntu-latest
@@ -112,8 +112,8 @@ jobs:
           env-vars: RUSTFLAGS
           cache-on-failure: true
 
-      - name: Build arion (release, all features)
-        run: cargo build -p arion-proxy --all-features --release --locked
+      - name: Build arion (all features)
+        run: cargo build -p arion-proxy --all-features --locked
 
       # arion-e2e-tests/build.rs builds these too, but only warns if that fails. It also
       # strips RUSTFLAGS, so unset it here to match and avoid compiling the filters twice.
@@ -123,7 +123,4 @@ jobs:
         run: env -u RUSTFLAGS cargo build --target wasm32-unknown-unknown --workspace
 
       - name: Run e2e tests
-        env:
-          # The harness prefers target/debug/arion when present, so pin the release build
-          ARION_BIN: ${{ github.workspace }}/target/release/arion
-        run: cargo test -p arion-e2e-tests --release --no-fail-fast -- --test-threads 1 --ignored --no-capture
+        run: cargo test -p arion-e2e-tests --no-fail-fast -- --test-threads 1 --ignored --no-capture
