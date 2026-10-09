@@ -75,6 +75,7 @@ assert_matches.workspace = true
 base64.workspace = true
 pastey.workspace = true
 owning_ref.workspace = true
+oauth2.workspace = true
 quanta.workspace = true
 hyperlocal.workspace = true
 jsonschema.workspace = true

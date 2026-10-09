@@ -12,24 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
 use std::{
-    borrow::Cow,
     str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use aws_lc_rs::{constant_time, hmac};
+use aws_lc_rs::{aead, constant_time, digest, hmac};
 use base64::{
     prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD},
     Engine,
 };
 use http::{header, uri::PathAndQuery, HeaderMap, HeaderValue, Request, StatusCode, Version};
-use rand::Rng;
+use oauth2::{basic::BasicClient, AuthUrl, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge, RedirectUrl, Scope};
+use rand::RngCore;
 use serde::Deserialize;
 use smol_str::SmolStr;
 use tracing::{debug, error, warn};
 use triomphe::Arc;
+use url::Url;
 
 use crate::{
     body::response_flags::ResponseFlags,
@@ -71,6 +71,7 @@ struct TokenEndpointResponse {
 pub struct OAuth2FilterInner {
     pub config: OAuth2Config,
     hmac_key: hmac::Key,
+    token_encryption_key: [u8; 32],
     pub redirect_uri_formatter: UriFormatter,
     pub client: reqwest::Client,
 }
@@ -89,16 +90,29 @@ impl OAuth2FilterBuilder {
         OAuth2FilterBuilder { config }
     }
 
-    pub fn build(self) -> Result<OAuth2Filter, reqwest::Error> {
+    pub fn build(self) -> crate::Result<OAuth2Filter> {
         debug!(target: "oauth2", "creating new OAuth2 filter");
 
         let redirect_uri_formatter = UriFormatter::try_new(self.config.redirect_uri.as_str())
-            .unwrap_or_else(|_| UriFormatter::try_new("").unwrap());
+            .map_err(|err| format!("invalid OAuth2 redirect_uri formatter: {err}"))?;
+        AuthUrl::new(self.config.authorization_endpoint.to_string())
+            .map_err(|err| format!("invalid OAuth2 authorization_endpoint: {err}"))?;
+        oauth2::TokenUrl::new(self.config.token_endpoint.uri.to_string())
+            .map_err(|err| format!("invalid OAuth2 token_endpoint URI: {err}"))?;
 
         let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build()?;
         let hmac_key = hmac::Key::new(hmac::HMAC_SHA256, self.config.credentials.hmac_secret.as_bytes());
+        let mut token_encryption_key = [0_u8; 32];
+        token_encryption_key
+            .copy_from_slice(digest::digest(&digest::SHA256, self.config.credentials.hmac_secret.as_bytes()).as_ref());
 
-        let inner = Arc::new(OAuth2FilterInner { config: self.config, hmac_key, redirect_uri_formatter, client });
+        let inner = Arc::new(OAuth2FilterInner {
+            config: self.config,
+            hmac_key,
+            token_encryption_key,
+            redirect_uri_formatter,
+            client,
+        });
         Ok(OAuth2Filter { inner })
     }
 }
@@ -117,7 +131,7 @@ impl Clone for OAuth2Filter {
 
 impl OAuth2Filter {
     #[allow(dead_code)]
-    pub fn try_new(config: OAuth2Config) -> Result<Self, reqwest::Error> {
+    pub fn try_new(config: OAuth2Config) -> crate::Result<Self> {
         OAuth2FilterBuilder::new(config).build()
     }
 
@@ -128,7 +142,6 @@ impl OAuth2Filter {
 
     pub async fn apply_request(&mut self, req: &mut Request<ArionRequestBody>) -> FilterDecision {
         let config = &self.inner.config;
-        let cnames = &config.credentials.cookie_names;
 
         // 1. Pass-through matcher: bypass authentication if configured headers match.
         for matcher in &config.pass_through_matcher {
@@ -158,24 +171,10 @@ impl OAuth2Filter {
         if let Some(pq) = req.uri().path_and_query() {
             if config.redirect_path_matcher.matches(pq).matched() {
                 debug!(target: "oauth2", "request matched redirect_path_matcher: {path}");
-                let (is_https, redirect_uri, query, csrf_cookie, version) = {
-                    let ctx = DownstreamContext {
-                        request: req,
-                        request_head_size: 0,
-                        trace_id: None,
-                        server_name: None,
-                        socket_address: SocketAddrContext::default(),
-                    };
-                    let redirect_uri = self.inner.redirect_uri_formatter.format(&ctx);
-                    let is_https = req.uri().scheme_str() == Some("https")
-                        || req.headers().get("x-forwarded-proto").is_some_and(|v| v == "https");
-                    let query = req.uri().query().unwrap_or_default();
-                    let csrf_cookie = extract_cookie(req.headers(), cnames.oauth_nonce.as_str()).map(str::to_owned);
-                    (is_https, redirect_uri, query, csrf_cookie, req.version())
-                };
-                return self
-                    .handle_callback(version, is_https, redirect_uri, query, csrf_cookie.as_deref(), host)
-                    .await;
+                let is_https = request_is_https(req);
+                let query = req.uri().query().unwrap_or_default().to_owned();
+                let headers = req.headers().clone();
+                return self.handle_callback(req.version(), is_https, &query, &headers, host).await;
             }
         }
 
@@ -188,17 +187,20 @@ impl OAuth2Filter {
             if let (Some(hmac_value), Some(expires)) = (session.hmac, session.expires) {
                 if let Ok(expires_at) = expires.parse::<u64>() {
                     if expires_at > now_secs {
+                        let access_token = self.decrypt_token_cookie(session.access_token);
+                        let id_token = self.decrypt_token_cookie(session.id_token);
+                        let refresh_token = self.decrypt_token_cookie(session.refresh_token);
                         let domain = hmac_domain(config.credentials.cookie_domain.as_deref(), host);
                         if verify_session_hmac(
                             &self.inner.hmac_key,
                             domain,
                             expires,
-                            session.access_token,
-                            session.id_token,
-                            session.refresh_token,
+                            access_token.as_deref(),
+                            id_token.as_deref(),
+                            refresh_token.as_deref(),
                             hmac_value,
                         ) {
-                            Some(session.access_token.and_then(|token| self.bearer_header(req, token)))
+                            Some(access_token.as_deref().and_then(|token| self.bearer_header(req, token)))
                         } else {
                             warn!(target: "oauth2", "invalid OAuth session HMAC for domain: {domain}");
                             None
@@ -244,10 +246,57 @@ impl OAuth2Filter {
         HeaderValue::from_str(&format!("Bearer {token}")).ok()
     }
 
+    fn format_redirect_uri(&self, req: &Request<ArionRequestBody>) -> Option<SmolStr> {
+        let ctx = DownstreamContext {
+            request: req,
+            request_head_size: 0,
+            trace_id: None,
+            server_name: None,
+            socket_address: SocketAddrContext::default(),
+        };
+        let redirect_uri = self.inner.redirect_uri_formatter.format(&ctx);
+        let parsed = Url::parse(redirect_uri.as_str()).ok()?;
+        (matches!(parsed.scheme(), "http" | "https")
+            && parsed.host_str().is_some()
+            && parsed.username().is_empty()
+            && parsed.password().is_none()
+            && parsed.fragment().is_none())
+        .then_some(redirect_uri)
+    }
+
+    fn authorization_url(&self, redirect_uri: &str, state: String, pkce_challenge: PkceCodeChallenge) -> Option<Url> {
+        let config = &self.inner.config;
+        let client = BasicClient::new(ClientId::new(config.credentials.client_id.to_string()))
+            .set_client_secret(ClientSecret::new(config.credentials.token_secret.to_string()))
+            .set_auth_uri(AuthUrl::new(config.authorization_endpoint.to_string()).ok()?)
+            .set_redirect_uri(RedirectUrl::new(redirect_uri.to_owned()).ok()?);
+        let request =
+            config.auth_scopes.iter().fold(client.authorize_url(|| CsrfToken::new(state)), |request, scope| {
+                request.add_scope(Scope::new(scope.to_string()))
+            });
+        Some(request.set_pkce_challenge(pkce_challenge).url().0)
+    }
+
+    fn decrypt_token_cookie(&self, value: Option<&str>) -> Option<String> {
+        let value = value?;
+        if self.inner.config.disable_token_encryption {
+            return Some(value.to_owned());
+        }
+        decrypt_cookie_value(&self.inner.token_encryption_key, value)
+    }
+
+    fn encrypt_token_cookie(&self, value: &str) -> Option<String> {
+        if self.inner.config.disable_token_encryption {
+            return Some(value.to_owned());
+        }
+        encrypt_cookie_value(&self.inner.token_encryption_key, value)
+    }
+
     fn handle_signout(&self, req: &Request<ArionRequestBody>) -> FilterDecision {
         let config = &self.inner.config;
         let cnames = &config.credentials.cookie_names;
         let cdomain = config.credentials.cookie_domain.as_deref();
+        let is_https = request_is_https(req);
 
         let mut resp = SyntheticHttpResponse::custom_error(
             StatusCode::FOUND,
@@ -261,19 +310,19 @@ impl OAuth2Filter {
         if let Ok(loc) = HeaderValue::from_str(target_url) {
             resp.headers_mut().insert(header::LOCATION, loc);
         }
+        add_oauth_response_headers(resp.headers_mut());
 
-        // Clear all cookies
-        for name in [
-            cnames.bearer_token.as_str(),
-            cnames.oauth_hmac.as_str(),
-            cnames.oauth_expires.as_str(),
-            cnames.id_token.as_str(),
-            cnames.refresh_token.as_str(),
-            cnames.oauth_nonce.as_str(),
+        // A cookie is only deleted when its name, domain, and path match the original cookie.
+        for (name, cookie_config) in [
+            (cnames.bearer_token.as_str(), config.cookie_configs.bearer_token_cookie_config.as_ref()),
+            (cnames.oauth_hmac.as_str(), config.cookie_configs.oauth_hmac_cookie_config.as_ref()),
+            (cnames.oauth_expires.as_str(), config.cookie_configs.oauth_expires_cookie_config.as_ref()),
+            (cnames.id_token.as_str(), config.cookie_configs.id_token_cookie_config.as_ref()),
+            (cnames.refresh_token.as_str(), config.cookie_configs.refresh_token_cookie_config.as_ref()),
+            (cnames.oauth_nonce.as_str(), config.cookie_configs.oauth_nonce_cookie_config.as_ref()),
+            (cnames.code_verifier.as_str(), config.cookie_configs.code_verifier_cookie_config.as_ref()),
         ] {
-            if let Some(hv) = format_cookie(name, "", Some(0), None, cdomain, false) {
-                resp.headers_mut().append(header::SET_COOKIE, hv);
-            }
+            append_expired_cookie(resp.headers_mut(), name, cookie_config, cdomain, is_https);
         }
 
         FilterDecision::DirectResponse(Box::new(resp))
@@ -283,35 +332,84 @@ impl OAuth2Filter {
         let config = &self.inner.config;
         let cnames = &config.credentials.cookie_names;
         let cdomain = config.credentials.cookie_domain.as_deref();
+        let is_https = request_is_https(req);
 
-        // Evaluate redirect_uri on-demand with request context
-        let ctx = DownstreamContext {
-            request: req,
-            request_head_size: 0,
-            trace_id: None,
-            server_name: None,
-            socket_address: SocketAddrContext::default(),
+        let Some(redirect_uri) = self.format_redirect_uri(req) else {
+            warn!(target: "oauth2", "redirect_uri formatter produced an invalid absolute HTTP(S) URL");
+            let mut resp =
+                SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into()).into_response(req.version());
+            add_oauth_response_headers(resp.headers_mut());
+            return FilterDecision::DirectResponse(Box::new(resp));
         };
-        let redirect_uri = self.inner.redirect_uri_formatter.format(&ctx);
 
-        // Generate random CSRF nonce
-        let nonce: String =
-            rand::thread_rng().sample_iter(&rand::distributions::Alphanumeric).take(32).map(char::from).collect();
-
-        // Bind the callback to this browser-initiated flow. The cookie also retains the local
-        // target because callback query parameters are untrusted input.
+        let flow_id = random_urlsafe_token(16);
+        let csrf_token = CsrfToken::new_random();
+        let state = format!("{flow_id}.{}", csrf_token.secret());
+        let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
+        let nonce_cookie_name = flow_cookie_name(cnames.oauth_nonce.as_str(), &flow_id);
+        let verifier_cookie_name = flow_cookie_name(cnames.code_verifier.as_str(), &flow_id);
         let original_target = local_redirect_target(req.uri().path_and_query().map(PathAndQuery::as_str));
-        let csrf_cookie = encode_csrf_cookie(&nonce, original_target);
-        let state = utf8_percent_encode(&nonce, NON_ALPHANUMERIC);
-        let encoded_redirect_uri = utf8_percent_encode(redirect_uri.as_str(), NON_ALPHANUMERIC);
-        let scopes = config.auth_scopes.join(" ");
-        let encoded_scopes = utf8_percent_encode(&scopes, NON_ALPHANUMERIC);
-        let encoded_client_id = utf8_percent_encode(config.credentials.client_id.as_str(), NON_ALPHANUMERIC);
-
-        let auth_url = format!(
-            "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}",
-            config.authorization_endpoint, encoded_client_id, encoded_redirect_uri, encoded_scopes, state
+        let issued_at = unix_timestamp_secs();
+        let transaction_cookie = encode_transaction_cookie(
+            &self.inner.hmac_key,
+            &flow_id,
+            csrf_token.secret(),
+            issued_at,
+            original_target,
+            redirect_uri.as_str(),
         );
+        let verifier_payload = format!("{issued_at}.{}", pkce_verifier.secret());
+        let Some(verifier_cookie) = encrypt_cookie_value(&self.inner.token_encryption_key, &verifier_payload) else {
+            error!(target: "oauth2", "failed to encrypt PKCE verifier cookie");
+            let mut resp = SyntheticHttpResponse::internal_server_error(
+                EventFailure::DirectResponse.into(),
+                ResponseFlags::default(),
+            )
+            .into_response(req.version());
+            add_oauth_response_headers(resp.headers_mut());
+            return FilterDecision::DirectResponse(Box::new(resp));
+        };
+
+        let auth_url = match self.authorization_url(&redirect_uri, state, pkce_challenge) {
+            Some(url) => url,
+            None => {
+                error!(target: "oauth2", "failed to build OAuth authorization URL");
+                let mut resp = SyntheticHttpResponse::internal_server_error(
+                    EventFailure::DirectResponse.into(),
+                    ResponseFlags::default(),
+                )
+                .into_response(req.version());
+                add_oauth_response_headers(resp.headers_mut());
+                return FilterDecision::DirectResponse(Box::new(resp));
+            },
+        };
+
+        let nonce_header = format_cookie(
+            &nonce_cookie_name,
+            &transaction_cookie,
+            Some(config.csrf_token_expires_in.as_secs()),
+            config.cookie_configs.oauth_nonce_cookie_config.as_ref(),
+            cdomain,
+            is_https,
+        );
+        let verifier_header = format_cookie(
+            &verifier_cookie_name,
+            &verifier_cookie,
+            Some(config.code_verifier_token_expires_in.as_secs()),
+            config.cookie_configs.code_verifier_cookie_config.as_ref(),
+            cdomain,
+            is_https,
+        );
+        let (Some(nonce_header), Some(verifier_header)) = (nonce_header, verifier_header) else {
+            error!(target: "oauth2", "OAuth transaction cookie could not be serialized");
+            let mut resp = SyntheticHttpResponse::internal_server_error(
+                EventFailure::DirectResponse.into(),
+                ResponseFlags::default(),
+            )
+            .into_response(req.version());
+            add_oauth_response_headers(resp.headers_mut());
+            return FilterDecision::DirectResponse(Box::new(resp));
+        };
 
         let mut resp = SyntheticHttpResponse::custom_error(
             StatusCode::FOUND,
@@ -320,147 +418,147 @@ impl OAuth2Filter {
             ResponseFlags::default(),
         )
         .into_response(req.version());
-
-        if let Ok(loc) = HeaderValue::from_str(&auth_url) {
-            resp.headers_mut().insert(header::LOCATION, loc);
-        }
-
-        // Set CSRF nonce cookie
-        let is_https = req.uri().scheme_str() == Some("https")
-            || req.headers().get("x-forwarded-proto").is_some_and(|v| v == "https");
-        if let Some(hv) = format_cookie(
-            cnames.oauth_nonce.as_str(),
-            &csrf_cookie,
-            Some(config.csrf_token_expires_in.as_secs()),
-            config.cookie_configs.oauth_nonce_cookie_config.as_ref(),
-            cdomain,
-            is_https,
-        ) {
-            resp.headers_mut().append(header::SET_COOKIE, hv);
-        }
+        match HeaderValue::from_str(auth_url.as_str()) {
+            Ok(location) => resp.headers_mut().insert(header::LOCATION, location),
+            Err(err) => {
+                error!(target: "oauth2", "OAuth authorization URL cannot be represented as a header: {err}");
+                let mut error_resp = SyntheticHttpResponse::internal_server_error(
+                    EventFailure::DirectResponse.into(),
+                    ResponseFlags::default(),
+                )
+                .into_response(req.version());
+                add_oauth_response_headers(error_resp.headers_mut());
+                return FilterDecision::DirectResponse(Box::new(error_resp));
+            },
+        };
+        add_oauth_response_headers(resp.headers_mut());
+        resp.headers_mut().append(header::SET_COOKIE, nonce_header);
+        resp.headers_mut().append(header::SET_COOKIE, verifier_header);
 
         FilterDecision::DirectResponse(Box::new(resp))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    fn callback_failure(&self, version: Version, status: StatusCode, is_https: bool, flow_id: &str) -> FilterDecision {
+        let config = &self.inner.config;
+        let mut resp = SyntheticHttpResponse::custom_error(
+            status,
+            None,
+            EventFailure::DirectResponse.into(),
+            ResponseFlags::default(),
+        )
+        .into_response(version);
+        add_oauth_response_headers(resp.headers_mut());
+        clear_transaction_cookies(resp.headers_mut(), config, flow_id, is_https);
+        FilterDecision::DirectResponse(Box::new(resp))
+    }
+
     #[allow(clippy::too_many_lines)]
     async fn handle_callback(
         &self,
         version: Version,
         is_https: bool,
-        redirect_uri: SmolStr,
         query: &str,
-        csrf_cookie: Option<&str>,
+        headers: &HeaderMap,
         host: &str,
     ) -> FilterDecision {
         let config = &self.inner.config;
         let cnames = &config.credentials.cookie_names;
         let cdomain = config.credentials.cookie_domain.as_deref();
-
-        let mut code: Option<Cow<'_, str>> = None;
-        let mut state: Option<Cow<'_, str>> = None;
-        let mut error_param: Option<Cow<'_, str>> = None;
-        let mut error_desc: Option<Cow<'_, str>> = None;
-
-        for pair in query.split('&') {
-            if let Some((k, v)) = pair.split_once('=') {
-                if k == "code" {
-                    let decoded = match percent_decode_str(v).decode_utf8() {
-                        Ok(d) => d,
-                        Err(e) => {
-                            warn!(target: "oauth2", "invalid percent-encoded utf-8 in 'code': {e}");
-                            let resp = SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into())
-                                .into_response(version);
-                            return FilterDecision::DirectResponse(Box::new(resp));
-                        },
-                    };
-                    code = Some(decoded);
-                } else if k == "state" {
-                    let decoded = match percent_decode_str(v).decode_utf8() {
-                        Ok(d) => d,
-                        Err(e) => {
-                            warn!(target: "oauth2", "invalid percent-encoded utf-8 in 'state': {e}");
-                            let resp = SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into())
-                                .into_response(version);
-                            return FilterDecision::DirectResponse(Box::new(resp));
-                        },
-                    };
-                    state = Some(decoded);
-                } else if k == "error" {
-                    if let Ok(d) = percent_decode_str(v).decode_utf8() {
-                        error_param = Some(d);
-                    }
-                } else if k == "error_description" {
-                    if let Ok(d) = percent_decode_str(v).decode_utf8() {
-                        error_desc = Some(d);
-                    }
-                }
-            }
-        }
-
-        // Check if IdP reported an authorization error (RFC 6749 §4.1.2.1)
-        if let Some(err) = error_param {
-            if let Some(desc) = error_desc {
-                warn!(target: "oauth2", "oauth provider returned error: {err} ({desc})");
-            } else {
-                warn!(target: "oauth2", "oauth provider returned error: {err}");
-            }
-            let resp = SyntheticHttpResponse::unauthorized(EventFailure::DirectResponse.into()).into_response(version);
-            return FilterDecision::DirectResponse(Box::new(resp));
-        }
-
-        let Some(code_val) = code else {
-            if query.is_empty() {
-                warn!(target: "oauth2", "callback request missing 'code' parameter (query string is empty)");
-            } else {
-                warn!(target: "oauth2", "callback request missing 'code' parameter (query: '{query}')");
-            }
-            let resp = SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into()).into_response(version);
-            return FilterDecision::DirectResponse(Box::new(resp));
-        };
-
-        // Verify the callback belongs to an authorization flow initiated by this browser before
-        // exchanging its code. `state` alone is attacker-controlled callback input.
-        let Some(target_url) = verify_csrf_state(state.as_deref(), csrf_cookie) else {
-            warn!(target: "oauth2", "callback CSRF state validation failed");
-            let resp = SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into()).into_response(version);
-            return FilterDecision::DirectResponse(Box::new(resp));
-        };
-
-        // Exchange authorization code for access token via token_endpoint
-        let token_result = self.exchange_code(&code_val, &redirect_uri).await;
-        let token_resp = match token_result {
-            Ok(resp) => resp,
-            Err(e) => {
-                error!(target: "oauth2", "failed to exchange code for token: {e}");
-                let resp = SyntheticHttpResponse::internal_server_error(
-                    EventFailure::DirectResponse.into(),
-                    ResponseFlags::default(),
-                )
-                .into_response(version);
+        let parameters = match parse_callback_query(query) {
+            Ok(parameters) => parameters,
+            Err(()) => {
+                warn!(target: "oauth2", "invalid or ambiguous OAuth callback query");
+                let mut resp =
+                    SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into()).into_response(version);
+                add_oauth_response_headers(resp.headers_mut());
                 return FilterDecision::DirectResponse(Box::new(resp));
             },
         };
+        let Some(state) = parameters.state.as_deref() else {
+            warn!(target: "oauth2", "callback request is missing state");
+            let mut resp =
+                SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into()).into_response(version);
+            add_oauth_response_headers(resp.headers_mut());
+            return FilterDecision::DirectResponse(Box::new(resp));
+        };
+        let Some((flow_id, nonce)) = split_callback_state(state) else {
+            warn!(target: "oauth2", "callback request contains malformed state");
+            let mut resp =
+                SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into()).into_response(version);
+            add_oauth_response_headers(resp.headers_mut());
+            return FilterDecision::DirectResponse(Box::new(resp));
+        };
+        let nonce_cookie_name = flow_cookie_name(cnames.oauth_nonce.as_str(), flow_id);
+        let Some(transaction) = verify_transaction_cookie(
+            &self.inner.hmac_key,
+            state,
+            extract_cookie(headers, &nonce_cookie_name),
+            config.csrf_token_expires_in.as_secs(),
+        ) else {
+            warn!(target: "oauth2", "callback CSRF state validation failed");
+            let mut resp =
+                SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into()).into_response(version);
+            add_oauth_response_headers(resp.headers_mut());
+            return FilterDecision::DirectResponse(Box::new(resp));
+        };
+        debug_assert_eq!(transaction.flow_id, flow_id);
+        debug_assert_eq!(transaction.nonce, nonce);
 
-        let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-        let expires_in = token_resp.expires_in.unwrap_or({
-            let exp = config.default_expires_in.as_secs();
-            if exp > 0 {
-                exp
-            } else {
+        if parameters.error.is_some() {
+            warn!(target: "oauth2", "oauth provider returned an authorization error");
+            return self.callback_failure(version, StatusCode::UNAUTHORIZED, is_https, flow_id);
+        }
+        let Some(code) = parameters.code.as_deref() else {
+            warn!(target: "oauth2", "callback request is missing code");
+            return self.callback_failure(version, StatusCode::BAD_REQUEST, is_https, flow_id);
+        };
+        let verifier_cookie_name = flow_cookie_name(cnames.code_verifier.as_str(), flow_id);
+        let Some(code_verifier) = extract_cookie(headers, &verifier_cookie_name)
+            .and_then(|value| decrypt_cookie_value(&self.inner.token_encryption_key, value))
+            .and_then(|value| verify_code_verifier(&value, config.code_verifier_token_expires_in.as_secs()))
+        else {
+            warn!(target: "oauth2", "callback PKCE verifier validation failed");
+            return self.callback_failure(version, StatusCode::BAD_REQUEST, is_https, flow_id);
+        };
+
+        let token_resp = match self.exchange_code(code, &transaction.redirect_uri, &code_verifier).await {
+            Ok(resp) => resp,
+            Err(err) => {
+                error!(target: "oauth2", "failed to exchange authorization code for token: {err}");
+                return self.callback_failure(version, StatusCode::BAD_GATEWAY, is_https, flow_id);
+            },
+        };
+        let now_secs = unix_timestamp_secs();
+        let expires_in = token_resp.expires_in.unwrap_or_else(|| {
+            let configured = config.default_expires_in.as_secs();
+            if configured == 0 {
                 3600
+            } else {
+                configured
             }
         });
-        let expires_at = now_secs + expires_in;
-
-        let domain = hmac_domain(cdomain, host);
+        let Some(expires_at) = now_secs.checked_add(expires_in) else {
+            error!(target: "oauth2", "OAuth token expiration overflows Unix timestamp");
+            return self.callback_failure(version, StatusCode::INTERNAL_SERVER_ERROR, is_https, flow_id);
+        };
         let mut expires_buffer = itoa::Buffer::new();
         let expires = expires_buffer.format(expires_at);
         let access_token = (!config.disable_access_token_set_cookie).then_some(token_resp.access_token.as_str());
-        let id_token = (!config.disable_id_token_set_cookie).then(|| token_resp.id_token.as_deref()).flatten();
+        let id_token = (!config.disable_id_token_set_cookie).then_some(token_resp.id_token.as_deref()).flatten();
         let refresh_token = (config.use_refresh_token && !config.disable_refresh_token_set_cookie)
-            .then(|| token_resp.refresh_token.as_deref())
+            .then_some(token_resp.refresh_token.as_deref())
             .flatten();
+        let access_cookie = access_token.and_then(|token| self.encrypt_token_cookie(token));
+        let id_cookie = id_token.and_then(|token| self.encrypt_token_cookie(token));
+        let refresh_cookie = refresh_token.and_then(|token| self.encrypt_token_cookie(token));
+        if (access_token.is_some() && access_cookie.is_none())
+            || (id_token.is_some() && id_cookie.is_none())
+            || (refresh_token.is_some() && refresh_cookie.is_none())
+        {
+            error!(target: "oauth2", "failed to encrypt OAuth token cookie");
+            return self.callback_failure(version, StatusCode::INTERNAL_SERVER_ERROR, is_https, flow_id);
+        }
+        let domain = hmac_domain(cdomain, host);
         let hmac_val =
             compute_session_hmac(&self.inner.hmac_key, domain, expires, access_token, id_token, refresh_token);
 
@@ -471,128 +569,110 @@ impl OAuth2Filter {
             ResponseFlags::default(),
         )
         .into_response(version);
+        let Ok(location) = HeaderValue::from_str(&transaction.target) else {
+            return self.callback_failure(version, StatusCode::INTERNAL_SERVER_ERROR, is_https, flow_id);
+        };
+        resp.headers_mut().insert(header::LOCATION, location);
+        add_oauth_response_headers(resp.headers_mut());
 
-        if let Ok(loc) = HeaderValue::from_str(&target_url) {
-            resp.headers_mut().insert(header::LOCATION, loc);
-        }
-
-        // Set BearerToken cookie
-        if !config.disable_access_token_set_cookie {
-            if let Some(hv) = format_cookie(
+        if let Some(token) = access_cookie {
+            append_cookie(
+                resp.headers_mut(),
                 cnames.bearer_token.as_str(),
-                &token_resp.access_token,
+                &token,
                 Some(expires_in),
                 config.cookie_configs.bearer_token_cookie_config.as_ref(),
                 cdomain,
                 is_https,
-            ) {
-                resp.headers_mut().append(header::SET_COOKIE, hv);
-            }
+            );
         }
-
-        // Set OauthExpires cookie
-        let exp_str = expires;
-        if let Some(hv) = format_cookie(
+        append_cookie(
+            resp.headers_mut(),
             cnames.oauth_expires.as_str(),
-            exp_str,
+            expires,
             Some(expires_in),
             config.cookie_configs.oauth_expires_cookie_config.as_ref(),
             cdomain,
             is_https,
-        ) {
-            resp.headers_mut().append(header::SET_COOKIE, hv);
-        }
-
-        // Set OauthHMAC cookie
-        if let Some(hv) = format_cookie(
+        );
+        append_cookie(
+            resp.headers_mut(),
             cnames.oauth_hmac.as_str(),
             &hmac_val,
             Some(expires_in),
             config.cookie_configs.oauth_hmac_cookie_config.as_ref(),
             cdomain,
             is_https,
-        ) {
-            resp.headers_mut().append(header::SET_COOKIE, hv);
+        );
+        if let Some(token) = id_cookie {
+            append_cookie(
+                resp.headers_mut(),
+                cnames.id_token.as_str(),
+                &token,
+                Some(expires_in),
+                config.cookie_configs.id_token_cookie_config.as_ref(),
+                cdomain,
+                is_https,
+            );
         }
-
-        // Set IdToken cookie if present and enabled
-        if !config.disable_id_token_set_cookie {
-            if let Some(id_tok) = &token_resp.id_token {
-                if let Some(hv) = format_cookie(
-                    cnames.id_token.as_str(),
-                    id_tok,
-                    Some(expires_in),
-                    config.cookie_configs.id_token_cookie_config.as_ref(),
-                    cdomain,
-                    is_https,
-                ) {
-                    resp.headers_mut().append(header::SET_COOKIE, hv);
-                }
-            }
+        if let Some(token) = refresh_cookie {
+            append_cookie(
+                resp.headers_mut(),
+                cnames.refresh_token.as_str(),
+                &token,
+                Some(config.default_refresh_token_expires_in.as_secs()),
+                config.cookie_configs.refresh_token_cookie_config.as_ref(),
+                cdomain,
+                is_https,
+            );
         }
-
-        // Set RefreshToken cookie if present and enabled
-        if !config.disable_refresh_token_set_cookie && config.use_refresh_token {
-            if let Some(ref_tok) = &token_resp.refresh_token {
-                let ref_exp = config.default_refresh_token_expires_in.as_secs();
-                if let Some(hv) = format_cookie(
-                    cnames.refresh_token.as_str(),
-                    ref_tok,
-                    Some(ref_exp),
-                    config.cookie_configs.refresh_token_cookie_config.as_ref(),
-                    cdomain,
-                    is_https,
-                ) {
-                    resp.headers_mut().append(header::SET_COOKIE, hv);
-                }
-            }
-        }
-
-        // Clear OauthNonce cookie
-        if let Some(hv) = format_cookie(cnames.oauth_nonce.as_str(), "", Some(0), None, cdomain, false) {
-            resp.headers_mut().append(header::SET_COOKIE, hv);
-        }
+        clear_transaction_cookies(resp.headers_mut(), config, flow_id, is_https);
 
         FilterDecision::DirectResponse(Box::new(resp))
     }
 
-    async fn exchange_code(&self, code: &str, redirect_uri: &str) -> Result<TokenEndpointResponse, OauthClientError> {
+    async fn exchange_code(
+        &self,
+        code: &str,
+        redirect_uri: &str,
+        code_verifier: &str,
+    ) -> Result<TokenEndpointResponse, OauthClientError> {
         let config = &self.inner.config;
-        let uri = config.token_endpoint.uri.as_str();
-
-        let req_builder = self.inner.client.post(uri).timeout(config.token_endpoint.timeout);
-
-        let req_builder = match config.auth_type {
-            AuthType::UrlEncodedBody => {
-                let body = format!(
-                    "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&client_secret={}",
-                    utf8_percent_encode(code, NON_ALPHANUMERIC),
-                    utf8_percent_encode(redirect_uri, NON_ALPHANUMERIC),
-                    utf8_percent_encode(config.credentials.client_id.as_str(), NON_ALPHANUMERIC),
-                    utf8_percent_encode(config.credentials.token_secret.as_str(), NON_ALPHANUMERIC),
-                );
-                req_builder.header(header::CONTENT_TYPE.as_str(), "application/x-www-form-urlencoded").body(body)
-            },
-            AuthType::BasicAuth => {
-                let body = format!(
-                    "grant_type=authorization_code&code={}&redirect_uri={}",
-                    utf8_percent_encode(code, NON_ALPHANUMERIC),
-                    utf8_percent_encode(redirect_uri, NON_ALPHANUMERIC),
-                );
-                let creds = format!("{}:{}", config.credentials.client_id, config.credentials.token_secret);
-                let auth_header = format!("Basic {}", BASE64_STANDARD.encode(creds.as_bytes()));
-                req_builder
-                    .header(header::AUTHORIZATION.as_str(), auth_header)
-                    .header(header::CONTENT_TYPE.as_str(), "application/x-www-form-urlencoded")
-                    .body(body)
-            },
+        let (body, basic_auth) = {
+            let mut form = url::form_urlencoded::Serializer::new(String::new());
+            form.append_pair("grant_type", "authorization_code");
+            form.append_pair("code", code);
+            form.append_pair("redirect_uri", redirect_uri);
+            form.append_pair("code_verifier", code_verifier);
+            let basic_auth = match config.auth_type {
+                AuthType::UrlEncodedBody => {
+                    form.append_pair("client_id", config.credentials.client_id.as_str());
+                    form.append_pair("client_secret", config.credentials.token_secret.as_str());
+                    None
+                },
+                AuthType::BasicAuth => {
+                    let credentials = format!("{}:{}", config.credentials.client_id, config.credentials.token_secret);
+                    Some(format!("Basic {}", BASE64_STANDARD.encode(credentials.as_bytes())))
+                },
+            };
+            (form.finish(), basic_auth)
+        };
+        let req_builder = self
+            .inner
+            .client
+            .post(config.token_endpoint.uri.as_str())
+            .timeout(config.token_endpoint.timeout)
+            .header(header::CONTENT_TYPE.as_str(), "application/x-www-form-urlencoded")
+            .body(body);
+        let req_builder = match basic_auth {
+            Some(value) => req_builder.header(header::AUTHORIZATION.as_str(), value),
+            None => req_builder,
         };
 
         let resp = req_builder.send().await?;
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            debug!("token endpoint returned status {status}: {body}");
+            debug!(target: "oauth2", "token endpoint returned status {status}");
             return Err(OauthClientError::TokenEndpointError(status));
         }
 
@@ -615,23 +695,220 @@ fn local_redirect_target(target: Option<&str>) -> &str {
     is_local_path.then_some(target).unwrap_or("/")
 }
 
-fn encode_csrf_cookie(nonce: &str, target: &str) -> String {
-    let mut value = String::with_capacity(nonce.len() + target.len() + 1);
-    value.push_str(nonce);
-    value.push(':');
-    value.push_str(target);
-    BASE64_URL_SAFE_NO_PAD.encode(value)
+const TRANSACTION_COOKIE_VERSION: &str = "v1";
+const ENCRYPTED_COOKIE_PREFIX: &str = "gcm.";
+const AEAD_NONCE_LEN: usize = 12;
+
+struct OAuthTransaction {
+    flow_id: String,
+    nonce: String,
+    target: String,
+    redirect_uri: String,
 }
 
-fn verify_csrf_state(state: Option<&str>, csrf_cookie: Option<&str>) -> Option<String> {
-    let state = state?;
-    let decoded = BASE64_URL_SAFE_NO_PAD.decode(csrf_cookie?).ok()?;
-    let value = std::str::from_utf8(&decoded).ok()?;
-    let (nonce, target) = value.split_once(':')?;
+#[derive(Default)]
+struct CallbackParameters {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
 
-    (constant_time::verify_slices_are_equal(state.as_bytes(), nonce.as_bytes()).is_ok()
-        && local_redirect_target(Some(target)) == target)
-        .then(|| target.to_owned())
+fn random_urlsafe_token(bytes: usize) -> String {
+    let mut random = vec![0_u8; bytes];
+    rand::thread_rng().fill_bytes(&mut random);
+    BASE64_URL_SAFE_NO_PAD.encode(random)
+}
+
+fn unix_timestamp_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+
+fn flow_cookie_name(base_name: &str, flow_id: &str) -> String {
+    format!("{base_name}.{flow_id}")
+}
+
+fn transaction_tag(key: &hmac::Key, payload: &str) -> hmac::Tag {
+    let mut context = hmac::Context::with_key(key);
+    context.update(b"arion.oauth2.transaction.v1\0");
+    context.update(payload.as_bytes());
+    context.sign()
+}
+
+fn encode_transaction_cookie(
+    key: &hmac::Key,
+    flow_id: &str,
+    nonce: &str,
+    issued_at: u64,
+    target: &str,
+    redirect_uri: &str,
+) -> String {
+    let target = BASE64_URL_SAFE_NO_PAD.encode(target);
+    let redirect_uri = BASE64_URL_SAFE_NO_PAD.encode(redirect_uri);
+    let payload = format!("{TRANSACTION_COOKIE_VERSION}.{flow_id}.{nonce}.{issued_at}.{target}.{redirect_uri}");
+    let signature = BASE64_URL_SAFE_NO_PAD.encode(transaction_tag(key, &payload).as_ref());
+    format!("{payload}.{signature}")
+}
+
+fn split_callback_state(state: &str) -> Option<(&str, &str)> {
+    let (flow_id, nonce) = state.split_once('.')?;
+    (!flow_id.is_empty()
+        && !nonce.is_empty()
+        && flow_id.len() <= 64
+        && nonce.len() <= 256
+        && flow_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        && nonce.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')))
+    .then_some((flow_id, nonce))
+}
+
+fn verify_transaction_cookie(
+    key: &hmac::Key,
+    state: &str,
+    cookie: Option<&str>,
+    max_age_secs: u64,
+) -> Option<OAuthTransaction> {
+    let (state_flow_id, state_nonce) = split_callback_state(state)?;
+    let cookie = cookie?;
+    let (payload, signature) = cookie.rsplit_once('.')?;
+    let signature = BASE64_URL_SAFE_NO_PAD.decode(signature).ok()?;
+    let expected = transaction_tag(key, payload);
+    if signature.len() != expected.as_ref().len()
+        || constant_time::verify_slices_are_equal(expected.as_ref(), &signature).is_err()
+    {
+        return None;
+    }
+
+    let mut fields = payload.split('.');
+    let (Some(version), Some(flow_id), Some(nonce), Some(issued_at), Some(target), Some(redirect_uri), None) =
+        (fields.next(), fields.next(), fields.next(), fields.next(), fields.next(), fields.next(), fields.next())
+    else {
+        return None;
+    };
+    if version != TRANSACTION_COOKIE_VERSION
+        || constant_time::verify_slices_are_equal(flow_id.as_bytes(), state_flow_id.as_bytes()).is_err()
+        || constant_time::verify_slices_are_equal(nonce.as_bytes(), state_nonce.as_bytes()).is_err()
+    {
+        return None;
+    }
+    let issued_at = issued_at.parse::<u64>().ok()?;
+    let now = unix_timestamp_secs();
+    if issued_at > now || now.checked_sub(issued_at)? > max_age_secs {
+        return None;
+    }
+    let target = String::from_utf8(BASE64_URL_SAFE_NO_PAD.decode(target).ok()?).ok()?;
+    let redirect_uri = String::from_utf8(BASE64_URL_SAFE_NO_PAD.decode(redirect_uri).ok()?).ok()?;
+    if local_redirect_target(Some(&target)) != target || !is_valid_redirect_uri(&redirect_uri) {
+        return None;
+    }
+
+    Some(OAuthTransaction { flow_id: flow_id.to_owned(), nonce: nonce.to_owned(), target, redirect_uri })
+}
+
+fn is_valid_redirect_uri(value: &str) -> bool {
+    let Ok(parsed) = Url::parse(value) else {
+        return false;
+    };
+    matches!(parsed.scheme(), "http" | "https")
+        && parsed.host_str().is_some()
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.fragment().is_none()
+}
+
+fn verify_code_verifier(payload: &str, max_age_secs: u64) -> Option<String> {
+    let (issued_at, verifier) = payload.split_once('.')?;
+    let issued_at = issued_at.parse::<u64>().ok()?;
+    let now = unix_timestamp_secs();
+    (issued_at <= now
+        && now.checked_sub(issued_at)? <= max_age_secs
+        && (43..=128).contains(&verifier.len())
+        && verifier.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')))
+    .then(|| verifier.to_owned())
+}
+
+fn strict_form_decode(value: &str) -> Option<String> {
+    fn hex_value(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            },
+            b'%' => {
+                let high = *bytes.get(index + 1)?;
+                let low = *bytes.get(index + 2)?;
+                decoded.push((hex_value(high)? << 4) | hex_value(low)?);
+                index += 3;
+            },
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            },
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+fn parse_callback_query(query: &str) -> Result<CallbackParameters, ()> {
+    let mut params = CallbackParameters::default();
+    for pair in query.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (raw_name, raw_value) = pair.split_once('=').ok_or(())?;
+        let name = strict_form_decode(raw_name).ok_or(())?;
+        let value = strict_form_decode(raw_value).ok_or(())?;
+        let slot = match name.as_str() {
+            "code" => &mut params.code,
+            "state" => &mut params.state,
+            "error" => &mut params.error,
+            "error_description" => continue,
+            _ => continue,
+        };
+        if slot.replace(value).is_some() {
+            return Err(());
+        }
+    }
+    Ok(params)
+}
+
+fn encrypt_cookie_value(key_bytes: &[u8; 32], value: &str) -> Option<String> {
+    let unbound_key = aead::UnboundKey::new(&aead::AES_256_GCM, key_bytes).ok()?;
+    let key = aead::LessSafeKey::new(unbound_key);
+    let mut nonce = [0_u8; AEAD_NONCE_LEN];
+    rand::thread_rng().fill_bytes(&mut nonce);
+    let mut ciphertext = value.as_bytes().to_vec();
+    key.seal_in_place_append_tag(aead::Nonce::assume_unique_for_key(nonce), aead::Aad::empty(), &mut ciphertext)
+        .ok()?;
+    let mut payload = Vec::with_capacity(nonce.len() + ciphertext.len());
+    payload.extend_from_slice(&nonce);
+    payload.extend_from_slice(&ciphertext);
+    Some(format!("{ENCRYPTED_COOKIE_PREFIX}{}", BASE64_URL_SAFE_NO_PAD.encode(payload)))
+}
+
+fn decrypt_cookie_value(key_bytes: &[u8; 32], value: &str) -> Option<String> {
+    let encoded = value.strip_prefix(ENCRYPTED_COOKIE_PREFIX)?;
+    let mut payload = BASE64_URL_SAFE_NO_PAD.decode(encoded).ok()?;
+    if payload.len() <= AEAD_NONCE_LEN {
+        return None;
+    }
+    let nonce: [u8; AEAD_NONCE_LEN] = payload[..AEAD_NONCE_LEN].try_into().ok()?;
+    let unbound_key = aead::UnboundKey::new(&aead::AES_256_GCM, key_bytes).ok()?;
+    let key = aead::LessSafeKey::new(unbound_key);
+    let plaintext = key
+        .open_in_place(aead::Nonce::assume_unique_for_key(nonce), aead::Aad::empty(), &mut payload[AEAD_NONCE_LEN..])
+        .ok()?;
+    std::str::from_utf8(plaintext).ok().map(str::to_owned)
 }
 
 fn extract_cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -763,6 +1040,60 @@ fn verify_session_hmac(
 }
 
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
+
+fn request_is_https(req: &Request<ArionRequestBody>) -> bool {
+    req.uri().scheme_str() == Some("https")
+        || req.headers().get("x-forwarded-proto").is_some_and(|value| value == "https")
+}
+
+fn add_oauth_response_headers(headers: &mut HeaderMap) {
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    headers.insert(http::HeaderName::from_static("referrer-policy"), HeaderValue::from_static("no-referrer"));
+}
+
+fn append_cookie(
+    headers: &mut HeaderMap,
+    name: &str,
+    value: &str,
+    max_age: Option<u64>,
+    config: Option<&CookieConfig>,
+    domain: Option<&str>,
+    is_secure: bool,
+) {
+    if let Some(cookie) = format_cookie(name, value, max_age, config, domain, is_secure) {
+        headers.append(header::SET_COOKIE, cookie);
+    }
+}
+
+fn append_expired_cookie(
+    headers: &mut HeaderMap,
+    name: &str,
+    config: Option<&CookieConfig>,
+    domain: Option<&str>,
+    is_secure: bool,
+) {
+    append_cookie(headers, name, "", Some(0), config, domain, is_secure);
+}
+
+fn clear_transaction_cookies(headers: &mut HeaderMap, config: &OAuth2Config, flow_id: &str, is_https: bool) {
+    let names = &config.credentials.cookie_names;
+    let domain = config.credentials.cookie_domain.as_deref();
+    append_expired_cookie(
+        headers,
+        &flow_cookie_name(names.oauth_nonce.as_str(), flow_id),
+        config.cookie_configs.oauth_nonce_cookie_config.as_ref(),
+        domain,
+        is_https,
+    );
+    append_expired_cookie(
+        headers,
+        &flow_cookie_name(names.code_verifier.as_str(), flow_id),
+        config.cookie_configs.code_verifier_cookie_config.as_ref(),
+        domain,
+        is_https,
+    );
+}
 
 #[allow(clippy::too_many_arguments)]
 fn format_cookie(
@@ -959,7 +1290,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_authenticated_session_verifies_complete_envoy_payload() {
-        let config = sample_config();
+        let mut config = sample_config();
+        config.disable_token_encryption = true;
         let mut filter = OAuth2Filter::try_new(config.clone()).unwrap();
 
         let host = "gateway.example.com:8443";
@@ -1023,6 +1355,32 @@ mod tests {
             },
             _ => panic!("expected 302 DirectResponse for signout"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_signout_clears_cookies_with_their_configured_path() {
+        let mut config = sample_config();
+        config.cookie_configs.bearer_token_cookie_config =
+            Some(CookieConfig { same_site: CookieSameSite::Lax, path: "/protected".into(), partitioned: false });
+        let mut filter = OAuth2Filter::try_new(config).unwrap();
+        let mut req = Request::builder()
+            .uri("/signout")
+            .header("Host", "gateway.example.com")
+            .header("x-forwarded-proto", "https")
+            .body(ArionRequestBody::default())
+            .unwrap();
+
+        let FilterDecision::DirectResponse(resp) = filter.apply_request(&mut req).await else {
+            panic!("expected signout response");
+        };
+        let bearer_clear = resp
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .find_map(|value| value.to_str().ok().filter(|cookie| cookie.starts_with("BearerToken=")));
+        let bearer_clear = bearer_clear.expect("BearerToken deletion cookie");
+        assert!(bearer_clear.contains("Path=/protected"));
+        assert!(bearer_clear.contains("Max-Age=0"));
     }
 
     #[test]
@@ -1117,30 +1475,74 @@ mod tests {
     }
 
     #[test]
-    fn csrf_cookie_binds_state_to_local_redirect_target() {
-        let cookie = encode_csrf_cookie("nonce", "/dashboard?tab=profile");
-        assert_eq!(verify_csrf_state(Some("nonce"), Some(&cookie)).as_deref(), Some("/dashboard?tab=profile"));
+    fn transaction_cookie_binds_state_to_local_target_and_redirect_uri() {
+        let key = hmac::Key::new(hmac::HMAC_SHA256, b"hmac-secret");
+        let state = "flow_id.nonce";
+        let cookie = encode_transaction_cookie(
+            &key,
+            "flow_id",
+            "nonce",
+            unix_timestamp_secs(),
+            "/dashboard?tab=profile",
+            "https://gateway.example.com/callback",
+        );
+        let transaction = verify_transaction_cookie(&key, state, Some(&cookie), 600).expect("valid transaction");
+        assert_eq!(transaction.target, "/dashboard?tab=profile");
+        assert_eq!(transaction.redirect_uri, "https://gateway.example.com/callback");
     }
 
     #[test]
-    fn csrf_cookie_rejects_missing_or_mismatched_state() {
-        let cookie = encode_csrf_cookie("nonce", "/dashboard");
-        assert_eq!(verify_csrf_state(None, Some(&cookie)), None);
-        assert_eq!(verify_csrf_state(Some("other-nonce"), Some(&cookie)), None);
-        assert_eq!(verify_csrf_state(Some("nonce"), None), None);
+    fn transaction_cookie_rejects_tampering_mismatch_and_non_local_target() {
+        let key = hmac::Key::new(hmac::HMAC_SHA256, b"hmac-secret");
+        let cookie = encode_transaction_cookie(
+            &key,
+            "flow_id",
+            "nonce",
+            unix_timestamp_secs(),
+            "/dashboard",
+            "https://gateway.example.com/callback",
+        );
+        assert!(verify_transaction_cookie(&key, "flow_id.other", Some(&cookie), 600).is_none());
+        assert!(verify_transaction_cookie(&key, "flow_id.nonce", None, 600).is_none());
+        assert!(verify_transaction_cookie(&key, "flow_id.nonce", Some(&format!("{cookie}x")), 600).is_none());
+
+        let unsafe_cookie = encode_transaction_cookie(
+            &key,
+            "flow_id",
+            "nonce",
+            unix_timestamp_secs(),
+            "//evil.example",
+            "https://gateway.example.com/callback",
+        );
+        assert!(verify_transaction_cookie(&key, "flow_id.nonce", Some(&unsafe_cookie), 600).is_none());
     }
 
     #[test]
-    fn csrf_cookie_rejects_non_local_redirect_target() {
-        let cookie = encode_csrf_cookie("nonce", "https://evil.example");
-        assert_eq!(verify_csrf_state(Some("nonce"), Some(&cookie)), None);
+    fn encrypted_cookie_round_trip_rejects_tampering() {
+        let key = [7_u8; 32];
+        let encrypted = encrypt_cookie_value(&key, "access-token").expect("encryption succeeds");
+        assert_ne!(encrypted, "access-token");
+        assert_eq!(decrypt_cookie_value(&key, &encrypted).as_deref(), Some("access-token"));
+        assert_eq!(decrypt_cookie_value(&key, &format!("{encrypted}x")), None);
+    }
 
-        let cookie = encode_csrf_cookie("nonce", "//evil.example");
-        assert_eq!(verify_csrf_state(Some("nonce"), Some(&cookie)), None);
+    #[test]
+    fn code_verifier_enforces_server_side_expiration_and_format() {
+        let valid = format!("{}.{}", unix_timestamp_secs(), "a".repeat(43));
+        assert!(verify_code_verifier(&valid, 600).is_some());
+        assert!(verify_code_verifier("0.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 600).is_none());
+        assert!(verify_code_verifier("1.invalid", 600).is_none());
+    }
+
+    #[test]
+    fn callback_parser_rejects_duplicate_critical_parameters() {
+        assert!(parse_callback_query("code=first&code=second&state=flow.nonce").is_err());
+        assert!(parse_callback_query("code=valid&state=first&state=second").is_err());
+        assert!(parse_callback_query("code=%GG&state=flow.nonce").is_err());
     }
 
     #[tokio::test]
-    async fn test_callback_with_oauth_error_returns_unauthorized() {
+    async fn test_callback_with_oauth_error_without_valid_state_returns_bad_request() {
         let config = sample_config();
         let mut filter = OAuth2Filter::try_new(config).unwrap();
 
@@ -1153,9 +1555,9 @@ mod tests {
         let decision = filter.apply_request(&mut req).await;
         match decision {
             FilterDecision::DirectResponse(resp) => {
-                assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+                assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
             },
-            _ => panic!("expected 401 Unauthorized when IdP returns error"),
+            _ => panic!("expected 400 Bad Request when IdP error has no valid transaction state"),
         }
     }
 
