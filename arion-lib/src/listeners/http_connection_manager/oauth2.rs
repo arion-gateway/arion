@@ -14,13 +14,12 @@
 
 use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
 use std::{
-    borrow::Cow,
-    time::{SystemTime, UNIX_EPOCH},
+    borrow::Cow, str::FromStr, time::{SystemTime, UNIX_EPOCH},
 };
 
 use aws_lc_rs::{constant_time, hmac};
 use base64::{prelude::BASE64_STANDARD, Engine};
-use http::{header, HeaderMap, HeaderValue, Request, StatusCode, Version};
+use http::{HeaderMap, HeaderValue, Request, StatusCode, Version, header, uri::PathAndQuery};
 use rand::Rng;
 use serde::Deserialize;
 use smol_str::SmolStr;
@@ -445,8 +444,8 @@ impl OAuth2Filter {
         let hmac_val =
             compute_session_hmac(&self.inner.hmac_key, domain, expires, access_token, id_token, refresh_token);
 
-        // Prepare redirect to target URL (state or /)
-        let target_url = state.as_deref().unwrap_or("/");
+        // `state` is untrusted callback input; only redirect to a local origin-form target.
+        let target_url = local_redirect_target(state.as_deref());
 
         let mut resp = SyntheticHttpResponse::custom_error(
             StatusCode::FOUND,
@@ -585,6 +584,19 @@ impl OAuth2Filter {
 }
 
 // === Helper Functions ===
+
+fn local_redirect_target(state: Option<&str>) -> &str {
+    let Some(target) = state else {
+        return "/";
+    };
+
+    let is_local_path = target.starts_with('/')
+        && !target.starts_with("//")
+        && !target.contains('\\')
+        && PathAndQuery::from_str(target).is_ok();
+
+    is_local_path.then_some(target).unwrap_or("/")
+}
 
 fn extract_host(req: &Request<ArionRequestBody>) -> Option<&str> {
     if let Some(host) = req.headers().get(header::HOST).and_then(|value| value.to_str().ok()) {
