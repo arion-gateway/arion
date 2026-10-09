@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::{
+    borrow::Cow,
     str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -199,9 +200,13 @@ impl OAuth2Filter {
             if let (Some(hmac_value), Some(expires)) = (session.hmac, session.expires) {
                 if let Ok(expires_at) = expires.parse::<u64>() {
                     if expires_at > now_secs {
-                        let access_token = self.decrypt_token_cookie(session.access_token);
-                        let id_token = self.decrypt_token_cookie(session.id_token);
-                        let refresh_token = self.decrypt_token_cookie(session.refresh_token);
+                        let mut access_buf = [0_u8; 1024];
+                        let mut id_buf = [0_u8; 1024];
+                        let mut refresh_buf = [0_u8; 1024];
+
+                        let access_token = self.decrypt_token_cookie(session.access_token, &mut access_buf);
+                        let id_token = self.decrypt_token_cookie(session.id_token, &mut id_buf);
+                        let refresh_token = self.decrypt_token_cookie(session.refresh_token, &mut refresh_buf);
                         let domain = hmac_domain(config.credentials.cookie_domain.as_deref(), host);
                         if verify_session_hmac(
                             &self.inner.hmac_key,
@@ -289,12 +294,19 @@ impl OAuth2Filter {
         Some(request.set_pkce_challenge(pkce_challenge).url().0)
     }
 
-    fn decrypt_token_cookie(&self, value: Option<&str>) -> Option<String> {
+    fn decrypt_token_cookie<'a, 'b>(
+        &self,
+        value: Option<&'a str>,
+        buf: &'b mut [u8],
+    ) -> Option<Cow<'b, str>>
+    where
+        'a: 'b,
+    {
         let value = value?;
         if self.inner.config.disable_token_encryption {
-            return Some(value.to_owned());
+            return Some(Cow::Borrowed(value));
         }
-        decrypt_cookie_value(&self.inner.token_cipher, value)
+        decrypt_cookie_value(&self.inner.token_cipher, value, buf)
     }
 
     fn encrypt_token_cookie(&self, value: &str) -> Option<String> {
@@ -525,8 +537,9 @@ impl OAuth2Filter {
             return self.callback_failure(version, StatusCode::BAD_REQUEST, is_https, flow_id);
         };
         let verifier_cookie_name = flow_cookie_name(cnames.code_verifier.as_str(), flow_id);
+        let mut verifier_buf = [0_u8; 256];
         let Some(code_verifier) = extract_cookie(headers, &verifier_cookie_name)
-            .and_then(|value| decrypt_cookie_value(&self.inner.token_cipher, value))
+            .and_then(|value| decrypt_cookie_value(&self.inner.token_cipher, value, &mut verifier_buf))
             .and_then(|value| verify_code_verifier(&value, config.code_verifier_token_expires_in.as_secs()))
         else {
             warn!(target: "oauth2", "callback PKCE verifier validation failed");
@@ -906,17 +919,29 @@ fn encrypt_cookie_value(key: &aead::LessSafeKey, value: &str) -> Option<String> 
     Some(format!("{ENCRYPTED_COOKIE_PREFIX}{}", BASE64_URL_SAFE_NO_PAD.encode(payload)))
 }
 
-fn decrypt_cookie_value(key: &aead::LessSafeKey, value: &str) -> Option<String> {
+fn decrypt_cookie_value<'b>(key: &aead::LessSafeKey, value: &str, buf: &'b mut [u8]) -> Option<Cow<'b, str>> {
     let encoded = value.strip_prefix(ENCRYPTED_COOKIE_PREFIX)?;
-    let mut payload = BASE64_URL_SAFE_NO_PAD.decode(encoded).ok()?;
-    if payload.len() <= AEAD_NONCE_LEN {
-        return None;
+    if let Ok(decoded_len) = BASE64_URL_SAFE_NO_PAD.decode_slice(encoded.as_bytes(), buf) {
+        if decoded_len <= AEAD_NONCE_LEN {
+            return None;
+        }
+        let (nonce_bytes, ciphertext) = buf[..decoded_len].split_at_mut(AEAD_NONCE_LEN);
+        let nonce: [u8; AEAD_NONCE_LEN] = nonce_bytes.try_into().ok()?;
+        let plaintext = key
+            .open_in_place(aead::Nonce::assume_unique_for_key(nonce), aead::Aad::empty(), ciphertext)
+            .ok()?;
+        std::str::from_utf8(plaintext).ok().map(Cow::Borrowed)
+    } else {
+        let mut payload = BASE64_URL_SAFE_NO_PAD.decode(encoded).ok()?;
+        if payload.len() <= AEAD_NONCE_LEN {
+            return None;
+        }
+        let nonce: [u8; AEAD_NONCE_LEN] = payload[..AEAD_NONCE_LEN].try_into().ok()?;
+        let plaintext = key
+            .open_in_place(aead::Nonce::assume_unique_for_key(nonce), aead::Aad::empty(), &mut payload[AEAD_NONCE_LEN..])
+            .ok()?;
+        std::str::from_utf8(plaintext).ok().map(|s| Cow::Owned(s.to_owned()))
     }
-    let nonce: [u8; AEAD_NONCE_LEN] = payload[..AEAD_NONCE_LEN].try_into().ok()?;
-    let plaintext = key
-        .open_in_place(aead::Nonce::assume_unique_for_key(nonce), aead::Aad::empty(), &mut payload[AEAD_NONCE_LEN..])
-        .ok()?;
-    std::str::from_utf8(plaintext).ok().map(str::to_owned)
 }
 
 fn extract_cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -1531,8 +1556,9 @@ mod tests {
         let key = aead::LessSafeKey::new(unbound);
         let encrypted = encrypt_cookie_value(&key, "access-token").expect("encryption succeeds");
         assert_ne!(encrypted, "access-token");
-        assert_eq!(decrypt_cookie_value(&key, &encrypted).as_deref(), Some("access-token"));
-        assert_eq!(decrypt_cookie_value(&key, &format!("{encrypted}x")), None);
+        let mut buf = [0_u8; 256];
+        assert_eq!(decrypt_cookie_value(&key, &encrypted, &mut buf).as_deref(), Some("access-token"));
+        assert_eq!(decrypt_cookie_value(&key, &format!("{encrypted}x"), &mut buf).as_deref(), None);
     }
 
     #[test]
