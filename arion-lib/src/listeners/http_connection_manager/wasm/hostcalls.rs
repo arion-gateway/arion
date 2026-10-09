@@ -23,10 +23,10 @@
 use std::sync::LazyLock;
 use triomphe::Arc;
 
-use crate::body::timeout_body::TimeoutBody;
-use crate::listeners::http_connection_manager::RequestCtx;
 use crate::ArionRequestBody;
 use crate::ArionResponseBody;
+use crate::body::timeout_body::TimeoutBody;
+use crate::listeners::http_connection_manager::RequestCtx;
 use bytes::Bytes;
 
 use http::HeaderValue;
@@ -989,7 +989,7 @@ fn arion_apply_header_mutations(mut caller: Caller<'_, WasmState>, is_trailer: u
     0
 }
 
-use crate::clusters::{clusters_manager, RoutingContext, RoutingPriority};
+use crate::clusters::{RoutingContext, RoutingPriority, clusters_manager};
 use arion_configuration::config::cluster::ClusterSpecifier;
 use http_body_util::BodyExt;
 
@@ -1464,11 +1464,7 @@ fn arion_clear_io_timeout(mut caller: Caller<'_, WasmState>, remaining_us_ptr: u
 
     let remaining_us: u64 = if let Some(deadline) = caller.data_mut().io_deadline.take() {
         let now = std::time::Instant::now();
-        if deadline > now {
-            u64::try_from((deadline - now).as_micros()).unwrap_or(0)
-        } else {
-            0
-        }
+        if deadline > now { u64::try_from((deadline - now).as_micros()).unwrap_or(0) } else { 0 }
     } else {
         0
     };
@@ -1515,11 +1511,7 @@ fn arion_sleep(
             pingora_timeout::fast_timeout::fast_sleep(duration).await;
         }
 
-        if is_timeout {
-            ArionWasmError::Timeout.into()
-        } else {
-            0
-        }
+        if is_timeout { ArionWasmError::Timeout.into() } else { 0 }
     })
 }
 

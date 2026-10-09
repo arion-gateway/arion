@@ -16,4 +16,4 @@
 // limitations under the License.
 
 mod proto_yaml;
-pub use proto_yaml::{proto_to_yaml_string, proto_to_yaml_value, ProtoYamlError};
+pub use proto_yaml::{ProtoYamlError, proto_to_yaml_string, proto_to_yaml_value};

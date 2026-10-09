@@ -25,8 +25,8 @@ mod worker_config;
 use crate::body::channel_body::{BodyType, ChannelBody, FrameBridge};
 use crate::body::timeout_body::TimeoutBody;
 use crate::event_error::EventFailure;
-use crate::listeners::http_connection_manager::ext_proc::kind::{MessageType, RequestMsg, ResponseMsg};
 use crate::listeners::http_connection_manager::RequestCtx;
+use crate::listeners::http_connection_manager::ext_proc::kind::{MessageType, RequestMsg, ResponseMsg};
 use crate::{ArionRequestBody, ArionResponseBody};
 #[cfg(feature = "metrics")]
 use arion_metrics::metrics::custom::CUSTOM_METRICS;
@@ -35,48 +35,48 @@ use http_body_util::{BodyExt, Collected, LengthLimitError, Limited};
 use crate::listeners::http_connection_manager::ext_proc::mutation::{
     apply_request_header_mutations, apply_response_header_mutations,
 };
-use crate::listeners::http_connection_manager::ext_proc::processing::{
-    RequestProcessing, ResponseProcessing, LB_NAMESPACE,
-};
 use crate::listeners::http_connection_manager::ext_proc::r#override::{OverridableBodyMode, OverridableGlobalModes};
+use crate::listeners::http_connection_manager::ext_proc::processing::{
+    LB_NAMESPACE, RequestProcessing, ResponseProcessing,
+};
 use crate::listeners::http_connection_manager::ext_proc::status::ProcessingStatus;
 use crate::listeners::http_connection_manager::ext_proc::status::ReadyStatus;
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
 use crate::utils::truncated_debug::TruncatedDebug;
 use crate::{
+    Error, PolyBody,
     body::response_flags::ResponseFlags,
     clusters::clusters_manager::{self, RoutingContext},
     listeners::{http_filters::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
     transport::ServedEndpoint,
-    Error, PolyBody,
 };
 use arion_configuration::config::{
     cluster::ClusterSpecifier,
     network_filters::http_connection_manager::http_filters::{
+        ExtProcPerRoute,
         ext_proc::{
             ExternalProcessor as ExternalProcessorConfig, GrpcServiceSpecifier, HeaderForwardingRules, ProcessingMode,
         },
-        ExtProcPerRoute,
     },
 };
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::core::v3::{HeaderMap as ProstHeaderMap, HeaderValue},
         service::ext_proc::v3::{
+            ImmediateResponse, ProcessingRequest, ProcessingResponse, ProtocolConfiguration,
             external_processor_client::ExternalProcessorClient,
-            processing_response::Response as ProcessingResponseType, ImmediateResponse, ProcessingRequest,
-            ProcessingResponse, ProtocolConfiguration,
+            processing_response::Response as ProcessingResponseType,
         },
     },
     google,
-    tonic::{codec::Streaming, Response as TonicResponse, Status},
+    tonic::{Response as TonicResponse, Status, codec::Streaming},
 };
 use arion_format::types::ResponseFlags as FmtResponseFlags;
 use bytes::Bytes;
 use const_str::parse;
 use futures::{
-    future::{BoxFuture, Either},
     FutureExt, StreamExt,
+    future::{BoxFuture, Either},
 };
 use http::header::CONTENT_LENGTH;
 use http::{Request, Response, StatusCode};

@@ -22,7 +22,7 @@
 use crate::with_access_log;
 
 use super::{RequestCtx, RequestHandler};
-use crate::{body::timeout_body::TimeoutBody, ArionRequestBody, ArionResponseBody, Result};
+use crate::{ArionRequestBody, ArionResponseBody, Result, body::timeout_body::TimeoutBody};
 use arion_configuration::config::network_filters::http_connection_manager::route::DirectResponseAction;
 use http_body_util::Full;
 use hyper::{Request, Response};

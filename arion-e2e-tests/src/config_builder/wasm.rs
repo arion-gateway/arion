@@ -15,12 +15,12 @@
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::core::v3::{
-            async_data_source::Specifier as AsyncDataSourceSpecifier, data_source::Specifier as DataSourceSpecifier,
-            AsyncDataSource, DataSource,
+            AsyncDataSource, DataSource, async_data_source::Specifier as AsyncDataSourceSpecifier,
+            data_source::Specifier as DataSourceSpecifier,
         },
         extensions::{
             filters::http::wasm::v3::Wasm as EnvoyWasm,
-            wasm::v3::{plugin_config::Vm as EnvoyVm, PluginConfig as EnvoyPluginConfig, VmConfig as EnvoyVmConfig},
+            wasm::v3::{PluginConfig as EnvoyPluginConfig, VmConfig as EnvoyVmConfig, plugin_config::Vm as EnvoyVm},
         },
     },
     google::protobuf::{Any, StringValue},

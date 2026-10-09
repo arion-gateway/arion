@@ -20,9 +20,9 @@
 //!
 //! All tests run against localhost (`is_internal=true`).
 
-use arion_e2e_tests::config_builder::{presets, FilterChainBuilder, HcmBuilder, ListenerBuilder};
+use arion_e2e_tests::config_builder::{FilterChainBuilder, HcmBuilder, ListenerBuilder, presets};
 use arion_e2e_tests::{
-    cleanup_config_file, ArionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient,
+    ArionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient, cleanup_config_file,
 };
 use http::StatusCode;
 

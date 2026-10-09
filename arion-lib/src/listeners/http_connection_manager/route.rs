@@ -17,14 +17,14 @@
 // limitations under the License.
 //
 //
-use super::{http_modifiers, upgrades as upgrade_utils, RequestCtx, RequestHandler};
+use super::{RequestCtx, RequestHandler, http_modifiers, upgrades as upgrade_utils};
 use crate::event_error::{EventFailure, EventKind, UpstreamError};
 use crate::{
+    Result,
     body::response_flags::ResponseFlags,
-    clusters::http_upstream::{acquire_http_upstream, AcquireHttpUpstreamError},
+    clusters::http_upstream::{AcquireHttpUpstreamError, acquire_http_upstream},
     listeners::{http_connection_manager::HttpConnectionManager, synthetic_http_response::SyntheticHttpResponse},
     transport::{HttpChannels, ServedEndpoint},
-    Result,
 };
 
 #[cfg(feature = "access-log")]
@@ -32,14 +32,14 @@ use crate::with_access_log;
 
 #[cfg(feature = "metrics")]
 use crate::with_metric;
-use crate::{instrument_block, instrument_function, ArionRequestBody, ArionResponseBody, UpstreamCallOpts};
+use crate::{ArionRequestBody, ArionResponseBody, UpstreamCallOpts, instrument_block, instrument_function};
 use arion_configuration::config::network_filters::http_connection_manager::{
-    route::{RouteAction, RouteMatchResult},
     RetryPolicy,
+    route::{RouteAction, RouteMatchResult},
 };
 #[cfg(feature = "metrics")]
 use arion_metrics::metrics::http as http_metrics;
-use http::{uri::Parts as UriParts, Uri};
+use http::{Uri, uri::Parts as UriParts};
 use hyper::{Request, Response};
 #[cfg(any(feature = "metrics", feature = "tracing"))]
 use opentelemetry::KeyValue;

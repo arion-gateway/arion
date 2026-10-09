@@ -18,7 +18,7 @@
 //
 //
 
-use super::{header_matcher::HeaderMatcher, RetryPolicy};
+use super::{RetryPolicy, header_matcher::HeaderMatcher};
 use crate::config::{
     cluster::{ClusterSpecifier, RoutingPriority},
     common::*,
@@ -26,11 +26,11 @@ use crate::config::{
 };
 use bytes::Bytes;
 use http::{
-    uri::{Authority, InvalidUri, PathAndQuery, Scheme},
     HeaderName, Request, StatusCode,
+    uri::{Authority, InvalidUri, PathAndQuery, Scheme},
 };
 use regex::Regex;
-use serde::{de::Error, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::Error};
 use smol_str::SmolStr;
 use std::{
     borrow::Cow,
@@ -135,11 +135,7 @@ impl PathRewriteSpecifier {
 
         // Construct the final path with the original query string if present
         let final_uri = if let Some(q) = old_query {
-            if new_path.contains('?') {
-                new_path.into_owned()
-            } else {
-                format!("{new_path}?{q}")
-            }
+            if new_path.contains('?') { new_path.into_owned() } else { format!("{new_path}?{q}") }
         } else {
             new_path.into_owned()
         };
@@ -703,18 +699,20 @@ mod tests {
 mod envoy_conversions {
     #![allow(deprecated)]
     use super::{
-        Action, AuthorityRedirect, Connect, DirectResponseAction, DirectResponseBody, HashPolicy, PathMatcher,
-        PathRewriteSpecifier, PathSpecifier, PolicySpecifier, QueryParameterMatchSpecifier, QueryParameterMatcher,
-        RedirectAction, RedirectResponseCode, RegexMatchAndSubstitute, RouteAction, RouteMatch, RoutingPriority,
-        UpgradeConfig, Websocket, DEFAULT_TIMEOUT,
+        Action, AuthorityRedirect, Connect, DEFAULT_TIMEOUT, DirectResponseAction, DirectResponseBody, HashPolicy,
+        PathMatcher, PathRewriteSpecifier, PathSpecifier, PolicySpecifier, QueryParameterMatchSpecifier,
+        QueryParameterMatcher, RedirectAction, RedirectResponseCode, RegexMatchAndSubstitute, RouteAction, RouteMatch,
+        RoutingPriority, UpgradeConfig, Websocket,
     };
     use crate::config::{
         common::*,
-        core::{regex_from_envoy, DataSource, RustType},
+        core::{DataSource, RustType, regex_from_envoy},
         network_filters::http_connection_manager::RetryPolicy,
     };
     use arion_data_plane_api::envoy_data_plane_api::envoy::{
         config::route::v3::{
+            DirectResponseAction as EnvoyDirectResponseAction, QueryParameterMatcher as EnvoyQueryParameterMatcher,
+            RedirectAction as EnvoyRedirectAction, RouteAction as EnvoyRouteAction, RouteMatch as EnvoyRouteMatch,
             query_parameter_matcher::QueryParameterMatchSpecifier as EnvoyQueryParameterMatchSpecifier,
             redirect_action::{
                 PathRewriteSpecifier as EnvoyPathRewriteSpecifier, RedirectResponseCode as EnvoyRedirectResponseCode,
@@ -722,24 +720,22 @@ mod envoy_conversions {
             },
             route::Action as EnvoyAction,
             route_action::{
+                HashPolicy as EnvoyHashPolicy, UpgradeConfig as EnvoyUpgradeConfig,
                 hash_policy::{
                     ConnectionProperties as EnvoyConnectionProperties, Header as EnvoyHeader,
                     PolicySpecifier as EnvoyPolicySpecifier, QueryParameter as EnvoyQueryParameter,
                 },
-                HashPolicy as EnvoyHashPolicy, UpgradeConfig as EnvoyUpgradeConfig,
             },
             route_match::PathSpecifier as EnvoyPathSpecifier,
-            DirectResponseAction as EnvoyDirectResponseAction, QueryParameterMatcher as EnvoyQueryParameterMatcher,
-            RedirectAction as EnvoyRedirectAction, RouteAction as EnvoyRouteAction, RouteMatch as EnvoyRouteMatch,
         },
         r#type::matcher::v3::{
-            path_matcher::Rule as EnvoyPathMatcherRule, string_matcher::MatchPattern as EnvoyStringMatcherPattern,
             PathMatcher as EnvoyTypePathMatcher, RegexMatchAndSubstitute as EnvoyRegexMatchAndSubstitute,
+            path_matcher::Rule as EnvoyPathMatcherRule, string_matcher::MatchPattern as EnvoyStringMatcherPattern,
         },
     };
     use http::{
-        uri::{Authority, PathAndQuery, Scheme},
         HeaderName, StatusCode,
+        uri::{Authority, PathAndQuery, Scheme},
     };
 
     use arion_data_plane_api::envoy_data_plane_api::google::protobuf::BoolValue;
@@ -1171,13 +1167,13 @@ mod envoy_conversions {
                         EnvoyStringMatcherPattern::Prefix(s) => PathSpecifier::Prefix(s.into()),
                         EnvoyStringMatcherPattern::SafeRegex(r) => PathSpecifier::Regex(regex_from_envoy(r)?),
                         EnvoyStringMatcherPattern::Suffix(_) => {
-                            return Err(GenericError::unsupported_variant("Suffix"))
+                            return Err(GenericError::unsupported_variant("Suffix"));
                         },
                         EnvoyStringMatcherPattern::Contains(_) => {
-                            return Err(GenericError::unsupported_variant("Contains"))
+                            return Err(GenericError::unsupported_variant("Contains"));
                         },
                         EnvoyStringMatcherPattern::Custom(_) => {
-                            return Err(GenericError::unsupported_variant("Custom"))
+                            return Err(GenericError::unsupported_variant("Custom"));
                         },
                     };
                     Ok(PathMatcher { specifier, ignore_case })
@@ -1223,8 +1219,8 @@ mod envoy_conversions {
         #[test]
         fn test_type_path_matcher() {
             use arion_data_plane_api::envoy_data_plane_api::envoy::r#type::matcher::v3::{
-                path_matcher::Rule as EnvoyPathMatcherRule, string_matcher::MatchPattern as EnvoyStringMatcherPattern,
                 PathMatcher as EnvoyTypePathMatcher, StringMatcher as EnvoyStringMatcher,
+                path_matcher::Rule as EnvoyPathMatcherRule, string_matcher::MatchPattern as EnvoyStringMatcherPattern,
             };
 
             let envoy_pm = EnvoyTypePathMatcher {

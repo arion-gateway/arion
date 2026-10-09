@@ -26,20 +26,20 @@ use super::{
     load_assignment::{ClusterLoadAssignmentBuilder, PartialClusterLoadAssignment},
 };
 use crate::{
-    clusters::cluster::{original_dst::DynamicDest, ClusterOps, PartialClusterType},
+    ArionRequestBody, Result,
+    clusters::cluster::{ClusterOps, PartialClusterType, original_dst::DynamicDest},
     secrets::TransportSecret,
     transport::{GrpcService, HttpChannel, HttpChannels, TcpChannelConnector},
-    ArionRequestBody, Result,
 };
 use arion_configuration::config::cluster::{Cluster as ClusterConfig, ClusterSpecifier};
 use arion_interner::StringInterner;
-use http::{header::HOST, uri::Authority, HeaderMap, HeaderName, HeaderValue, Request};
+use http::{HeaderMap, HeaderName, HeaderValue, Request, header::HOST, uri::Authority};
 use rand::{prelude::SliceRandom, thread_rng};
 use smol_str::SmolStr;
 use std::{
     borrow::Cow,
     cell::RefCell,
-    collections::{btree_map::Entry as BTreeEntry, BTreeMap},
+    collections::{BTreeMap, btree_map::Entry as BTreeEntry},
 };
 use tracing::{debug, warn};
 use triomphe::Arc;

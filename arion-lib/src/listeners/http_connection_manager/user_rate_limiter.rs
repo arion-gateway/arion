@@ -17,15 +17,15 @@ use std::time::{Duration, Instant};
 use triomphe::Arc;
 
 use arion_configuration::config::{
-    network_filters::http_connection_manager::http_filters::user_rate_limit::UserRateLimiter as ArionUserRateLimiter,
     GenericError,
+    network_filters::http_connection_manager::http_filters::user_rate_limit::UserRateLimiter as ArionUserRateLimiter,
 };
 use papaya::HashMap as PapayaMap;
 use smol_str::SmolStr;
 use tracing::debug;
 
 use crate::listeners::rate_limiter::token_bucket::TokenBucket;
-use crate::{listeners::http_filters::FilterDecision, ArionRequestBody};
+use crate::{ArionRequestBody, listeners::http_filters::FilterDecision};
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::user_rate_limit::Limit;
 
 use arion_interner::StringInterner;

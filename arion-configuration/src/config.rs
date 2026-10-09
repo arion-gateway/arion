@@ -42,11 +42,11 @@ pub use runtime::Runtime;
 
 pub use crate::config::common::*;
 use crate::{
+    Result,
     config::{metrics::MetricsConfig, timezone::TimeZone},
     options::Options,
-    Result,
 };
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{fs::File, path::Path};
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
@@ -97,11 +97,11 @@ pub fn deserialize_yaml<T: DeserializeOwned>(path: &Path) -> Result<T> {
 mod envoy_conversions {
     use std::path::Path;
 
-    use super::{deserialize_yaml, log::AccessLogConfig, Bootstrap, Config};
+    use super::{Bootstrap, Config, deserialize_yaml, log::AccessLogConfig};
     use crate::{
+        Result,
         config::{log::LogConfig, metrics::MetricsConfig, runtime::Runtime, timezone::TimeZone},
         options::Options,
-        Result,
     };
     use anyhow::Context;
     use arion_data_plane_api::decode::from_serde_deserializer;
@@ -197,7 +197,7 @@ mod envoy_conversions {
     }
     #[cfg(test)]
     mod tests {
-        use crate::{config::Config, options::Options, Result};
+        use crate::{Result, config::Config, options::Options};
         use tracing_test::traced_test;
         #[test]
         #[traced_test]

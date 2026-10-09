@@ -182,7 +182,7 @@ time                     = { version = "0.3.55", features = ["local-offset"]}
 upon                     = "0.8"
 url                      = "2"
 uuid                     = { version = "1.27.0", features = ["v4"] }
-wasmtime 	         = "40.0.4"
+wasmtime 	             = "40.0.4"
 x509-parser              = { version = "0.17", features = ["default"] }
 
 [profile.release]
@@ -296,4 +296,4 @@ must_use_candidate                  = "allow"
 needless_raw_string_hashes          = "allow"
 semicolon_if_nothing_returned       = "allow"
 ignore_without_reason               = "allow" # ignore is used in all arion-e2e tests
-assert_is_empty			    = "allow"
+assert_is_empty			            = "allow"

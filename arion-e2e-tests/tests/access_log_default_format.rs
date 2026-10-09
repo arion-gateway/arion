@@ -27,7 +27,7 @@ use arion_e2e_tests::config_builder::{
     BootstrapBuilder, ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, RouteBuilder,
     RouteConfigBuilder, VirtualHostBuilder,
 };
-use arion_e2e_tests::{cleanup_config_file, ArionInstance, PreConfiguredResponse, SpawnOptions, TestBackend};
+use arion_e2e_tests::{ArionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, cleanup_config_file};
 
 /// The default access log format defined in `arion-format::DEFAULT_ACCESS_LOG_FORMAT`.
 const DEFAULT_FORMAT: &str = r#"[%START_TIME%] "%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %PROTOCOL%" %RESPONSE_CODE% %RESPONSE_FLAGS% %BYTES_RECEIVED% %BYTES_SENT% %DURATION% %RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)% "%REQ(X-FORWARDED-FOR)%" "%REQ(USER-AGENT)%" "%REQ(X-REQUEST-ID)%" "%REQ(:AUTHORITY)%" "%UPSTREAM_HOST%"

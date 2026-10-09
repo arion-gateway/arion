@@ -14,8 +14,8 @@
 
 use std::{
     sync::{
-        atomic::{AtomicI64, AtomicU64, Ordering},
         LazyLock,
+        atomic::{AtomicI64, AtomicU64, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -31,9 +31,9 @@ use arion_configuration::config::{
     },
 };
 use arion_data_plane_api::envoy_data_plane_api::envoy::{
-    extensions::common::ratelimit::v3::{rate_limit_descriptor::Entry as DescriptorEntry, RateLimitDescriptor},
+    extensions::common::ratelimit::v3::{RateLimitDescriptor, rate_limit_descriptor::Entry as DescriptorEntry},
     service::ratelimit::v3::{
-        rate_limit_response, rate_limit_service_client::RateLimitServiceClient, RateLimitRequest, RateLimitResponse,
+        RateLimitRequest, RateLimitResponse, rate_limit_response, rate_limit_service_client::RateLimitServiceClient,
     },
 };
 use papaya::HashMap as PapayaMap;

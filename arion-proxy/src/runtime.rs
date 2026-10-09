@@ -24,7 +24,7 @@ use arion_lib::runtime_config;
 use arion_lib::runtime_context::set_runtime_id;
 
 #[cfg(feature = "metrics")]
-use arion_metrics::{metrics::init_per_thread_metrics, OtelExporterConfig};
+use arion_metrics::{OtelExporterConfig, metrics::init_per_thread_metrics};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{fmt::Display, ops::Deref};

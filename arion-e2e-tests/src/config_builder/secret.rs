@@ -18,9 +18,9 @@
 use std::path::Path;
 
 use arion_data_plane_api::envoy_data_plane_api::envoy::{
-    config::core::v3::{data_source::Specifier, DataSource},
+    config::core::v3::{DataSource, data_source::Specifier},
     extensions::transport_sockets::tls::v3::{
-        secret::Type as SecretType, CertificateValidationContext, Secret as EnvoySecret, TlsCertificate,
+        CertificateValidationContext, Secret as EnvoySecret, TlsCertificate, secret::Type as SecretType,
     },
 };
 

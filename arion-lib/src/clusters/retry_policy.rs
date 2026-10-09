@@ -50,11 +50,7 @@ impl<'a, B: Body> RetryCondition<'a, B> {
     }
 
     pub fn inner_response(&self) -> Option<&Response<B>> {
-        if let RetryCondition::Response(resp) = self {
-            Some(resp)
-        } else {
-            None
-        }
+        if let RetryCondition::Response(resp) = self { Some(resp) } else { None }
     }
 
     #[allow(dead_code)]

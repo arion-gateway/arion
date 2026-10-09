@@ -54,8 +54,8 @@ use opentelemetry::KeyValue;
 
 #[cfg(feature = "tracing")]
 use {
-    crate::tracing_attributes::set_attributes_from_request,
     crate::tracing_attributes::HTTP_RESPONSE_STATUS_CODE,
+    crate::tracing_attributes::set_attributes_from_request,
     arion_tracing::{
         http_tracer::{SpanKind, SpanName},
         span_state::SpanState,
@@ -78,14 +78,14 @@ use arion_metrics::metrics::{custom::CUSTOM_METRICS, http, user};
 
 #[cfg(feature = "access-log")]
 use {
-    crate::access_log::{blocking_log_access, is_access_log_enabled, Target},
+    crate::access_log::{Target, blocking_log_access, is_access_log_enabled},
     crate::event_error::UpstreamTransportEventError,
     arion_configuration::config::access_log::AccessLog,
+    arion_format::LogFormatter,
     arion_format::context::{
         DownstreamResponseContext, FinishContext, HttpRequestDurationContext, HttpResponseDurationContext,
         InitHttpContext,
     },
-    arion_format::LogFormatter,
 };
 
 #[cfg(any(feature = "access-log", feature = "metrics"))]
@@ -94,18 +94,19 @@ use {parking_lot::Mutex, std::time::Instant};
 use ::http::HeaderValue;
 use arc_swap::ArcSwapOption;
 use arion_configuration::config::network_filters::http_connection_manager::{
-    route::{Action, RouteMatchResult},
     CodecType, ConfigSource, ConfigSourceSpecifier, HttpConnectionManager as HttpConnectionManagerConfig, RdsSpecifier,
     RouteSpecifier, UpgradeType,
+    route::{Action, RouteMatchResult},
 };
 #[cfg(feature = "metrics")]
 use arion_metrics::metrics::clusters;
 use core::time::Duration;
-use hyper::{body::Incoming, header::HOST, Request, Response, StatusCode};
+use hyper::{Request, Response, StatusCode, body::Incoming, header::HOST};
 
 use std::fmt::Write;
 
 use crate::{
+    ArionClientBody, ArionRequestBody, ArionResponseBody, ConversionContext, PolyBody, Result, RouteConfiguration,
     body::{
         instrumented_body::InstrumentedBody,
         response_flags::{BodyKind, ResponseFlags},
@@ -115,17 +116,16 @@ use crate::{
     get_shard_id,
     listeners::{
         http_connection_manager::http_modifiers::ModifiersExtractor,
-        http_filters::{per_route_http_filters, FilterDecision, FilterFactory, HttpFilter, HttpFilterValue},
+        http_filters::{FilterDecision, FilterFactory, HttpFilter, HttpFilterValue, per_route_http_filters},
         metadata::{ConnMeta, DownstreamMetadata},
         synthetic_http_response::SyntheticHttpResponse,
     },
-    with_client_span, with_metric, with_server_span, ArionClientBody, ArionRequestBody, ArionResponseBody,
-    ConversionContext, PolyBody, Result, RouteConfiguration,
+    with_client_span, with_metric, with_server_span,
 };
 
+use crate::utils::StreamMetrics;
 #[cfg(any(feature = "access-log", feature = "metrics"))]
 use crate::utils::instrumented_stream::OnFlush;
-use crate::utils::StreamMetrics;
 
 use arion_configuration::config::network_filters::{
     early_header_mutation::EarlyHeaderMutation,

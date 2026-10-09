@@ -29,11 +29,11 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
+use rustls::RootCertStore;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::WebPkiClientVerifier;
-use rustls::RootCertStore;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::sync::{Mutex, Notify, mpsc};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
 

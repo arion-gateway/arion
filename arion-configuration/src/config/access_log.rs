@@ -21,7 +21,7 @@
 use std::{fmt::Display, str::FromStr};
 
 use arion_data_plane_api::envoy_data_plane_api::envoy::{
-    config::accesslog::v3::{access_log::ConfigType, AccessLog as EnvoyAccessLog},
+    config::accesslog::v3::{AccessLog as EnvoyAccessLog, access_log::ConfigType},
     extensions::access_loggers::{
         file::v3::FileAccessLog as EnvoyFileAccessLog,
         stream::v3::{StderrAccessLog as EnvoyStderrAccessLog, StdoutAccessLog as EnvoyStdoutAccessLog},
@@ -44,7 +44,7 @@ use arion_data_plane_api::envoy_data_plane_api::{
     prost::Message,
 };
 
-use arion_format::{LogFormatter, DEFAULT_ACCESS_LOG_FORMAT};
+use arion_format::{DEFAULT_ACCESS_LOG_FORMAT, LogFormatter};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 

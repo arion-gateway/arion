@@ -23,16 +23,15 @@ use crate::metrics;
 
 use super::{RequestCtx, RequestHandler};
 use crate::{
-    body::response_flags::ResponseFlags, event_error::EventFailure,
-    listeners::synthetic_http_response::SyntheticHttpResponse, transport::HttpChannels,
-    utils::instrumented_stream::InstrumentedStream, with_metric, ArionRequestBody, ArionResponseBody, Result,
-    UpstreamCallOpts,
+    ArionRequestBody, ArionResponseBody, Result, UpstreamCallOpts, body::response_flags::ResponseFlags,
+    event_error::EventFailure, listeners::synthetic_http_response::SyntheticHttpResponse, transport::HttpChannels,
+    utils::instrumented_stream::InstrumentedStream, with_metric,
 };
 use arion_format::types::ResponseFlags as FmtResponseFlags;
 
 use crate::get_shard_id;
 use arion_configuration::config::network_filters::http_connection_manager::UpgradeType;
-use http::{header, HeaderMap, HeaderValue, StatusCode, Version};
+use http::{HeaderMap, HeaderValue, StatusCode, Version, header};
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 #[cfg(feature = "metrics")]

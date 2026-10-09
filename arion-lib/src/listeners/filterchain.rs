@@ -23,6 +23,7 @@ use super::{
     tcp_proxy::{TcpProxy, TcpProxyBuilder},
 };
 use crate::{
+    AsyncInstrumentedStream, ConversionContext, Error, Result,
     event_error::DownstreamError,
     listeners::{
         metadata::{ConnMeta, DownstreamConnectionMetadata, DownstreamMetadata},
@@ -33,17 +34,16 @@ use crate::{
     },
     secrets::{TlsConfigurator, WantsToBuildServer},
     utils::instrumented_stream::HasMetrics,
-    AsyncInstrumentedStream, ConversionContext, Error, Result,
 };
 use arion_configuration::config::{
     listener::{FilterChain as FilterChainConfig, MainFilter},
     network_filters::{
+        ConnectionLimit as ConnectionLimitConfig, NetworkGlobalRateLimit as NetworkGlobalRateLimitConfig,
         http_connection_manager::CodecType,
         network_rbac::{NetworkContext, NetworkRbac},
-        ConnectionLimit as ConnectionLimitConfig, NetworkGlobalRateLimit as NetworkGlobalRateLimitConfig,
     },
 };
-use hyper::{body::Incoming, service::service_fn, Request};
+use hyper::{Request, body::Incoming, service::service_fn};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as HyperServerBuilder;
 
@@ -55,7 +55,7 @@ use arion_metrics::metrics::{filters, http, tcp, tls};
 
 use crate::{with_histogram, with_metric};
 
-use rustls::{server::Acceptor, ServerConfig};
+use rustls::{ServerConfig, server::Acceptor};
 use scopeguard::defer;
 use smallvec::SmallVec;
 use smol_str::SmolStr;

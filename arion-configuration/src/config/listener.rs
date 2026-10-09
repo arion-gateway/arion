@@ -21,9 +21,9 @@
 use super::access_log::{AccessLog, AccessLogSink};
 
 use super::{
+    GenericError,
     network_filters::{HttpConnectionManager, NetworkRbac, TcpProxy},
     transport::{BindDevice, CommonTlsContext},
-    GenericError,
 };
 use crate::config::network_filters::tracing::{TracingConfig, TracingKey};
 use crate::config::network_filters::{ConnectionLimit as ConnectionLimitConfig, NetworkGlobalRateLimit};
@@ -398,9 +398,9 @@ mod envoy_conversions {
             config::{
                 core::v3::TransportSocket as EnvoyTransportSocket,
                 listener::v3::{
-                    filter::ConfigType as EnvoyConfigType, listener::ListenerSpecifier as EnvoyListenerSpecifier,
                     Filter as EnvoyFilter, FilterChain as EnvoyFilterChain, FilterChainMatch as EnvoyFilterChainMatch,
-                    Listener as EnvoyListener,
+                    Listener as EnvoyListener, filter::ConfigType as EnvoyConfigType,
+                    listener::ListenerSpecifier as EnvoyListenerSpecifier,
                 },
             },
             extensions::{

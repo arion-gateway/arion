@@ -25,9 +25,9 @@ use http::uri::Authority;
 use rand::Rng;
 
 use super::{
+    Balancer, WeightedEndpoint,
     default_balancer::{EndpointWithAuthority, LbItem},
     hash_policy::DeterministicBuildHasher,
-    Balancer, WeightedEndpoint,
 };
 
 /// A consistent balancer based on the this paper:
@@ -304,7 +304,7 @@ mod test {
     use triomphe::Arc;
 
     use http::uri::Authority;
-    use rand::{rngs::SmallRng, Rng, SeedableRng};
+    use rand::{Rng, SeedableRng, rngs::SmallRng};
 
     use crate::clusters::balancers::{Balancer, EndpointWithAuthority};
 

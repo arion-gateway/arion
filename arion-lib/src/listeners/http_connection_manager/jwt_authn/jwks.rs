@@ -19,16 +19,16 @@ use arion_configuration::config::{
     cluster::ClusterSpecifier,
     network_filters::http_connection_manager::http_filters::jwt::{JwtProvider, RemoteJwks},
 };
-use http::{request, Method, StatusCode};
+use http::{Method, StatusCode, request};
 use http_body_util::BodyExt;
-use jsonwebtoken::{jwk::Jwk, Algorithm, DecodingKey, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, jwk::Jwk};
 use tracing::error;
 use triomphe::Arc;
 
 use crate::{
-    clusters::{clusters_manager, RoutingContext, RoutingPriority},
-    listeners::http_connection_manager::jwt_authn::{error::JwkError, Kid, ValidationKey},
     ArionRequestBody,
+    clusters::{RoutingContext, RoutingPriority, clusters_manager},
+    listeners::http_connection_manager::jwt_authn::{Kid, ValidationKey, error::JwkError},
 };
 
 pub fn parse_jwks(

@@ -19,9 +19,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use arion_e2e_tests::config_builder::{presets, ClusterBuilder, EndpointBuilder, RouteBuilder};
+use arion_e2e_tests::config_builder::{ClusterBuilder, EndpointBuilder, RouteBuilder, presets};
 use arion_e2e_tests::{
-    cleanup_config_file, ArionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient,
+    ArionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient, cleanup_config_file,
 };
 use futures::future::join_all;
 use http::StatusCode;

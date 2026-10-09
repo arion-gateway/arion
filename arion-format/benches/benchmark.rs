@@ -19,14 +19,14 @@
 //
 
 use arion_format::{
+    DEFAULT_ACCESS_LOG_FORMAT, LogFormatter,
     context::{Context, DownstreamContext, DownstreamResponseContext, FinishContext, InitContext, SocketAddrContext},
     set_custom_operators,
     types::{ResponseFlags, ResponseFlagsShort},
-    LogFormatter, DEFAULT_ACCESS_LOG_FORMAT,
 };
 use arion_http_header::X_ENVOY_ORIGINAL_PATH;
 use chrono::{DateTime, SecondsFormat, Utc};
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Version};
 use smol_str::ToSmolStr;
 use std::time::Duration;

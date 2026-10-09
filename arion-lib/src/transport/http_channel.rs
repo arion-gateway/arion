@@ -20,20 +20,20 @@
 
 use super::connector::{ConnectUsing, UnifiedConnector};
 use crate::{
+    ArionRequestBody, ArionResponseBody, Error, Result, UpstreamCallOpts,
     body::{instrumented_body::InstrumentedBody, response_flags::ResponseFlags, timeout_body::TimeoutBody},
     clusters::{
-        decrement_retries, retry_policy::RetryCondition, try_increment_retries, CircuitBreakerDenial, RoutingPriority,
+        CircuitBreakerDenial, RoutingPriority, decrement_retries, retry_policy::RetryCondition, try_increment_retries,
     },
     event_error::{EventKind, UpstreamError},
     instrument_block, instrument_function,
     listeners::{
-        http_connection_manager::{http_modifiers::strip_trailers_headers, RequestCtx, RequestHandler},
+        http_connection_manager::{RequestCtx, RequestHandler, http_modifiers::strip_trailers_headers},
         synthetic_http_response::SyntheticHttpResponse,
     },
     secrets::{TlsConfigurator, WantsToBuildClient},
     transport::http1_pool::Http1ClientExt,
     transport::http2_pool::Http2ClientExt,
-    ArionRequestBody, ArionResponseBody, Error, Result, UpstreamCallOpts,
 };
 use arion_configuration::config::{
     cluster::http_protocol_options::{Codec, HttpProtocolOptions},
@@ -43,8 +43,8 @@ use arion_format::types::{ResponseFlagsLong, ResponseFlagsShort};
 #[cfg(feature = "metrics")]
 use arion_metrics::metrics::custom::CUSTOM_METRICS;
 use http::{
-    uri::{Authority, Parts},
     HeaderValue, Response, Version,
+    uri::{Authority, Parts},
 };
 use http_body_util::BodyExt;
 use hyper::{Request, Uri};

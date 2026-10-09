@@ -13,14 +13,14 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::RemoteEmbeddings;
 use arion_interner::StringInterner;
 use bytes::Bytes;
-use http::{header, Method, Request};
+use http::{Method, Request, header};
 use http_body_util::{BodyExt, Full};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -31,10 +31,10 @@ use crate::body::timeout_body::TimeoutBody;
 use crate::clusters::clusters_manager;
 use crate::clusters::clusters_manager::RoutingContext;
 use crate::listeners::http_connection_manager::RequestHandler;
-use crate::{body::instrumented_body::InstrumentedBody, listeners::http_connection_manager::RequestCtx};
 use crate::{ArionRequestBody, UpstreamCallOpts};
+use crate::{body::instrumented_body::InstrumentedBody, listeners::http_connection_manager::RequestCtx};
 
-use super::{normalise_in_place, Embedding, EmbeddingError};
+use super::{Embedding, EmbeddingError, normalise_in_place};
 
 const DEFAULT_EMBEDDINGS_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -144,11 +144,7 @@ impl EmbeddingsClient {
 
     fn validate_dimensions(&self, actual: usize) -> Result<(), EmbeddingError> {
         let expected = self.dimensions.load(Ordering::Acquire);
-        if expected == actual {
-            Ok(())
-        } else {
-            Err(EmbeddingError::DimensionMismatch { expected, got: actual })
-        }
+        if expected == actual { Ok(()) } else { Err(EmbeddingError::DimensionMismatch { expected, got: actual }) }
     }
 
     fn finalize(&self, mut v: Vec<f32>) -> Result<Embedding, EmbeddingError> {

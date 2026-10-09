@@ -26,17 +26,17 @@ use rustc_hash::FxHashMap as HashMap;
 use tracing::debug;
 
 use super::{
+    Balancer,
     healthy::HealthyBalancer,
     priority::{Priority, PriorityInfo},
     wrr::{self, WeightedRoundRobinBalancer},
-    Balancer,
 };
 use crate::{
+    Result,
     clusters::{
         health::{EndpointHealth, HealthStatus, ValueUpdated},
         load_assignment::{LbEndpoint, LocalityLbEndpoints},
     },
-    Result,
 };
 
 pub trait WeightedEndpoint {
@@ -157,7 +157,7 @@ mod test {
     use super::DefaultBalancer;
     use crate::{
         clusters::{
-            balancers::{wrr::WeightedRoundRobinBalancer, Balancer, EndpointWithAuthority},
+            balancers::{Balancer, EndpointWithAuthority, wrr::WeightedRoundRobinBalancer},
             health::HealthStatus,
             load_assignment::{LbEndpoint, LocalityLbEndpoints},
         },

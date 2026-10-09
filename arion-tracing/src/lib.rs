@@ -26,10 +26,10 @@ pub mod trace_context;
 pub mod trace_info;
 
 use {
-    opentelemetry::trace::TracerProvider,
     opentelemetry::KeyValue,
+    opentelemetry::trace::TracerProvider,
     opentelemetry_otlp::{SpanExporter, WithExportConfig},
-    opentelemetry_sdk::{trace as sdktrace, Resource},
+    opentelemetry_sdk::{Resource, trace as sdktrace},
     std::sync::LazyLock,
     std::time::Duration,
     tracing::info,

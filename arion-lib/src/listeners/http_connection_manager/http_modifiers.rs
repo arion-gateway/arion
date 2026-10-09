@@ -20,9 +20,9 @@
 
 use super::upgrade_utils;
 use crate::{
+    ArionResponseBody,
     event_error::EventFailure,
     listeners::{metadata::ConnMeta, synthetic_http_response::SyntheticHttpResponse},
-    ArionResponseBody,
 };
 use arion_configuration::config::{
     cluster::http_protocol_options::Codec,
@@ -30,14 +30,14 @@ use arion_configuration::config::{
     network_filters::{
         early_header_mutation::EarlyHeaderMutation,
         http_connection_manager::{
-            header_modifier::{HeaderAppendAction, HeaderValueOption},
             HeaderModifiersAdd, HeaderModifiersRemove, Route, RouteConfiguration, VirtualHost, XffSettings,
+            header_modifier::{HeaderAppendAction, HeaderValueOption},
         },
     },
 };
 use arion_format::context::{DownstreamContext, DownstreamResponseContext};
 use arion_http_header::{X_ENVOY_EXTERNAL_ADDRESS, X_ENVOY_INTERNAL, X_FORWARDED_FOR};
-use http::{header, HeaderMap, HeaderName, HeaderValue, Method, Request, Response};
+use http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Response, header};
 use std::net::{IpAddr, SocketAddr};
 use tracing::warn;
 

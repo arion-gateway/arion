@@ -86,7 +86,7 @@ pub fn set_attributes_from_request<B>(span: &mut BoxedSpan, request: &Request<B>
 
     use arion_interner::StringInterner;
     use http::HeaderValue;
-    use opentelemetry::{trace::Span, KeyValue};
+    use opentelemetry::{KeyValue, trace::Span};
 
     span.set_attributes([
         KeyValue::new(HTTP_REQUEST_METHOD, request.method().as_str().to_static_str()), // the number of HTTP methods is small, hence we can use the string interner here..

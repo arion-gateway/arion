@@ -20,14 +20,14 @@
 
 use std::collections::HashMap;
 
-use arion_configuration::config::cluster::{health_check::HealthCheckProtocol, HealthCheck};
+use arion_configuration::config::cluster::{HealthCheck, health_check::HealthCheckProtocol};
 use smol_str::{SmolStr, ToSmolStr};
 use tokio::sync::mpsc;
 
 use crate::clusters::{
     cluster::{ClusterOps, ClusterType},
     clusters_manager,
-    health::{checkers::EndpointHealthChecker, EndpointHealthUpdate},
+    health::{EndpointHealthUpdate, checkers::EndpointHealthChecker},
 };
 
 use super::EndpointId;

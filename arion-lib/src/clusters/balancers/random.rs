@@ -22,12 +22,12 @@ use std::fmt::Debug;
 use triomphe::Arc;
 
 use rand::{
+    SeedableRng,
     distributions::{Distribution, WeightedIndex},
     rngs::SmallRng,
-    SeedableRng,
 };
 
-use super::{default_balancer::LbItem, Balancer, WeightedEndpoint};
+use super::{Balancer, WeightedEndpoint, default_balancer::LbItem};
 
 #[derive(Debug, Clone)]
 pub struct RandomBalancer<E> {
@@ -89,11 +89,11 @@ impl<E: WeightedEndpoint> FromIterator<Arc<E>> for RandomBalancer<E> {
 mod test {
     use triomphe::Arc;
 
-    use rand::{rngs::SmallRng, SeedableRng};
+    use rand::{SeedableRng, rngs::SmallRng};
 
     use crate::clusters::balancers::{
-        random::{LbItem, RandomBalancer},
         Balancer,
+        random::{LbItem, RandomBalancer},
     };
 
     #[test]

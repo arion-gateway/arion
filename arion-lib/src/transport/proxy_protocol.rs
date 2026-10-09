@@ -19,18 +19,18 @@
 //
 
 use crate::{
+    Result, SecretManager,
     listeners::metadata::DownstreamConnectionMetadata,
     secrets::{TlsConfigurator, WantsToBuildClient},
     transport::AsyncInstrumentedStream,
     utils::rewindable_stream::RewindableHeadAsyncStream,
-    Result, SecretManager,
 };
 use arion_configuration::config::{
     common::{ProxyProtocolVersion, TlvType},
     listener_filters::DownstreamProxyProtocolConfig,
     transport::{PassTlvMatchType, ProxyProtocolPassThroughTlvs, TlvEntry, UpstreamProxyProtocolConfig},
 };
-use ppp::{v1, v2, HeaderResult};
+use ppp::{HeaderResult, v1, v2};
 use rustls::ClientConfig;
 use std::{
     collections::HashMap,

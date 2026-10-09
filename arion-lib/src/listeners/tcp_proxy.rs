@@ -23,18 +23,19 @@ use {
     crate::access_log::Target,
     crate::event_error::{ConnectionTerminationDetails, ResponseCodeDetails, UpstreamTransportEventError},
     crate::with_access_log,
+    arion_format::LogFormatter,
     arion_format::context::{FinishContext, InitContext, SocketAddrContext, TcpContext, WireContext},
     arion_format::types::ResponseFlags,
-    arion_format::LogFormatter,
     std::time::Instant,
 };
 
 #[cfg(feature = "metrics")]
 use crate::utils::instrumented_stream::HasMetrics;
 use crate::{
+    AsyncInstrumentedStream, Result,
     clusters::clusters_manager::{self, RoutingContext},
     listeners::metadata::DownstreamMetadata,
-    with_metric, AsyncInstrumentedStream, Result,
+    with_metric,
 };
 use arion_configuration::config::{
     access_log::AccessLog, cluster::ClusterSpecifier as ClusterSpecifierConfig,

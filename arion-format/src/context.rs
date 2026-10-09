@@ -25,17 +25,17 @@ use std::{
 };
 
 use crate::{
+    StringType,
     operator::Operator,
     types::{ResponseFlags, ResponseFlagsLong, ResponseFlagsShort},
-    StringType,
 };
 use arion_http_header::X_ENVOY_ORIGINAL_PATH;
 use arion_interner::StringInterner;
 use arrayvec::ArrayString;
 use chrono::{DateTime, Datelike, Timelike, Utc};
-use http::{uri::Authority, Request, Response};
+use http::{Request, Response, uri::Authority};
 use smol_str::ToSmolStr;
-use smol_str::{format_smolstr, SmolStr};
+use smol_str::{SmolStr, format_smolstr};
 
 pub trait Context {
     fn eval_op(&self, op: &Operator) -> StringType;

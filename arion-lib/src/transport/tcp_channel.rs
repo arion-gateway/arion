@@ -22,8 +22,8 @@ use std::{net::SocketAddr, sync::Arc as StdArc};
 use triomphe::Arc;
 
 use super::{
-    connector::{ConnectUsing, UnifiedConnector},
     AsyncInstrumentedStream, UpstreamTransportSocketConfigurator,
+    connector::{ConnectUsing, UnifiedConnector},
 };
 use crate::{
     listeners::metadata::DownstreamConnectionMetadata,

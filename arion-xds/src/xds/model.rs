@@ -19,8 +19,8 @@
 //
 
 use arion_configuration::config::{
-    cluster::ClusterLoadAssignment, network_filters::http_connection_manager::RouteConfiguration, secret::Secret,
-    Cluster, GenericError, Listener,
+    Cluster, GenericError, Listener, cluster::ClusterLoadAssignment,
+    network_filters::http_connection_manager::RouteConfiguration, secret::Secret,
 };
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::{

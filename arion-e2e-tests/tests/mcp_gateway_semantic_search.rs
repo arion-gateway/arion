@@ -33,15 +33,15 @@
 
 use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::Tool as ArionMcpTool;
 use arion_e2e_tests::config_builder::{
-    inline_string_data_source, BootstrapBuilder, ClusterBuilder, EndpointBuilder, McpGatewayBuilder,
-    McpGatewayHttpConfigBuilder, McpRestBackendBuilder, McpSemanticSearchBuilder, McpToolBuilder,
+    BootstrapBuilder, ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder,
+    McpRestBackendBuilder, McpSemanticSearchBuilder, McpToolBuilder, inline_string_data_source,
 };
 use arion_e2e_tests::{
     ArionInstance, CallToolResult, CapturedEmbeddingsTestRequest, EmbeddingsTestService, McpTestClient,
     PreConfiguredResponse, SpawnOptions, TestBackend,
 };
 use http::Method;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Duration;
 
 const BACKEND_CLUSTER: &str = "backend_cluster";

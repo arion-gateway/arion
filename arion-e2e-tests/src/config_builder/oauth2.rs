@@ -16,13 +16,13 @@ use std::time::Duration;
 
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::{
-        config::core::v3::{http_uri::HttpUpstreamType, HttpUri},
+        config::core::v3::{HttpUri, http_uri::HttpUpstreamType},
         extensions::{
-            filters::http::oauth2::v3::{o_auth2_credentials::TokenFormation, OAuth2, OAuth2Config, OAuth2Credentials},
+            filters::http::oauth2::v3::{OAuth2, OAuth2Config, OAuth2Credentials, o_auth2_credentials::TokenFormation},
             transport_sockets::tls::v3::SdsSecretConfig,
         },
         r#type::matcher::v3::{
-            path_matcher::Rule as PathMatcherRule, string_matcher::MatchPattern, PathMatcher, StringMatcher,
+            PathMatcher, StringMatcher, path_matcher::Rule as PathMatcherRule, string_matcher::MatchPattern,
         },
     },
     google::protobuf::{Any, BoolValue},

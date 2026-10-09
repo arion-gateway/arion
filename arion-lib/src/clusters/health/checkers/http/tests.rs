@@ -31,8 +31,8 @@ use std::time::Duration;
 
 use super::*;
 use crate::{
-    clusters::health::checkers::tests::{deref, TestFixture},
     PolyBody, Result,
+    clusters::health::checkers::tests::{TestFixture, deref},
 };
 
 /// Channels to report every time an HTTP request is made, `requests`,

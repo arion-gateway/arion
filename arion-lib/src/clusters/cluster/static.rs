@@ -20,15 +20,15 @@
 
 use super::{ClusterOps, ClusterType};
 use crate::{
+    Result,
     clusters::{
+        GrpcService,
         circuit_breaker::{CircuitBreakerCounters, ClusterCircuitBreaker},
         clusters_manager::{RoutingContext, RoutingRequirement},
         load_assignment::{ClusterLoadAssignment, ClusterLoadAssignmentBuilder},
-        GrpcService,
     },
     secrets::TransportSecret,
     transport::{HttpChannel, HttpChannels, TcpChannelConnector, UpstreamTransportSocketConfigurator},
-    Result,
 };
 use arion_configuration::config::cluster::{HealthCheck, HealthStatus};
 use http::uri::Authority;

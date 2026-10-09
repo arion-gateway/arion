@@ -26,14 +26,14 @@ use arion_format::context::UpstreamContext;
 #[cfg(feature = "access-log")]
 use crate::with_access_log;
 
-use crate::{body::timeout_body::TimeoutBody, ArionRequestBody, ArionResponseBody, Error, PolyBody, Result};
+use crate::{ArionRequestBody, ArionResponseBody, Error, PolyBody, Result, body::timeout_body::TimeoutBody};
 use arion_configuration::config::network_filters::http_connection_manager::route::{
     AuthorityRedirect, RedirectAction, RouteMatchResult,
 };
 use http::{
+    HeaderValue, StatusCode, Uri,
     header::{HOST, LOCATION},
     uri::{Authority, Parts as UriParts, PathAndQuery, Scheme},
-    HeaderValue, StatusCode, Uri,
 };
 use hyper::{Request, Response};
 use smol_str::format_smolstr;

@@ -43,22 +43,22 @@ pub use arion_instance::{ArionInstance, SpawnOptions};
 pub use embeddings_service::{CapturedEmbeddingsTestRequest, EmbeddingsTestService};
 pub use error::{Error, Result};
 pub use ext_proc_test_server::{
-    ext_proc_responses, CapturedProcessingRequest, ExtProcTestServer, ExtProcTestServerBuilder,
+    CapturedProcessingRequest, ExtProcTestServer, ExtProcTestServerBuilder, ext_proc_responses,
 };
 pub use grpc_test_backend::test_proto::EchoResponse;
 pub use grpc_test_backend::{GrpcTestBackend, GrpcTestBackendBuilder};
 pub use grpc_test_client::GrpcTestClient;
 pub use mcp_gateway::{
-    generate_jwt_token, CallToolParams, CallToolResult, JwtKeyPair, ListToolsResult, McpJsonRpcError,
-    McpJsonRpcRequest, McpJsonRpcResponse, McpResultExt, McpTestClient, McpTool, MockMcpServer, TestJwtClaims,
-    ToolContent,
+    CallToolParams, CallToolResult, JwtKeyPair, ListToolsResult, McpJsonRpcError, McpJsonRpcRequest,
+    McpJsonRpcResponse, McpResultExt, McpTestClient, McpTool, MockMcpServer, TestJwtClaims, ToolContent,
+    generate_jwt_token,
 };
 pub use port_allocator::PortBlock;
 pub use pp_test_client::ProxyProtocolTcpClient;
-pub use raw_http::{assert_rejected, PartialSendClient, RawHttpRequestBuilder, RawHttpResponse};
-pub use rls_test_server::{rls_responses, RlsTestServer, RlsTestServerBuilder};
+pub use raw_http::{PartialSendClient, RawHttpRequestBuilder, RawHttpResponse, assert_rejected};
+pub use rls_test_server::{RlsTestServer, RlsTestServerBuilder, rls_responses};
 pub use tcp_test_backend::{CapturedTcpConnection, TcpTestBackend};
-pub use tcp_test_client::{TcpTestClient, READ_TIMEOUT};
+pub use tcp_test_client::{READ_TIMEOUT, TcpTestClient};
 pub use test_backend::{CapturedRequest, PreConfiguredResponse, TestBackend};
 pub use test_certs::TestCerts;
 pub use test_client::{RequestBuilder, TestClient, TestResponse};

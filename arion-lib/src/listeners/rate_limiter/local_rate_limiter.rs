@@ -15,7 +15,7 @@
 use triomphe::Arc;
 
 use arion_interner::InternedStr;
-use http::{status::StatusCode, Request};
+use http::{Request, status::StatusCode};
 use tracing::warn;
 
 #[cfg(feature = "metrics")]

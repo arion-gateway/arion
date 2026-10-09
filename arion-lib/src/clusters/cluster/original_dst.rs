@@ -41,6 +41,7 @@ use webpki::types::ServerName;
 use triomphe::Arc;
 
 use crate::{
+    Result,
     clusters::{
         circuit_breaker::{CircuitBreakerCounters, ClusterCircuitBreaker},
         clusters_manager::{MetadataKey, RoutingContext, RoutingRequirement},
@@ -51,10 +52,9 @@ use crate::{
         GrpcService, HttpChannel, HttpChannelBuilder, HttpChannels, TcpChannelConnector,
         UpstreamTransportSocketConfigurator,
     },
-    Result,
 };
 use arion_configuration::config::cluster::HttpProtocolOptions;
-use http::{uri::Authority, HeaderValue};
+use http::{HeaderValue, uri::Authority};
 
 use super::{ClusterOps, ClusterType};
 
@@ -539,7 +539,7 @@ mod tests {
 
     use crate::secrets::SecretManager;
     use arion_configuration::config::cluster::{
-        http_protocol_options::Codec, Cluster as ClusterConfig, LbPolicy, OriginalDstConfig, StandardLbPolicy,
+        Cluster as ClusterConfig, LbPolicy, OriginalDstConfig, StandardLbPolicy, http_protocol_options::Codec,
     };
     use std::str::FromStr;
 

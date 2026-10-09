@@ -22,17 +22,17 @@ use std::sync::Arc as StdArc;
 
 use arion_configuration::config::secret::TrustChainVerification;
 use rustls::{
+    ClientConfig, RootCertStore, ServerConfig, SupportedProtocolVersion,
     client::WebPkiServerVerifier,
     crypto::aws_lc_rs::Ticketer,
     server::{NoServerSessionStorage, ProducesTickets, WebPkiClientVerifier},
     sign::CertifiedKey,
-    ClientConfig, RootCertStore, ServerConfig, SupportedProtocolVersion,
 };
 use smol_str::{SmolStr, ToSmolStr};
 use tracing::{debug, warn};
 use x509_parser::prelude::{FromDer, GeneralName, X509Certificate};
 
-use super::configurator::{get_crypto_key_provider, ClientCert, RelaxedResolvesServerCertUsingSni, ServerCert};
+use super::configurator::{ClientCert, RelaxedResolvesServerCertUsingSni, ServerCert, get_crypto_key_provider};
 
 #[derive(Debug, Clone)]
 pub struct WantsCertStore {
@@ -133,7 +133,7 @@ pub struct TlsContextBuilder<S> {
     pub state: S,
 }
 
-use crate::{secrets::no_cert_verification::NoCertificateVerification, Result};
+use crate::{Result, secrets::no_cert_verification::NoCertificateVerification};
 
 impl TlsContextBuilder<()> {
     pub fn with_supported_versions(
@@ -354,11 +354,7 @@ impl TlsContextBuilder<WantsToBuildServer> {
                     }
                 }
 
-                if has_errors {
-                    Err(())
-                } else {
-                    Ok(())
-                }
+                if has_errors { Err(()) } else { Ok(()) }
             })
             .filter(std::result::Result::is_err)
             .count();
@@ -416,7 +412,10 @@ impl TlsContextBuilder<WantsToBuildClient> {
             },
             TrustChainVerification::AcceptUntrusted => {
                 let verifier = StdArc::new(NoCertificateVerification {});
-                warn!("TrustChainVerification::AcceptUntrusted : dangerous not verifying upstream certificate for cluster with sni: {}", self.state.sni);
+                warn!(
+                    "TrustChainVerification::AcceptUntrusted : dangerous not verifying upstream certificate for cluster with sni: {}",
+                    self.state.sni
+                );
                 builder.dangerous().with_custom_certificate_verifier(verifier)
             },
         };
@@ -440,9 +439,9 @@ impl TlsContextBuilder<WantsToBuildClient> {
 mod tests {
     use super::*;
     use rustls::{
+        ClientConnection, HandshakeKind, ServerConnection,
         pki_types::ServerName,
         version::{TLS12, TLS13},
-        ClientConnection, HandshakeKind, ServerConnection,
     };
 
     const CERT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../test_certs/demo/backend.cert.pem");

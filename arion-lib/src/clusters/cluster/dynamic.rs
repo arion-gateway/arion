@@ -32,15 +32,15 @@ use arion_configuration::config::{
 use triomphe::Arc;
 
 use crate::{
+    Result,
     clusters::{
+        GrpcService,
         circuit_breaker::{CircuitBreakerCounters, ClusterCircuitBreaker},
         clusters_manager::{RoutingContext, RoutingRequirement},
         load_assignment::ClusterLoadAssignment,
-        GrpcService,
     },
     secrets::TransportSecret,
     transport::{HttpChannel, HttpChannels, TcpChannelConnector, UpstreamTransportSocketConfigurator},
-    Result,
 };
 
 use super::{ClusterOps, ClusterType};

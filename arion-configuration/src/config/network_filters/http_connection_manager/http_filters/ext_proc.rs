@@ -258,22 +258,22 @@ mod envoy_conversions {
     use super::*;
     use crate::config::{
         common::*,
-        core::{regex_from_envoy, RustType},
+        core::{RustType, regex_from_envoy},
     };
     use arion_data_plane_api::envoy_data_plane_api::envoy::{
         config::{
             common::mutation_rules::v3::HeaderMutationRules as EnvoyHeaderMutationRules,
             core::v3::{
-                grpc_service::{GoogleGrpc as EnvoyGoogleGrpc, TargetSpecifier},
                 GrpcService as EnvoyGrpcService,
+                grpc_service::{GoogleGrpc as EnvoyGoogleGrpc, TargetSpecifier},
             },
         },
         extensions::filters::http::ext_proc::v3::{
-            metadata_options::MetadataNamespaces as EnvoyMetadataNamespaces,
-            processing_mode::{BodySendMode as EnvoyBodySendMode, HeaderSendMode as EnvoyHeaderSendMode},
             ExtProcOverrides as EnvoyExtProcOverrides, ExtProcPerRoute as EnvoyExtProcPerRoute,
             ExternalProcessor as EnvoyExternalProcessor, HeaderForwardingRules as EnvoyHeaderForwardingRules,
             MetadataOptions as EnvoyMetadataOptions, ProcessingMode as EnvoyProcessingMode,
+            metadata_options::MetadataNamespaces as EnvoyMetadataNamespaces,
+            processing_mode::{BodySendMode as EnvoyBodySendMode, HeaderSendMode as EnvoyHeaderSendMode},
         },
     };
 

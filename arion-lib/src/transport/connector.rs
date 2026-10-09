@@ -44,7 +44,7 @@ use crate::listeners::metadata::DownstreamConnectionMetadata;
 use crate::transport::http_channel::DEFAULT_IDLE_TIMEOUT;
 use crate::transport::{AsyncInstrumentedStream, HttpConnection};
 use crate::{
-    event_error::{elapsed, UpstreamError},
+    event_error::{UpstreamError, elapsed},
     utils::instrumented_stream::InstrumentedStream,
 };
 

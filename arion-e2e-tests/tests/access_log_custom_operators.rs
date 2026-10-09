@@ -27,7 +27,7 @@ use arion_e2e_tests::config_builder::{
     BootstrapBuilder, ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, RouteBuilder,
     RouteConfigBuilder, VirtualHostBuilder,
 };
-use arion_e2e_tests::{cleanup_config_file, ArionInstance, PreConfiguredResponse, SpawnOptions, TestBackend};
+use arion_e2e_tests::{ArionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, cleanup_config_file};
 use base64::Engine;
 use http::HeaderName;
 

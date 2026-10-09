@@ -31,7 +31,7 @@ use arion_e2e_tests::config_builder::{
     RouteConfigBuilder, VirtualHostBuilder,
 };
 use arion_e2e_tests::{
-    cleanup_config_file, ArionInstance, PreConfiguredResponse, RawHttpRequestBuilder, SpawnOptions, TestBackend,
+    ArionInstance, PreConfiguredResponse, RawHttpRequestBuilder, SpawnOptions, TestBackend, cleanup_config_file,
 };
 
 /// All access-log operators supported at the HCM (transaction) level.

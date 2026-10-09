@@ -21,12 +21,11 @@ use std::time::Duration;
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::core::v3::{
-            health_check::{
-                payload::Payload as ProtoPayloadInner, GrpcHealthCheck as ProtoGrpcHealthCheck, HealthChecker,
-                HttpHealthCheck as ProtoHttpHealthCheck, Payload as ProtoPayload,
-                TcpHealthCheck as ProtoTcpHealthCheck,
-            },
             HealthCheck as ProtoHealthCheck, RequestMethod,
+            health_check::{
+                GrpcHealthCheck as ProtoGrpcHealthCheck, HealthChecker, HttpHealthCheck as ProtoHttpHealthCheck,
+                Payload as ProtoPayload, TcpHealthCheck as ProtoTcpHealthCheck, payload::Payload as ProtoPayloadInner,
+            },
         },
         r#type::v3::Int64Range,
     },

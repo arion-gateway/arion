@@ -20,7 +20,7 @@ use smol_str::SmolStr;
 
 use crate::config::{
     core::HttpUri,
-    network_filters::http_connection_manager::{header_matcher::HeaderMatcher, route::PathMatcher, RetryPolicy},
+    network_filters::http_connection_manager::{RetryPolicy, header_matcher::HeaderMatcher, route::PathMatcher},
 };
 
 #[allow(clippy::struct_excessive_bools)]
@@ -221,11 +221,11 @@ mod envoy_conversions {
 
     use crate::config::{common::*, core::RustType};
     use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::oauth2::v3::{
+        CookieConfig as EnvoyCookieConfig, CookieConfigs as EnvoyCookieConfigs, OAuth2 as EnvoyOAuth2,
+        OAuth2Config as EnvoyOAuth2Config, OAuth2Credentials as EnvoyOAuth2Credentials,
         cookie_config::SameSite as EnvoySameSite,
         o_auth2_config::AuthType as EnvoyAuthType,
         o_auth2_credentials::{CookieNames as EnvoyCookieNames, TokenFormation as EnvoyTokenFormation},
-        CookieConfig as EnvoyCookieConfig, CookieConfigs as EnvoyCookieConfigs, OAuth2 as EnvoyOAuth2,
-        OAuth2Config as EnvoyOAuth2Config, OAuth2Credentials as EnvoyOAuth2Credentials,
     };
 
     impl TryFrom<EnvoyOAuth2> for OAuth2Config {
@@ -473,11 +473,11 @@ mod envoy_conversions {
     mod tests {
         use super::*;
         use arion_data_plane_api::envoy_data_plane_api::envoy::{
-            config::core::v3::{http_uri::HttpUpstreamType, HttpUri as EnvoyHttpUri},
+            config::core::v3::{HttpUri as EnvoyHttpUri, http_uri::HttpUpstreamType},
             extensions::transport_sockets::tls::v3::SdsSecretConfig as EnvoySdsSecretConfig,
             r#type::matcher::v3::{
-                path_matcher::Rule as EnvoyPathMatcherRule, string_matcher::MatchPattern as EnvoyStringMatcherPattern,
                 PathMatcher as EnvoyTypePathMatcher, StringMatcher as EnvoyStringMatcher,
+                path_matcher::Rule as EnvoyPathMatcherRule, string_matcher::MatchPattern as EnvoyStringMatcherPattern,
             },
         };
         use arion_data_plane_api::envoy_data_plane_api::google::protobuf::Duration as EnvoyDuration;

@@ -16,12 +16,12 @@ use std::borrow::Cow;
 
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::HeaderMutationRules;
 use arion_data_plane_api::envoy_data_plane_api::envoy::{
-    config::core::v3::{header_value_option::HeaderAppendAction, HeaderValueOption},
+    config::core::v3::{HeaderValueOption, header_value_option::HeaderAppendAction},
     service::ext_proc::v3::HeaderMutation,
 };
 use http::{
-    uri::{Authority, PathAndQuery, Scheme, Uri},
     Request, Response,
+    uri::{Authority, PathAndQuery, Scheme, Uri},
 };
 use tracing::warn;
 

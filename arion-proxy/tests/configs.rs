@@ -22,8 +22,8 @@
 
 use arion_configuration::config::{Config, Runtime};
 use arion_configuration::options::Options;
-use arion_lib::configuration::get_listeners_and_clusters;
 use arion_lib::RUNTIME_CONFIG;
+use arion_lib::configuration::get_listeners_and_clusters;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 

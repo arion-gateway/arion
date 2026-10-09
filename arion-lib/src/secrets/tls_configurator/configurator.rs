@@ -20,12 +20,12 @@
 
 use super::tls_configurator_builder::{WantsToBuildClient, WantsToBuildServer};
 use crate::{
+    Result, SecretManager,
     secrets::{
+        CertificateSecret, TransportSecret,
         secrets_manager::CertStore,
         tls_configurator::tls_configurator_builder::{SecretHolder, TlsContextBuilder},
-        CertificateSecret, TransportSecret,
     },
-    Result, SecretManager,
 };
 use arion_configuration::config::{
     cluster::{TlsConfig as TlsClientConfig, TlsSecret},
@@ -34,11 +34,11 @@ use arion_configuration::config::{
     transport::{CommonTlsValidationContext, Secrets, TlsVersion},
 };
 use rustls::{
+    ClientConfig, RootCertStore, ServerConfig,
     client::danger::ServerCertVerifier,
     crypto::KeyProvider,
     pki_types::{CertificateDer, PrivateKeyDer},
     version::{TLS12, TLS13},
-    ClientConfig, RootCertStore, ServerConfig,
 };
 use rustls_platform_verifier::Verifier;
 use smol_str::SmolStr;
@@ -590,7 +590,7 @@ mod tests {
         secret::{Secret, Type},
         transport::{CommonTlsContext, TlsParameters},
     };
-    use rustls::{pki_types::ServerName, ClientConnection, ServerConnection};
+    use rustls::{ClientConnection, ServerConnection, pki_types::ServerName};
 
     const SNI_TEST_CERTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../test_certs/sni-test");
     const WILDCARD: &str = "wildcard";

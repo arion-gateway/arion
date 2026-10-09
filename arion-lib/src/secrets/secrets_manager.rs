@@ -21,21 +21,21 @@
 use crate::Result;
 use ahash::HashSet;
 use arion_configuration::{
+    VerifySingleIter,
     config::{
         core::DataSource,
         secret::{Secret, TlsCertificate, Type, ValidationContext},
     },
-    VerifySingleIter,
 };
 use chrono::{DateTime, Utc};
 use rustc_hash::FxHashMap as HashMap;
 use rustls::{
-    pki_types::{CertificateDer, PrivateKeyDer},
     RootCertStore,
+    pki_types::{CertificateDer, PrivateKeyDer},
 };
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use serde::Serialize;
-use smol_str::{format_smolstr, SmolStr, ToSmolStr};
+use smol_str::{SmolStr, ToSmolStr, format_smolstr};
 use std::sync::Arc as StdArc;
 use tracing::{debug, warn};
 use webpki::types::ServerName;

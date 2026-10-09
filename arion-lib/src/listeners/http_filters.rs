@@ -12,17 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::listeners::http_connection_manager::RouteIndex;
 #[cfg(feature = "wasm")]
 use crate::listeners::http_connection_manager::wasm::WasmFilter;
-use crate::listeners::http_connection_manager::RouteIndex;
 use std::collections::HashMap;
 use triomphe::Arc;
 
 use crate::{
+    ArionRequestBody, ArionResponseBody,
     body::response_flags::ResponseFlags,
     event_error::EventFailure,
     listeners::{
         http_connection_manager::{
+            RequestCtx,
             cedar_policy::CedarHttpFilter,
             cors::Cors,
             ext_proc::ExternalProcessor,
@@ -30,13 +32,11 @@ use crate::{
             mcp_gateway::mcp::McpGateway,
             oauth2::{OAuth2Filter, OAuth2FilterBuilder},
             user_rate_limiter::UserRateLimiter,
-            RequestCtx,
         },
         rate_limiter::local_rate_limiter::LocalRateLimit,
         rbac::HttpRbac,
         synthetic_http_response::SyntheticHttpResponse,
     },
-    ArionRequestBody, ArionResponseBody,
 };
 use arion_format::types::ResponseFlags as FmtResponseFlags;
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode};
@@ -44,10 +44,10 @@ use smol_str::SmolStr;
 use tracing::debug;
 
 use arion_configuration::config::network_filters::http_connection_manager::{
+    RouteConfiguration,
     http_filters::{
         ExtProcPerRoute, FilterConfigOverride, FilterOverride, HttpFilter as HttpFilterConfig, HttpFilterType,
     },
-    RouteConfiguration,
 };
 
 use crate::Result;

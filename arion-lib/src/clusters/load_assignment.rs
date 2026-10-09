@@ -33,20 +33,19 @@ use webpki::types::ServerName;
 
 use super::{
     balancers::{
-        hash_policy::HashState, least::WeightedLeastRequestBalancer, maglev::MaglevBalancer,
-        override_host::OverrideHostLoadBalancer, random::RandomBalancer, ring::RingHashBalancer,
-        wrr::WeightedRoundRobinBalancer, Balancer, DefaultBalancer, EndpointWithAuthority, EndpointWithLoad,
-        WeightedEndpoint,
+        Balancer, DefaultBalancer, EndpointWithAuthority, EndpointWithLoad, WeightedEndpoint, hash_policy::HashState,
+        least::WeightedLeastRequestBalancer, maglev::MaglevBalancer, override_host::OverrideHostLoadBalancer,
+        random::RandomBalancer, ring::RingHashBalancer, wrr::WeightedRoundRobinBalancer,
     },
     health::{EndpointHealth, ValueUpdated},
 };
 use crate::{
+    Result,
     clusters::clusters_manager::{RoutingContext, RoutingRequirement},
     transport::{
-        bind_device::BindDevice, connector::ConnectUsing, GrpcService, HttpChannel, HttpChannelBuilder, HttpChannels,
-        TcpChannelConnector, UpstreamTransportSocketConfigurator,
+        GrpcService, HttpChannel, HttpChannelBuilder, HttpChannels, TcpChannelConnector,
+        UpstreamTransportSocketConfigurator, bind_device::BindDevice, connector::ConnectUsing,
     },
-    Result,
 };
 
 #[derive(Debug, Clone)]
@@ -565,8 +564,8 @@ mod test {
     use crate::{
         clusters::health::HealthStatus,
         transport::{
-            bind_device::BindDevice, connector::ConnectUsing, HttpChannelBuilder, TcpChannelConnector,
-            UpstreamTransportSocketConfigurator,
+            HttpChannelBuilder, TcpChannelConnector, UpstreamTransportSocketConfigurator, bind_device::BindDevice,
+            connector::ConnectUsing,
         },
     };
 

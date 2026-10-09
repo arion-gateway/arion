@@ -16,8 +16,8 @@ use std::fmt::{self, Write as _};
 
 use arion_configuration::config::{
     cluster::{
-        CircuitBreakerThresholds, Cluster as ClusterConfig, ClusterDiscoveryType, HealthStatus, LocalityLbEndpoints,
-        RoutingPriority, DEFAULT_MAX_REQUESTS,
+        CircuitBreakerThresholds, Cluster as ClusterConfig, ClusterDiscoveryType, DEFAULT_MAX_REQUESTS, HealthStatus,
+        LocalityLbEndpoints, RoutingPriority,
     },
     core::Address,
 };
@@ -172,8 +172,8 @@ mod tests {
     use super::*;
     use crate::admin::build_admin_router;
     use arion_configuration::config::{
-        cluster::{Cluster, ClusterLoadAssignment, HttpProtocolOptions, LbEndpoint, LbPolicy, OriginalDstConfig},
         Bootstrap,
+        cluster::{Cluster, ClusterLoadAssignment, HttpProtocolOptions, LbEndpoint, LbPolicy, OriginalDstConfig},
     };
     use arion_lib::clusters::{add_cluster, cluster::PartialClusterType};
     use axum_test::TestServer;

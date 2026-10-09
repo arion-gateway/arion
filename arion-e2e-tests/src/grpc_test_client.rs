@@ -19,9 +19,9 @@ use std::net::SocketAddr;
 
 use tonic::transport::Channel;
 
+use crate::Result;
 use crate::grpc_test_backend::test_proto::test_service_client::TestServiceClient;
 use crate::grpc_test_backend::test_proto::{EchoRequest, EchoResponse};
-use crate::Result;
 
 pub struct GrpcTestClient {
     inner: TestServiceClient<Channel>,

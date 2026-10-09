@@ -15,8 +15,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::connector::{map_tls_connect_error, UnifiedConnector};
+use super::connector::{UnifiedConnector, map_tls_connect_error};
 use crate::{
+    ArionRequestBody, ArionResponseBody, Error, Result,
     body::{
         on_end_body::{BodyEndPermit, OnEndBody},
         poly_body::PolyBody,
@@ -24,9 +25,8 @@ use crate::{
     },
     event_error::UpstreamError,
     thread_local::{LocalBuilder, ThreadLocalObject},
-    ArionRequestBody, ArionResponseBody, Error, Result,
 };
-use http::{uri::Authority, Request, Response, StatusCode, Uri};
+use http::{Request, Response, StatusCode, Uri, uri::Authority};
 use hyper::{
     body::Incoming,
     client::conn::http1::{Builder as Http1Builder, SendRequest},

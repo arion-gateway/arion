@@ -27,7 +27,7 @@ mod pool;
 
 use arion_configuration::config::access_log::{AccessLogSink, AccessLogTarget};
 use arion_format::FormattedMessage;
-use base64::{prelude::BASE64_STANDARD, Engine};
+use base64::{Engine, prelude::BASE64_STANDARD};
 use flume::{SendError, TrySendError};
 use http::HeaderName;
 use logger::AccessLogger;
@@ -413,12 +413,12 @@ mod tests {
     use std::time::Duration;
 
     use arion_format::{
+        DEFAULT_ACCESS_LOG_FORMAT, LogFormatter,
         context::{
             DownstreamContext, DownstreamResponseContext, FinishContext, InitContext, SocketAddrContext,
             UpstreamContext,
         },
         types::ResponseFlags,
-        LogFormatter, DEFAULT_ACCESS_LOG_FORMAT,
     };
     use tokio::time::timeout;
 

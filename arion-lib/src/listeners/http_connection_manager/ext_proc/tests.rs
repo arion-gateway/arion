@@ -29,32 +29,31 @@ use arion_configuration::config::network_filters::http_connection_manager::http_
     HeaderProcessingMode, MetadataNamespaces, MetadataOptions, RouteCacheAction, TrailerProcessingMode,
 };
 use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::ext_proc::v3::{
-    processing_mode, ProcessingMode as EnvoyProcessingMode,
+    ProcessingMode as EnvoyProcessingMode, processing_mode,
 };
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::core::v3::{
-            header_value_option::HeaderAppendAction, HeaderValue as EnvoyHeaderValue, HeaderValueOption, Metadata,
+            HeaderValue as EnvoyHeaderValue, HeaderValueOption, Metadata, header_value_option::HeaderAppendAction,
         },
-        r#type::v3::HttpStatus as EnvoyHttpStatus,
         service::ext_proc::v3::{
+            BodyMutation, BodyResponse, CommonResponse, HeaderMutation, HeadersResponse, StreamedBodyResponse,
+            TrailersResponse,
             body_mutation::Mutation,
             common_response::ResponseStatus,
             external_processor_server::{ExternalProcessor as ExternalProcessorService, ExternalProcessorServer},
             processing_request::Request as ProcessingRequestType,
             processing_response::Response as ProcessingResponseType,
-            BodyMutation, BodyResponse, CommonResponse, HeaderMutation, HeadersResponse, StreamedBodyResponse,
-            TrailersResponse,
         },
+        r#type::v3::HttpStatus as EnvoyHttpStatus,
     },
-    google::protobuf::{value::Kind, Struct, Value},
+    google::protobuf::{Struct, Value, value::Kind},
     tonic::{
-        async_trait,
+        Request as TonicRequest, Response as TonicResponse, async_trait,
         transport::{Error as TonicError, Server},
-        Request as TonicRequest, Response as TonicResponse,
     },
 };
-use http::{uri::Authority, Method, Version};
+use http::{Method, Version, uri::Authority};
 use http_body_util::{Empty, StreamBody};
 use pingora::prelude::fast_timeout::fast_timeout;
 use std::{
@@ -3500,11 +3499,7 @@ where
     }
 
     // Final check: ensure all expected data was processed
-    if data_index == expected_data.len() {
-        Ok(())
-    } else {
-        Err("Body was not consumed completely.".to_owned())
-    }
+    if data_index == expected_data.len() { Ok(()) } else { Err("Body was not consumed completely.".to_owned()) }
 }
 
 #[tokio::test]

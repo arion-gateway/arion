@@ -35,11 +35,11 @@ pub struct WasmConfig {
 mod envoy_conversions {
     use super::*;
     use crate::config::common::envoy_conversions::IsUsed;
-    use crate::config::{required, unsupported_field, GenericError};
+    use crate::config::{GenericError, required, unsupported_field};
     use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::async_data_source::Specifier as EnvoyAsyncSpecifier;
     use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::wasm::v3::Wasm as EnvoyWasm;
-    use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::wasm::v3::plugin_config::Vm as EnvoyVm;
     use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::wasm::v3::PluginConfig as EnvoyPluginConfig;
+    use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::wasm::v3::plugin_config::Vm as EnvoyVm;
 
     impl TryFrom<EnvoyWasm> for WasmConfig {
         type Error = GenericError;

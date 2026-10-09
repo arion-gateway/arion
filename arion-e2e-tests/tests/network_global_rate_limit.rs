@@ -15,11 +15,12 @@
 use std::time::Duration;
 
 use arion_e2e_tests::{
+    ArionInstance, RlsTestServerBuilder, SpawnOptions, TcpTestClient, TestBackend, TestClient,
     config_builder::{
-        presets, BootstrapBuilder, ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder,
-        NetworkGlobalRateLimitBuilder, RouteConfigBuilder, VirtualHostBuilder,
+        BootstrapBuilder, ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder,
+        NetworkGlobalRateLimitBuilder, RouteConfigBuilder, VirtualHostBuilder, presets,
     },
-    rls_responses, ArionInstance, RlsTestServerBuilder, SpawnOptions, TcpTestClient, TestBackend, TestClient,
+    rls_responses,
 };
 use http::StatusCode;
 

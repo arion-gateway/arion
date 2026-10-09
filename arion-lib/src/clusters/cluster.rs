@@ -38,10 +38,10 @@ use webpki::types::ServerName;
 
 use super::health::HealthStatus;
 use crate::{
+    Error, Result, SecretManager,
     clusters::load_assignment::{ClusterLoadAssignmentBuilder, PartialClusterLoadAssignment},
     secrets::TransportSecret,
     transport::{GrpcService, HttpChannel, HttpChannels, TcpChannelConnector, UpstreamTransportSocketConfigurator},
-    Error, Result, SecretManager,
 };
 
 use arion_interner::StringInterner;

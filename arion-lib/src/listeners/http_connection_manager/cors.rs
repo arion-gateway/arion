@@ -16,20 +16,20 @@ use triomphe::Arc;
 
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::cors::CorsConfig;
 use http::{
+    HeaderValue, Method, Request, Response, StatusCode,
     header::{
         ACCESS_CONTROL_ALLOW_CREDENTIALS, ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS,
         ACCESS_CONTROL_ALLOW_ORIGIN, ACCESS_CONTROL_EXPOSE_HEADERS, ACCESS_CONTROL_MAX_AGE,
         ACCESS_CONTROL_REQUEST_HEADERS, ACCESS_CONTROL_REQUEST_METHOD, ORIGIN, VARY,
     },
-    HeaderValue, Method, Request, Response, StatusCode,
 };
 use http_body_util::Empty;
 use str_utils::ToLowercase;
 use tracing::debug;
 
 use crate::{
-    body::timeout_body::TimeoutBody, listeners::http_filters::FilterDecision, ArionRequestBody, ArionResponseBody,
-    PolyBody,
+    ArionRequestBody, ArionResponseBody, PolyBody, body::timeout_body::TimeoutBody,
+    listeners::http_filters::FilterDecision,
 };
 
 #[derive(Debug, Clone)]
@@ -218,11 +218,7 @@ impl Cors {
         // C. Methods
         // With credentials "*" would be literal (Fetch spec), so echo the requested method.
         let methods_str = if self.methods_wildcard() {
-            if conf.allow_credentials {
-                requested_method.as_str().to_owned()
-            } else {
-                "*".to_owned()
-            }
+            if conf.allow_credentials { requested_method.as_str().to_owned() } else { "*".to_owned() }
         } else {
             conf.allow_methods.iter().map(http::Method::as_str).collect::<Vec<_>>().join(", ")
         };

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use rustls::{pki_types::ServerName, SignatureScheme};
+use rustls::{SignatureScheme, pki_types::ServerName};
 
 #[derive(Debug)]
 pub struct NoCertificateVerification;

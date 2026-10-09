@@ -15,6 +15,7 @@
 #[cfg(feature = "metrics")]
 use crate::get_shard_id;
 use crate::listeners::http_connection_manager::{
+    RequestCtx,
     mcp_gateway::{
         embeddings::{self, Bm25Document},
         mcp::{MessageResult, Session},
@@ -22,10 +23,9 @@ use crate::listeners::http_connection_manager::{
             Action as RbacAction, JwtClaimField, JwtHeaderField, JwtHeaderMatcher, JwtPayloadMatcher,
             Permission as RbacPermission, ToolRbac,
         },
-        transcoder::{rest::DEFAULT_USER_AGENT, FunctionGraphTranscoder, RestTranscoder, Transcoder, TranscoderType},
+        transcoder::{FunctionGraphTranscoder, RestTranscoder, Transcoder, TranscoderType, rest::DEFAULT_USER_AGENT},
         upstream::{self, ToolInvocationFailure, ToolInvocationOutcome},
     },
-    RequestCtx,
 };
 use crate::with_metric;
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
@@ -41,20 +41,20 @@ use pingora_timeout::fast_timeout::fast_timeout;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{DynamicTransportError, StreamableHttpClientTransport};
 use rmcp::{
+    ServiceError, ServiceExt,
     model::{
         CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, ContentBlock, Implementation,
         InitializeRequestParams, JsonRpcNotification, ServerNotification, ToolListChangedNotification,
     },
     service::ClientInitializeError,
-    ServiceError, ServiceExt,
 };
 
 use rmcp::model;
 use rmcp::model::{ListToolsResult, Tool};
 use rmcp::service::{RoleClient, RunningService};
 use scopeguard::defer;
-use serde_json::{json, Value};
-use smol_str::{format_smolstr, SmolStr};
+use serde_json::{Value, json};
+use smol_str::{SmolStr, format_smolstr};
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc as StdArc, LazyLock};
@@ -484,11 +484,7 @@ impl ToolsRegistry {
         // `remove_if(|_, v| matches!(...))` with a guarded check + remove.
         let should_remove =
             self.tools.pin().get(name).is_some_and(|entry| matches!(entry.source, ToolSource::Provided));
-        if should_remove {
-            self.tools.pin().remove(name).is_some()
-        } else {
-            false
-        }
+        if should_remove { self.tools.pin().remove(name).is_some() } else { false }
     }
 
     pub async fn add_dynamic_server(&self, server: DynamicMcpServer) -> Result<(), ToolBuilderError> {
@@ -540,13 +536,10 @@ impl ToolsRegistry {
         // - No semantic search: always fill all tools
         // - Assisted discovery mode: only fill tools after prompt is set (notification flow)
         // - Direct call mode: always fill all tools (client calls semantic search tool directly)
-        let should_fill_tools = self.semantic_search.as_ref().is_none_or(|ss| {
-            if ss.enable_assisted_discovery {
-                session.prompt.lock().is_some()
-            } else {
-                true
-            }
-        });
+        let should_fill_tools = self
+            .semantic_search
+            .as_ref()
+            .is_none_or(|ss| if ss.enable_assisted_discovery { session.prompt.lock().is_some() } else { true });
 
         if should_fill_tools {
             self.fill_list_tools(req_ext, session, &mut tools);

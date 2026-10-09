@@ -19,7 +19,7 @@ use axum::{
 };
 use std::fmt::Write;
 
-use crate::admin::{query_listener_configuration, AdminState};
+use crate::admin::{AdminState, query_listener_configuration};
 
 async fn build_listeners_output(admin_state: AdminState) -> String {
     let mut out = String::new();

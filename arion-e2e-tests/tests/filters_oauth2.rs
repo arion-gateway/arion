@@ -31,8 +31,8 @@ use arion_e2e_tests::config_builder::{
     RouteBuilder, RouteConfigBuilder, VirtualHostBuilder,
 };
 use arion_e2e_tests::{
-    cleanup_config_file, ArionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient,
-    TestResponse,
+    ArionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient, TestResponse,
+    cleanup_config_file,
 };
 use http::StatusCode;
 

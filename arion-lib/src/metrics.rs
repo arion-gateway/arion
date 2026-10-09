@@ -17,7 +17,7 @@ use arion_interner::StringInterner;
 use atomicoption::AtomicOption;
 use http::HeaderMap;
 use smol_str::SmolStr;
-use std::sync::{atomic::Ordering, OnceLock};
+use std::sync::{OnceLock, atomic::Ordering};
 
 #[macro_export]
 macro_rules! with_metric {

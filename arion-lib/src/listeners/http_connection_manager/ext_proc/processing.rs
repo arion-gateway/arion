@@ -14,6 +14,7 @@
 
 use crate::body::channel_body::FrameBridge;
 use crate::event_error::EventFailure;
+use crate::listeners::http_connection_manager::ext_proc::EnvoyHeaderMap;
 use crate::listeners::http_connection_manager::ext_proc::kind;
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_trailer_mutations;
 use crate::listeners::http_connection_manager::ext_proc::r#override::{
@@ -21,7 +22,6 @@ use crate::listeners::http_connection_manager::ext_proc::r#override::{
 };
 use crate::listeners::http_connection_manager::ext_proc::status::{ProcessingStatus, ReadyStatus};
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
-use crate::listeners::http_connection_manager::ext_proc::EnvoyHeaderMap;
 use crate::transport::ServedEndpoint;
 use crate::utils::truncated_debug::TruncatedDebug;
 use crate::{body::response_flags::ResponseFlags, listeners::synthetic_http_response::SyntheticHttpResponse};
@@ -36,11 +36,11 @@ use arion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::{H
 use arion_data_plane_api::envoy_data_plane_api::envoy::{
     extensions::filters::http::ext_proc::v3::ProcessingMode as EnvoyProcessingMode,
     service::ext_proc::v3::{
-        body_mutation::Mutation, processing_request::Request as ProcessingRequestType, BodyResponse, HeadersResponse,
-        HttpBody, HttpHeaders, ProcessingRequest, TrailersResponse,
+        BodyResponse, HeadersResponse, HttpBody, HttpHeaders, ProcessingRequest, TrailersResponse,
+        body_mutation::Mutation, processing_request::Request as ProcessingRequestType,
     },
 };
-use arion_data_plane_api::envoy_data_plane_api::google::protobuf::{value::Kind, Struct, Value};
+use arion_data_plane_api::envoy_data_plane_api::google::protobuf::{Struct, Value, value::Kind};
 use bytes::{Bytes, BytesMut};
 use http_body::Frame;
 
@@ -635,7 +635,9 @@ impl<Msg: kind::MessageKind + OverridableModeSelector> Processing<kind::Processi
                 }
             }
         } else {
-            unreachable!("headers_response.response should never be None (prost artifact), but clippy doesn't allow unwrapping the option");
+            unreachable!(
+                "headers_response.response should never be None (prost artifact), but clippy doesn't allow unwrapping the option"
+            );
         }
 
         *timeout_active = false;
@@ -738,7 +740,9 @@ impl<Msg: kind::MessageKind + OverridableModeSelector> Processing<kind::Processi
             return None;
         }
 
-        unreachable!("body_response.response should never be None (prost artifact), but clippy doesn't allow unwrapping the option");
+        unreachable!(
+            "body_response.response should never be None (prost artifact), but clippy doesn't allow unwrapping the option"
+        );
     }
 
     #[inline]

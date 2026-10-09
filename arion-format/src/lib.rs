@@ -33,7 +33,7 @@ use context::Context;
 use operator::{Category, Operator};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
-use smol_str::{format_smolstr, SmolStr};
+use smol_str::{SmolStr, format_smolstr};
 use std::{
     collections::HashSet,
     fmt::{self, Display, Formatter},

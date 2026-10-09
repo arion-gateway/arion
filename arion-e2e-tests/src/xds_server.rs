@@ -19,10 +19,10 @@ use std::{net::SocketAddr, pin::Pin, sync::Arc};
 
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::service::discovery::v3::{
-        aggregated_discovery_service_server::{AggregatedDiscoveryService, AggregatedDiscoveryServiceServer},
         DeltaDiscoveryRequest, DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse, ResourceName,
+        aggregated_discovery_service_server::{AggregatedDiscoveryService, AggregatedDiscoveryServiceServer},
     },
-    tonic::{transport::Server, IntoStreamingRequest, Response, Status},
+    tonic::{IntoStreamingRequest, Response, Status, transport::Server},
 };
 use atomic_take::AtomicTake;
 use papaya::HashMap as PapayaMap;
@@ -31,7 +31,7 @@ use tokio::sync::{
     mpsc::{self, Receiver},
     oneshot,
 };
-use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
+use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tracing::{debug, info};
 
 pub use arion_xds::xds::server::ServerAction;

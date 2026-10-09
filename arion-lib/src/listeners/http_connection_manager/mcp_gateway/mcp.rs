@@ -20,43 +20,41 @@ use http::{HeaderName, Method, Response, StatusCode};
 use http_body_util::{BodyExt, Empty, Full};
 use papaya::{HashMap as PapayaMap, HashSet as PapayaSet};
 use parking_lot::Mutex;
-use serde_json::{json, Value};
-use smallvec::{smallvec, SmallVec};
-use smol_str::{format_smolstr, SmolStr, ToSmolStr};
-use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc as StdArc,
-    },
+use serde_json::{Value, json};
+use smallvec::{SmallVec, smallvec};
+use smol_str::{SmolStr, ToSmolStr, format_smolstr};
+use std::sync::{
+    Arc as StdArc,
+    atomic::{AtomicBool, Ordering},
 };
 use tracing::{debug, info};
 use uuid::Uuid;
 
 use rmcp::{
+    RoleClient, ServiceError,
     model::{
         self, CallToolRequestMethod, ConstString, Implementation, InitializeRequestParams, InitializeResult,
         InitializeResultMethod, InitializedNotificationMethod, ListToolsRequestMethod, NumberOrString,
         PingRequestMethod, ServerCapabilities, ServerNotification,
     },
     service::{ClientInitializeError, RunningService},
-    RoleClient, ServiceError,
 };
 
 use crate::{
+    ArionRequestBody, ArionResponseBody, PolyBody,
     body::timeout_body::TimeoutBody,
     listeners::{
         http_connection_manager::{
+            RequestCtx,
             mcp_gateway::{
                 embeddings,
                 tools::{CallToolError, ToolBuilderError, ToolsRegistry},
-                transport::{self, AcceptedMime, RequestExt, SessionId, MIME_APPLICATION_JSON, MIME_TEXT_EVENT_STREAM},
+                transport::{self, AcceptedMime, MIME_APPLICATION_JSON, MIME_TEXT_EVENT_STREAM, RequestExt, SessionId},
             },
-            RequestCtx,
         },
         http_filters::{FilterDecision, FilterFactory},
         listener::FilterListenerContext,
     },
-    ArionRequestBody, ArionResponseBody, PolyBody,
 };
 
 const MCP_MESSAGE_ENDPOINT: &str = "/mcp";

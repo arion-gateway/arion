@@ -31,24 +31,24 @@ use crate::utils::StreamMetrics;
 
 #[cfg(feature = "access-log")]
 use {
-    crate::access_log::{blocking_log_access, Target},
+    crate::access_log::{Target, blocking_log_access},
     arion_format::context::SocketAddrContext,
-    arion_format::{context::ConnectionContext, LogFormatter},
+    arion_format::{LogFormatter, context::ConnectionContext},
 };
 
 #[cfg(feature = "metrics")]
 use crate::get_shard_id;
 
 use crate::{
+    AsyncInstrumentedStream, ConversionContext, Error, Result, RouteConfigurationChange,
     listeners::{
         http_connection_manager::mcp_gateway::mcp::McpGatewayListenerContext,
         metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
         rate_limiter::local_rate_limiter::ListenerLocalRateLimit,
     },
     secrets::{TlsConfigurator, WantsToBuildServer},
-    transport::{bind_device::BindDevice, tls_inspector, ProxyProtocolReader},
+    transport::{ProxyProtocolReader, bind_device::BindDevice, tls_inspector},
     utils::instrumented_stream::InstrumentedStream,
-    AsyncInstrumentedStream, ConversionContext, Error, Result, RouteConfigurationChange,
 };
 
 use arion_configuration::config::{
@@ -59,7 +59,7 @@ use arion_configuration::config::{
 use arion_interner::StringInterner;
 #[cfg(feature = "metrics")]
 use arion_metrics::metrics::filters;
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use tokio::sync::mpsc;
 
 #[cfg(feature = "access-log")]
@@ -83,8 +83,8 @@ use std::{
     fmt::Debug,
     net::SocketAddr,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc as StdArc, OnceLock,
+        atomic::{AtomicBool, Ordering},
     },
     time::Instant,
 };
@@ -1008,9 +1008,10 @@ filter_chains:
         let conv = ConversionContext { envoy_object: listener, secret_manager: &secrets_man };
         let r = PartialListener::try_from(conv);
         let err = r.unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("has server_names in filter_chain_match, but no TLS inspector so matches would always fail"));
+        assert!(
+            err.to_string()
+                .contains("has server_names in filter_chain_match, but no TLS inspector so matches would always fail")
+        );
     }
 
     #[test]

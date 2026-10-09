@@ -20,7 +20,7 @@ use crate::str_pair::StrMap;
 use arion_configuration::config::metrics::CustomMetric;
 use arion_interner::StringInterner;
 use http::{HeaderMap, HeaderName};
-use opentelemetry::{global, KeyValue};
+use opentelemetry::{KeyValue, global};
 use smallvec::SmallVec;
 
 use crate::{

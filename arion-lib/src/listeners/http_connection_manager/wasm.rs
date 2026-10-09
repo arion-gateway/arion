@@ -13,12 +13,12 @@
 // limitations under the License.
 
 use crate::{
+    ArionRequestBody, ArionResponseBody,
     body::poly_body::PolyBody,
     listeners::{
         http_connection_manager::RequestCtx,
         http_filters::{FilterDecision, FilterFactory},
     },
-    ArionRequestBody, ArionResponseBody,
 };
 use arion_configuration::config::{
     core::DataSource, network_filters::http_connection_manager::http_filters::wasm::WasmConfig,
@@ -140,11 +140,7 @@ where
     Params: wasmtime::WasmParams,
     Results: wasmtime::WasmResults,
 {
-    if flags.contains(flag) {
-        instance.get_typed_func(store, name).ok()
-    } else {
-        None
-    }
+    if flags.contains(flag) { instance.get_typed_func(store, name).ok() } else { None }
 }
 
 impl InstanceHooks {

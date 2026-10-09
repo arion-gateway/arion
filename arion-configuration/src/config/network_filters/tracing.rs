@@ -71,7 +71,7 @@ pub struct TracingKey(pub ListenerName, pub FilterChainMatchHash);
 
 #[cfg(feature = "envoy-conversions")]
 mod envoy_conversions {
-    use crate::config::{common::envoy_conversions::IsUsed, unsupported_field, GenericError};
+    use crate::config::{GenericError, common::envoy_conversions::IsUsed, unsupported_field};
     use arion_data_plane_api::envoy_data_plane_api::prost::Message;
     use smol_str::ToSmolStr;
 

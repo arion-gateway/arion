@@ -101,7 +101,7 @@ impl HttpRbac {
 mod rbac_tests {
     use super::*;
     use crate::config::core::{StringMatcher, StringMatcherPattern};
-    use http::{header::HOST, HeaderMap, HeaderValue};
+    use http::{HeaderMap, HeaderValue, header::HOST};
     fn create_host_request(host: &str) -> Request<()> {
         let mut hm = HeaderMap::new();
         hm.insert(HOST, HeaderValue::from_str(host).unwrap());
@@ -217,8 +217,8 @@ mod envoy_conversions {
     use crate::config::{common::*, network_filters::network_rbac::Action};
     use arion_data_plane_api::envoy_data_plane_api::envoy::{
         config::rbac::v3::{
-            permission::Rule as EnvoyPermissionRule, principal::Identifier as EnvoyPrincipalIdentifier,
             Permission as EnvoyPermission, Policy as EnvoyPolicy, Principal as EnvoyPrincipal, Rbac as EnvoyHttpRbac,
+            permission::Rule as EnvoyPermissionRule, principal::Identifier as EnvoyPrincipalIdentifier,
         },
         extensions::filters::http::rbac::v3::Rbac as EnvoyRbac,
     };

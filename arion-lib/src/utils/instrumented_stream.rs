@@ -16,8 +16,8 @@ use std::{
     io,
     pin::Pin,
     sync::{
-        atomic::{AtomicU64, Ordering},
         LazyLock,
+        atomic::{AtomicU64, Ordering},
     },
     task::{Context, Poll},
     time::Duration,

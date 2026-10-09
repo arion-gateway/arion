@@ -21,19 +21,19 @@
 use std::time::Duration;
 use triomphe::Arc;
 
-use arion_configuration::config::cluster::{health_check::ClusterHealthCheck, HealthStatus};
+use arion_configuration::config::cluster::{HealthStatus, health_check::ClusterHealthCheck};
 use http::uri::Authority;
 use pingora_timeout::fast_timeout::fast_timeout;
 use tokio::{
     sync::{
-        mpsc::{self, Sender, UnboundedReceiver, UnboundedSender},
         Notify,
+        mpsc::{self, Sender, UnboundedReceiver, UnboundedSender},
     },
     task::JoinHandle,
 };
 
-use super::{checker::WaitInterval, CurrentHealthStatus};
-use crate::{clusters::health::EndpointId, EndpointHealthUpdate, Error};
+use super::{CurrentHealthStatus, checker::WaitInterval};
+use crate::{EndpointHealthUpdate, Error, clusters::health::EndpointId};
 
 macro_rules! deref {
     ($subclass:ty => $field:ident as $base:ty) => {

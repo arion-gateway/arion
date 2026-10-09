@@ -986,8 +986,8 @@ impl From<(&'_ std::convert::Infallible, BodyKind)> for EventKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::connector::TcpErrorContext;
     use crate::Error;
+    use crate::transport::connector::TcpErrorContext;
 
     #[test]
     fn test_upstream_connect_error() {

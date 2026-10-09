@@ -20,10 +20,10 @@
 
 use crate::config::common::is_default;
 use http::{
-    uri::{Authority, PathAndQuery},
     Method,
+    uri::{Authority, PathAndQuery},
 };
-use serde::{ser::SerializeStruct, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, ser::SerializeStruct};
 use smol_str::SmolStr;
 use std::{ops::Range, str::FromStr, time::Duration};
 
@@ -264,24 +264,24 @@ pub struct GrpcHealthCheck {
 mod envoy_conversions {
     #![allow(deprecated)]
     use super::{
-        default_expected_statuses, Codec, GrpcHealthCheck, HealthCheck, HealthCheckProtocol, HttpHealthCheck,
-        TcpHealthCheck,
+        Codec, GrpcHealthCheck, HealthCheck, HealthCheckProtocol, HttpHealthCheck, TcpHealthCheck,
+        default_expected_statuses,
     };
     use crate::config::{common::*, core::RustType};
     use arion_data_plane_api::envoy_data_plane_api::envoy::{
         config::core::v3::{
-            health_check::{
-                payload::Payload as EnvoyPayload, GrpcHealthCheck as EnvoyGrpcHealthCheck,
-                HealthChecker as EnvoyHealthChecker, HttpHealthCheck as EnvoyHttpHealthCheck,
-                Payload as EnvoyPayloadOption, TcpHealthCheck as EnvoyTcpHealthCheck,
-            },
             HealthCheck as EnvoyHealthCheck, RequestMethod,
+            health_check::{
+                GrpcHealthCheck as EnvoyGrpcHealthCheck, HealthChecker as EnvoyHealthChecker,
+                HttpHealthCheck as EnvoyHttpHealthCheck, Payload as EnvoyPayloadOption,
+                TcpHealthCheck as EnvoyTcpHealthCheck, payload::Payload as EnvoyPayload,
+            },
         },
         r#type::v3::{CodecClientType, Int64Range},
     };
     use http::{
-        uri::{Authority, PathAndQuery},
         Method,
+        uri::{Authority, PathAndQuery},
     };
     use std::{ops::Range, str::FromStr, time::Duration};
 

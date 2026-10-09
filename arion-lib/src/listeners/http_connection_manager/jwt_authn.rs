@@ -34,18 +34,18 @@ use crate::listeners::http_connection_manager::jwt_authn::{
     jwks::{fetch_remote_jwks, parse_jwks},
 };
 use crate::{
+    ArionRequestBody,
     event_error::EventFailure,
     listeners::{
         http_filters::{FilterDecision, FilterFactory},
         synthetic_http_response::SyntheticHttpResponse,
     },
-    ArionRequestBody,
 };
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::jwt::{
     JwksSourceSpecifier, JwtAuthentication as JwtAuthenticationConfig, JwtProvider, RequirementType, RequiresType,
 };
 use http::{HeaderMap, HeaderName, HeaderValue, Request};
-use jsonwebtoken::{decode, decode_header, DecodingKey, Header, TokenData, Validation};
+use jsonwebtoken::{DecodingKey, Header, TokenData, Validation, decode, decode_header};
 use ref_cast::RefCast;
 use smol_str::SmolStr;
 use tracing::{debug, error, info, warn};
@@ -629,11 +629,7 @@ impl JwtAuthentication {
         //debug!(target: "jwt", "{:#?}", entry.jwt);
 
         // handle clear_route_cache
-        if jwt_provider.clear_route_cache {
-            FilterDecision::Reroute
-        } else {
-            FilterDecision::Continue
-        }
+        if jwt_provider.clear_route_cache { FilterDecision::Reroute } else { FilterDecision::Continue }
     }
 
     #[inline]

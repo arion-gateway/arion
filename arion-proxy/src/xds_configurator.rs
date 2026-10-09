@@ -20,12 +20,12 @@
 
 use abort_on_drop::ChildTask;
 use anyhow::Result;
-use arion_configuration::config::{bootstrap::Node, cluster::ClusterSpecifier, Listener};
+use arion_configuration::config::{Listener, bootstrap::Node, cluster::ClusterSpecifier};
 use arion_lib::{
-    access_log::{update_configuration, Target},
-    clusters::cluster::ClusterType,
     ConfigurationSenders, ConversionContext, EndpointHealthUpdate, HealthCheckManager, ListenerConfigurationChange,
     ListenerFactory, PartialClusterLoadAssignment, PartialClusterType, RouteConfigurationChange, SecretManager,
+    access_log::{Target, update_configuration},
+    clusters::cluster::ClusterType,
 };
 use arion_xds::{
     start_aggregate_client_no_retry_loop,
@@ -48,8 +48,8 @@ use std::{sync::Arc as StdArc, time::Duration};
 use tokio::{
     select,
     sync::{
-        mpsc::{self, Receiver, Sender},
         Notify,
+        mpsc::{self, Receiver, Sender},
     },
 };
 use tracing::{debug, info, warn};

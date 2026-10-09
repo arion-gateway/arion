@@ -26,7 +26,7 @@ use arion_configuration::config::log::AccessLogConfig;
 use arion_e2e_tests::config_builder::{
     BootstrapBuilder, ClusterBuilder, EndpointBuilder, FilterChainBuilder, ListenerBuilder, TcpProxyBuilder,
 };
-use arion_e2e_tests::{cleanup_config_file, ArionInstance, SpawnOptions, TcpTestBackend};
+use arion_e2e_tests::{ArionInstance, SpawnOptions, TcpTestBackend, cleanup_config_file};
 
 /// All access-log operators supported at the Listener (connection) level.
 const LISTENER_LOG_FORMAT: &str = "\

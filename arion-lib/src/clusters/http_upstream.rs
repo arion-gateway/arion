@@ -20,11 +20,12 @@ use arion_configuration::config::{
 use http::Request;
 
 use super::{
+    CircuitBreakerDenial, RoutingPriority,
     balancers::hash_policy::HashState,
     clusters_manager::{self, RoutingContext, RoutingContextError, RoutingRequirement},
-    decrement_requests, try_increment_requests, CircuitBreakerDenial, RoutingPriority,
+    decrement_requests, try_increment_requests,
 };
-use crate::{transport::HttpChannels, ArionRequestBody};
+use crate::{ArionRequestBody, transport::HttpChannels};
 
 #[cfg(feature = "metrics")]
 use {
@@ -181,7 +182,7 @@ mod tests {
     use http::header::HOST;
 
     use super::*;
-    use crate::{clusters::cluster::ClusterOps, secrets::SecretManager, PartialClusterType};
+    use crate::{PartialClusterType, clusters::cluster::ClusterOps, secrets::SecretManager};
 
     fn build_original_dst_cluster(name: &str, max_requests: u32) -> PartialClusterType {
         let config = Cluster {

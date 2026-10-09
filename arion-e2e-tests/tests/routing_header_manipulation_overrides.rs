@@ -25,9 +25,9 @@
 //! It also tests the `most_specific_header_mutations_wins` flag which controls
 //! the priority order of mutations.
 
-use arion_e2e_tests::config_builder::{presets, RouteBuilder, RouteConfigBuilder, VirtualHostBuilder};
+use arion_e2e_tests::config_builder::{RouteBuilder, RouteConfigBuilder, VirtualHostBuilder, presets};
 use arion_e2e_tests::{
-    cleanup_config_file, ArionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient,
+    ArionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient, cleanup_config_file,
 };
 use http::StatusCode;
 

@@ -83,8 +83,8 @@ mod envoy_conversions {
     use super::{HeaderAppendAction, HeaderKeyValue, HeaderValueOption};
     use crate::config::common::*;
     use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::{
-        header_value_option::HeaderAppendAction as EnvoyHeaderAppendAction, HeaderValue as EnvoyHeaderValue,
-        HeaderValueOption as EnvoyHeaderValueOption,
+        HeaderValue as EnvoyHeaderValue, HeaderValueOption as EnvoyHeaderValueOption,
+        header_value_option::HeaderAppendAction as EnvoyHeaderAppendAction,
     };
 
     impl TryFrom<EnvoyHeaderValueOption> for HeaderValueOption {
