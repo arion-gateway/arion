@@ -15,14 +15,12 @@
 use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
 use std::{
     borrow::Cow,
-    sync::{LazyLock, Once},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
-use aws_lc_rs::hmac;
+use aws_lc_rs::{constant_time, hmac};
 use base64::{prelude::BASE64_STANDARD, Engine};
 use http::{header, HeaderMap, HeaderValue, Request, StatusCode, Version};
-use papaya::HashMap as PapayaMap;
 use rand::Rng;
 use serde::Deserialize;
 use smol_str::SmolStr;
@@ -46,29 +44,6 @@ use arion_format::{
     uri_formatter::UriFormatter,
 };
 
-/// Global concurrent cache storing validated HMAC signatures to avoid repeated cryptographic
-/// computation and allocations on subsequent requests.
-///
-/// Key: HMAC signature string (`SmolStr`).
-/// Value: Expiration timestamp in epoch seconds (`u64`).
-static OAUTH_SESSION_CACHE: LazyLock<PapayaMap<SmolStr, u64, ahash::RandomState>> =
-    LazyLock::new(|| PapayaMap::with_hasher(ahash::RandomState::new()));
-
-static CLEANER_ONCE: Once = Once::new();
-static CLEANER_PERIOD: Duration = Duration::from_secs(30);
-
-fn ensure_cleaner_started() {
-    CLEANER_ONCE.call_once(|| {
-        tokio::spawn(async {
-            loop {
-                pingora_timeout::sleep(CLEANER_PERIOD).await;
-                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-                OAUTH_SESSION_CACHE.pin().retain(|_k, &expiry| expiry > now);
-            }
-        });
-    });
-}
-
 #[derive(Debug, thiserror::Error)]
 enum OauthClientError {
     #[error("Oauth2 reqwest: {0}")]
@@ -91,6 +66,7 @@ struct TokenEndpointResponse {
 #[derive(Debug)]
 pub struct OAuth2FilterInner {
     pub config: OAuth2Config,
+    hmac_key: hmac::Key,
     pub redirect_uri_formatter: UriFormatter,
     pub client: reqwest::Client,
 }
@@ -116,8 +92,9 @@ impl OAuth2FilterBuilder {
             .unwrap_or_else(|_| UriFormatter::try_new("").unwrap());
 
         let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build()?;
+        let hmac_key = hmac::Key::new(hmac::HMAC_SHA256, self.config.credentials.hmac_secret.as_bytes());
 
-        let inner = Arc::new(OAuth2FilterInner { config: self.config, redirect_uri_formatter, client });
+        let inner = Arc::new(OAuth2FilterInner { config: self.config, hmac_key, redirect_uri_formatter, client });
         Ok(OAuth2Filter { inner })
     }
 }
@@ -146,7 +123,6 @@ impl OAuth2Filter {
     }
 
     pub async fn apply_request(&mut self, req: &mut Request<ArionRequestBody>) -> FilterDecision {
-        ensure_cleaner_started();
         let config = &self.inner.config;
 
         // 1. Pass-through matcher: bypass authentication if configured headers match.
@@ -195,38 +171,46 @@ impl OAuth2Filter {
             }
         }
 
-        // 4. Hot path: check for existing valid session cookies.
-        let cookie_names = &config.credentials.cookie_names;
-        let (bearer_token, oauth_hmac, oauth_expires) = extract_session_cookies(req.headers(), cookie_names);
-
+        // 4. Verify the complete signed session on every request. The HMAC payload matches Envoy:
+        // domain, expiration, access token, ID token, and refresh token, separated by newlines.
         let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
 
-        if let (Some(tok), Some(hmac_val), Some(expires_str)) = (bearer_token, oauth_hmac, oauth_expires) {
-            if let Ok(expires_at) = expires_str.parse::<u64>() {
-                if expires_at > now_secs {
-                    // Check fast-path papaya session cache.
-                    let cache = OAUTH_SESSION_CACHE.pin();
-                    if let Some(&cached_expiry) = cache.get(hmac_val) {
-                        if cached_expiry > now_secs {
-                            let token = SmolStr::new(tok);
-                            self.inject_bearer_token(req, &token);
-                            return FilterDecision::Continue;
+        let authenticated = {
+            let session = extract_session_cookies(req.headers(), &config.credentials.cookie_names);
+            if let (Some(hmac_value), Some(expires)) = (session.hmac, session.expires) {
+                if let Ok(expires_at) = expires.parse::<u64>() {
+                    if expires_at > now_secs {
+                        let domain = hmac_domain(config.credentials.cookie_domain.as_deref(), host);
+                        if verify_session_hmac(
+                            &self.inner.hmac_key,
+                            domain,
+                            expires,
+                            session.access_token,
+                            session.id_token,
+                            session.refresh_token,
+                            hmac_value,
+                        ) {
+                            Some(session.access_token.and_then(|token| self.bearer_header(req, token)))
+                        } else {
+                            warn!(target: "oauth2", "invalid OAuth session HMAC for domain: {domain}");
+                            None
                         }
+                    } else {
+                        debug!(target: "oauth2", "oauth session expired at {expires_at}, now {now_secs}");
+                        None
                     }
-
-                    // Cache miss: verify HMAC signature.
-                    let expected_data = format!("{host}:{expires_at}");
-                    if verify_hmac(config.credentials.hmac_secret.as_str(), &expected_data, hmac_val) {
-                        cache.insert(SmolStr::new(hmac_val), expires_at);
-                        let token = SmolStr::new(tok);
-                        self.inject_bearer_token(req, &token);
-                        return FilterDecision::Continue;
-                    }
-                    warn!(target: "oauth2", "invalid HMAC signature for host: {host}");
                 } else {
-                    debug!(target: "oauth2", "oauth session expired at {expires_at}, now {now_secs}");
+                    None
                 }
+            } else {
+                None
             }
+        };
+        if let Some(authorization) = authenticated {
+            if let Some(authorization) = authorization {
+                req.headers_mut().insert(header::AUTHORIZATION, authorization);
+            }
+            return FilterDecision::Continue;
         }
 
         // 5. Unauthenticated request: check deny_redirect_matcher.
@@ -243,15 +227,13 @@ impl OAuth2Filter {
         self.handle_unauthenticated(req)
     }
 
-    fn inject_bearer_token(&self, req: &mut Request<ArionRequestBody>, token: &str) {
-        if self.inner.config.forward_bearer_token {
-            if self.inner.config.preserve_authorization_header && req.headers().contains_key(header::AUTHORIZATION) {
-                return;
-            }
-            if let Ok(hv) = HeaderValue::from_str(&format!("Bearer {token}")) {
-                req.headers_mut().insert(header::AUTHORIZATION, hv);
-            }
+    fn bearer_header(&self, req: &Request<ArionRequestBody>, token: &str) -> Option<HeaderValue> {
+        if !self.inner.config.forward_bearer_token
+            || (self.inner.config.preserve_authorization_header && req.headers().contains_key(header::AUTHORIZATION))
+        {
+            return None;
         }
+        HeaderValue::from_str(&format!("Bearer {token}")).ok()
     }
 
     fn handle_signout(&self, req: &Request<ArionRequestBody>) -> FilterDecision {
@@ -452,12 +434,16 @@ impl OAuth2Filter {
         });
         let expires_at = now_secs + expires_in;
 
-        // Compute HMAC signature for host + expires
-        let hmac_payload = format!("{host}:{expires_at}");
-        let hmac_val = compute_hmac(config.credentials.hmac_secret.as_str(), &hmac_payload);
-
-        // Insert into fast session cache
-        OAUTH_SESSION_CACHE.pin().insert(SmolStr::new(&hmac_val), expires_at);
+        let domain = hmac_domain(cdomain, host);
+        let mut expires_buffer = itoa::Buffer::new();
+        let expires = expires_buffer.format(expires_at);
+        let access_token = (!config.disable_access_token_set_cookie).then_some(token_resp.access_token.as_str());
+        let id_token = (!config.disable_id_token_set_cookie).then(|| token_resp.id_token.as_deref()).flatten();
+        let refresh_token = (config.use_refresh_token && !config.disable_refresh_token_set_cookie)
+            .then(|| token_resp.refresh_token.as_deref())
+            .flatten();
+        let hmac_val =
+            compute_session_hmac(&self.inner.hmac_key, domain, expires, access_token, id_token, refresh_token);
 
         // Prepare redirect to target URL (state or /)
         let target_url = state.as_deref().unwrap_or("/");
@@ -489,8 +475,7 @@ impl OAuth2Filter {
         }
 
         // Set OauthExpires cookie
-        let mut exp_itoa = itoa::Buffer::new();
-        let exp_str = exp_itoa.format(expires_at);
+        let exp_str = expires;
         if let Some(hv) = format_cookie(
             cnames.oauth_expires.as_str(),
             exp_str,
@@ -602,66 +587,121 @@ impl OAuth2Filter {
 // === Helper Functions ===
 
 fn extract_host(req: &Request<ArionRequestBody>) -> Option<&str> {
-    if let Some(host) = req.headers().get(header::HOST).and_then(|v| v.to_str().ok()) {
-        return Some(strip_port(host));
+    if let Some(host) = req.headers().get(header::HOST).and_then(|value| value.to_str().ok()) {
+        return Some(host);
     }
-    req.uri().host()
+    req.uri().authority().map(http::uri::Authority::as_str)
 }
 
-#[inline]
-fn strip_port(host: &str) -> &str {
-    if host.starts_with('[') {
-        host.find(']').and_then(|end| host.get(..=end)).unwrap_or(host)
-    } else {
-        host.split_once(':').map_or(host, |(h, _port)| h)
-    }
+struct SessionCookies<'a> {
+    access_token: Option<&'a str>,
+    hmac: Option<&'a str>,
+    expires: Option<&'a str>,
+    id_token: Option<&'a str>,
+    refresh_token: Option<&'a str>,
 }
 
-fn extract_session_cookies<'a>(
-    headers: &'a HeaderMap,
-    cookie_names: &CookieNames,
-) -> (Option<&'a str>, Option<&'a str>, Option<&'a str>) {
-    let mut bearer_token = None;
-    let mut oauth_hmac = None;
-    let mut oauth_expires = None;
+fn extract_session_cookies<'a>(headers: &'a HeaderMap, cookie_names: &CookieNames) -> SessionCookies<'a> {
+    let mut cookies =
+        SessionCookies { access_token: None, hmac: None, expires: None, id_token: None, refresh_token: None };
 
-    for hv in headers.get_all(header::COOKIE) {
-        let Ok(cookie_str) = hv.to_str() else { continue };
-        for pair in cookie_str.split(';') {
-            if let Some((k, v)) = pair.split_once('=') {
-                let k = k.trim();
-                let v = v.trim();
-                if k == cookie_names.bearer_token.as_str() {
-                    bearer_token = Some(v);
-                } else if k == cookie_names.oauth_hmac.as_str() {
-                    oauth_hmac = Some(v);
-                } else if k == cookie_names.oauth_expires.as_str() {
-                    oauth_expires = Some(v);
-                }
-
-                if bearer_token.is_some() && oauth_hmac.is_some() && oauth_expires.is_some() {
-                    return (bearer_token, oauth_hmac, oauth_expires);
-                }
+    for value in headers.get_all(header::COOKIE) {
+        let Ok(cookie_header) = value.to_str() else { continue };
+        for pair in cookie_header.split(';') {
+            let Some((name, value)) = pair.split_once('=') else { continue };
+            let name = name.trim();
+            let value = value.trim();
+            if name == cookie_names.bearer_token.as_str() {
+                cookies.access_token = Some(value);
+            } else if name == cookie_names.oauth_hmac.as_str() {
+                cookies.hmac = Some(value);
+            } else if name == cookie_names.oauth_expires.as_str() {
+                cookies.expires = Some(value);
+            } else if name == cookie_names.id_token.as_str() {
+                cookies.id_token = Some(value);
+            } else if name == cookie_names.refresh_token.as_str() {
+                cookies.refresh_token = Some(value);
             }
         }
     }
 
-    (bearer_token, oauth_hmac, oauth_expires)
+    cookies
 }
 
-fn compute_hmac(secret: &str, data: &str) -> String {
-    let key = hmac::Key::new(hmac::HMAC_SHA256, secret.as_bytes());
-    let sig = hmac::sign(&key, data.as_bytes());
-    BASE64_STANDARD.encode(sig.as_ref())
+#[inline]
+fn hmac_domain<'a>(cookie_domain: Option<&'a str>, host: &'a str) -> &'a str {
+    cookie_domain.filter(|domain| !domain.is_empty()).unwrap_or(host)
 }
 
-fn verify_hmac(secret: &str, data: &str, signature_b64: &str) -> bool {
-    let Ok(sig_bytes) = BASE64_STANDARD.decode(signature_b64) else {
+fn session_hmac_tag(
+    key: &hmac::Key,
+    domain: &str,
+    expires: &str,
+    access_token: Option<&str>,
+    id_token: Option<&str>,
+    refresh_token: Option<&str>,
+) -> hmac::Tag {
+    // Envoy separates the five fields with newlines and does not terminate the final field.
+    // Incremental updates avoid allocating a concatenated payload on the request path.
+    let mut context = hmac::Context::with_key(key);
+    context.update(domain.as_bytes());
+    context.update(b"\n");
+    context.update(expires.as_bytes());
+    context.update(b"\n");
+    context.update(access_token.unwrap_or_default().as_bytes());
+    context.update(b"\n");
+    context.update(id_token.unwrap_or_default().as_bytes());
+    context.update(b"\n");
+    context.update(refresh_token.unwrap_or_default().as_bytes());
+    context.sign()
+}
+
+fn compute_session_hmac(
+    key: &hmac::Key,
+    domain: &str,
+    expires: &str,
+    access_token: Option<&str>,
+    id_token: Option<&str>,
+    refresh_token: Option<&str>,
+) -> String {
+    BASE64_STANDARD.encode(session_hmac_tag(key, domain, expires, access_token, id_token, refresh_token).as_ref())
+}
+
+fn verify_session_hmac(
+    key: &hmac::Key,
+    domain: &str,
+    expires: &str,
+    access_token: Option<&str>,
+    id_token: Option<&str>,
+    refresh_token: Option<&str>,
+    signature: &str,
+) -> bool {
+    let tag = session_hmac_tag(key, domain, expires, access_token, id_token, refresh_token);
+    let mut decoded = [0_u8; 64];
+    let Ok(decoded_len) = BASE64_STANDARD.decode_slice(signature, &mut decoded) else {
         return false;
     };
-    let key = hmac::Key::new(hmac::HMAC_SHA256, secret.as_bytes());
-    hmac::verify(&key, data.as_bytes(), &sig_bytes).is_ok()
+
+    if decoded_len == tag.as_ref().len()
+        && constant_time::verify_slices_are_equal(tag.as_ref(), &decoded[..decoded_len]).is_ok()
+    {
+        return true;
+    }
+
+    // Envoy accepts cookies emitted by versions that encoded the lowercase hexadecimal digest
+    // before Base64 encoding it.
+    if decoded_len != tag.as_ref().len() * 2 {
+        return false;
+    }
+    let mut expected_legacy = [0_u8; 64];
+    for (byte, hex) in tag.as_ref().iter().zip(expected_legacy.chunks_exact_mut(2)) {
+        hex[0] = HEX_LOWER[(byte >> 4) as usize];
+        hex[1] = HEX_LOWER[(byte & 0x0f) as usize];
+    }
+    constant_time::verify_slices_are_equal(&expected_legacy, &decoded[..decoded_len]).is_ok()
 }
+
+const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
 #[allow(clippy::too_many_arguments)]
 fn format_cookie(
@@ -721,6 +761,8 @@ fn format_cookie(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
     use arion_configuration::config::{
         core::{HttpUri, StringMatcher},
         network_filters::http_connection_manager::{
@@ -855,46 +897,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_authenticated_fast_path_with_session_cache_and_bearer_forwarding() {
+    async fn test_authenticated_session_verifies_complete_envoy_payload() {
         let config = sample_config();
         let mut filter = OAuth2Filter::try_new(config.clone()).unwrap();
 
-        let host = "gateway.example.com";
-        let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-        let expires_at = now_secs + 3600;
-        let token = "my-jwt-access-token";
+        let host = "gateway.example.com:8443";
+        let expires_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 3600;
+        let expires = expires_at.to_string();
+        let access_token = "my-jwt-access-token";
+        let id_token = "my-id-token";
+        let refresh_token = "my-refresh-token";
+        let key = hmac::Key::new(hmac::HMAC_SHA256, config.credentials.hmac_secret.as_bytes());
+        let hmac_value =
+            compute_session_hmac(&key, host, &expires, Some(access_token), Some(id_token), Some(refresh_token));
 
-        let hmac_payload = format!("{host}:{expires_at}");
-        let hmac_val = compute_hmac(config.credentials.hmac_secret.as_str(), &hmac_payload);
-
-        let cookie_header = format!("BearerToken={token}; OauthExpires={expires_at}; OauthHMAC={hmac_val}");
-
-        let mut req = Request::builder()
+        let cookie_header = format!(
+            "BearerToken={access_token}; IdToken={id_token}; RefreshToken={refresh_token}; OauthExpires={expires}; OauthHMAC={hmac_value}"
+        );
+        let mut request = Request::builder()
             .uri("/api/data")
             .header("Host", host)
             .header("Cookie", cookie_header)
             .body(ArionRequestBody::default())
             .unwrap();
 
-        // First pass: validates HMAC and populates papaya cache
-        let decision = filter.apply_request(&mut req).await;
-        assert!(matches!(decision, FilterDecision::Continue));
-        assert_eq!(req.headers().get(header::AUTHORIZATION).unwrap(), "Bearer my-jwt-access-token");
+        assert!(matches!(filter.apply_request(&mut request).await, FilterDecision::Continue));
+        assert_eq!(request.headers().get(header::AUTHORIZATION).unwrap(), "Bearer my-jwt-access-token");
 
-        // Verify cache entry exists in papaya
-        assert!(OAUTH_SESSION_CACHE.pin().get(hmac_val.as_str()).is_some());
-
-        // Second pass: fast-path hit directly from papaya cache (~20ns)
-        let mut req2 = Request::builder()
-            .uri("/api/data-2")
+        let mut tampered_request = Request::builder()
+            .uri("/api/data")
             .header("Host", host)
-            .header("Cookie", format!("BearerToken={token}; OauthExpires={expires_at}; OauthHMAC={hmac_val}"))
+            .header(
+                "Cookie",
+                format!(
+                    "BearerToken=tampered; IdToken={id_token}; RefreshToken={refresh_token}; OauthExpires={expires}; OauthHMAC={hmac_value}"
+                ),
+            )
             .body(ArionRequestBody::default())
             .unwrap();
-
-        let decision2 = filter.apply_request(&mut req2).await;
-        assert!(matches!(decision2, FilterDecision::Continue));
-        assert_eq!(req2.headers().get(header::AUTHORIZATION).unwrap(), "Bearer my-jwt-access-token");
+        assert!(matches!(filter.apply_request(&mut tampered_request).await, FilterDecision::DirectResponse(_)));
     }
 
     #[tokio::test]
@@ -948,27 +989,70 @@ mod tests {
                 .unwrap(),
         );
 
-        let (tok, hmac, exp) = extract_session_cookies(&headers, &cnames);
-        assert_eq!(tok, Some("tok123"));
-        assert_eq!(hmac, Some("sig456"));
-        assert_eq!(exp, Some("789"));
+        let cookies = extract_session_cookies(&headers, &cnames);
+        assert_eq!(cookies.access_token, Some("tok123"));
+        assert_eq!(cookies.hmac, Some("sig456"));
+        assert_eq!(cookies.expires, Some("789"));
+        assert_eq!(cookies.id_token, None);
+        assert_eq!(cookies.refresh_token, None);
 
         let mut headers2 = HeaderMap::new();
-        headers2.insert(header::COOKIE, "BearerToken=tok123; other=xyz".parse().unwrap());
-        let (tok2, hmac2, exp2) = extract_session_cookies(&headers2, &cnames);
-        assert_eq!(tok2, Some("tok123"));
-        assert_eq!(hmac2, None);
-        assert_eq!(exp2, None);
+        headers2.insert(header::COOKIE, "BearerToken=tok123; IdToken=id; RefreshToken=refresh".parse().unwrap());
+        let cookies = extract_session_cookies(&headers2, &cnames);
+        assert_eq!(cookies.access_token, Some("tok123"));
+        assert_eq!(cookies.hmac, None);
+        assert_eq!(cookies.expires, None);
+        assert_eq!(cookies.id_token, Some("id"));
+        assert_eq!(cookies.refresh_token, Some("refresh"));
     }
 
     #[test]
-    fn test_extract_host_and_strip_port() {
-        assert_eq!(strip_port("example.com"), "example.com");
-        assert_eq!(strip_port("example.com:8080"), "example.com");
-        assert_eq!(strip_port("127.0.0.1:3000"), "127.0.0.1");
-        assert_eq!(strip_port("[::1]:8080"), "[::1]");
-        assert_eq!(strip_port("[::1]"), "[::1]");
-        assert_eq!(strip_port("[2001:db8::1]:443"), "[2001:db8::1]");
+    fn test_session_hmac_matches_envoy_payload_format() {
+        let key = hmac::Key::new(hmac::HMAC_SHA256, b"hmac-secret");
+        let expected = BASE64_STANDARD
+            .encode(hmac::sign(&key, b"gateway.example.com:8443\n1234567890\naccess-token\nid-token\nrefresh-token"));
+        let actual = compute_session_hmac(
+            &key,
+            "gateway.example.com:8443",
+            "1234567890",
+            Some("access-token"),
+            Some("id-token"),
+            Some("refresh-token"),
+        );
+        assert_eq!(actual, expected);
+        assert!(verify_session_hmac(
+            &key,
+            "gateway.example.com:8443",
+            "1234567890",
+            Some("access-token"),
+            Some("id-token"),
+            Some("refresh-token"),
+            &actual,
+        ));
+
+        let tag = hmac::sign(&key, b"gateway.example.com:8443\n1234567890\naccess-token\nid-token\nrefresh-token");
+        let mut legacy_hex = [0_u8; 64];
+        for (byte, hex) in tag.as_ref().iter().zip(legacy_hex.chunks_exact_mut(2)) {
+            hex[0] = HEX_LOWER[(byte >> 4) as usize];
+            hex[1] = HEX_LOWER[(byte & 0x0f) as usize];
+        }
+        let legacy = BASE64_STANDARD.encode(legacy_hex);
+        assert!(verify_session_hmac(
+            &key,
+            "gateway.example.com:8443",
+            "1234567890",
+            Some("access-token"),
+            Some("id-token"),
+            Some("refresh-token"),
+            &legacy,
+        ));
+    }
+
+    #[test]
+    fn test_hmac_domain_uses_cookie_domain_or_unmodified_authority() {
+        assert_eq!(hmac_domain(None, "example.com:8080"), "example.com:8080");
+        assert_eq!(hmac_domain(Some(".example.com"), "example.com:8080"), ".example.com");
+        assert_eq!(hmac_domain(Some(""), "example.com:8080"), "example.com:8080");
     }
 
     #[tokio::test]
