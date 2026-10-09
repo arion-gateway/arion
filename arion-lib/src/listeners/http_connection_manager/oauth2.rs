@@ -109,7 +109,7 @@ impl OAuth2FilterBuilder {
             .map_err(|err| format!("invalid OAuth2 redirect_uri formatter: {err}"))?;
         AuthUrl::new(self.config.authorization_endpoint.to_string())
             .map_err(|err| format!("invalid OAuth2 authorization_endpoint: {err}"))?;
-        oauth2::TokenUrl::new(self.config.token_endpoint.uri.to_string())
+        oauth2::TokenUrl::new(self.config.token_endpoint.uri.clone())
             .map_err(|err| format!("invalid OAuth2 token_endpoint URI: {err}"))?;
 
         let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build()?;
@@ -341,6 +341,7 @@ impl OAuth2Filter {
         FilterDecision::DirectResponse(Box::new(resp))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_unauthenticated(&self, req: &Request<ArionRequestBody>) -> FilterDecision {
         let config = &self.inner.config;
         let cnames = &config.credentials.cookie_names;
@@ -383,18 +384,15 @@ impl OAuth2Filter {
             return FilterDecision::DirectResponse(Box::new(resp));
         };
 
-        let auth_url = match self.authorization_url(&redirect_uri, state, pkce_challenge) {
-            Some(url) => url,
-            None => {
-                error!(target: "oauth2", "failed to build OAuth authorization URL");
-                let mut resp = SyntheticHttpResponse::internal_server_error(
-                    EventFailure::DirectResponse.into(),
-                    ResponseFlags::default(),
-                )
-                .into_response(req.version());
-                add_oauth_response_headers(resp.headers_mut());
-                return FilterDecision::DirectResponse(Box::new(resp));
-            },
+        let Some(auth_url) = self.authorization_url(&redirect_uri, state, pkce_challenge) else {
+            error!(target: "oauth2", "failed to build OAuth authorization URL");
+            let mut resp = SyntheticHttpResponse::internal_server_error(
+                EventFailure::DirectResponse.into(),
+                ResponseFlags::default(),
+            )
+            .into_response(req.version());
+            add_oauth_response_headers(resp.headers_mut());
+            return FilterDecision::DirectResponse(Box::new(resp));
         };
 
         let nonce_header = format_cookie(
@@ -465,7 +463,7 @@ impl OAuth2Filter {
         FilterDecision::DirectResponse(Box::new(resp))
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     async fn handle_callback(
         &self,
         version: Version,
@@ -477,15 +475,12 @@ impl OAuth2Filter {
         let config = &self.inner.config;
         let cnames = &config.credentials.cookie_names;
         let cdomain = config.credentials.cookie_domain.as_deref();
-        let parameters = match parse_callback_query(query) {
-            Ok(parameters) => parameters,
-            Err(()) => {
-                warn!(target: "oauth2", "invalid or ambiguous OAuth callback query");
-                let mut resp =
-                    SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into()).into_response(version);
-                add_oauth_response_headers(resp.headers_mut());
-                return FilterDecision::DirectResponse(Box::new(resp));
-            },
+        let Ok(parameters) = parse_callback_query(query) else {
+            warn!(target: "oauth2", "invalid or ambiguous OAuth callback query");
+            let mut resp =
+                SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into()).into_response(version);
+            add_oauth_response_headers(resp.headers_mut());
+            return FilterDecision::DirectResponse(Box::new(resp));
         };
         let Some(state) = parameters.state.as_deref() else {
             warn!(target: "oauth2", "callback request is missing state");
@@ -706,7 +701,11 @@ fn local_redirect_target(target: Option<&str>) -> &str {
         && !target.contains('\\')
         && PathAndQuery::from_str(target).is_ok();
 
-    is_local_path.then_some(target).unwrap_or("/")
+    if is_local_path {
+        target
+    } else {
+        "/"
+    }
 }
 
 const TRANSACTION_COOKIE_VERSION: &str = "v1";
@@ -748,6 +747,7 @@ fn transaction_tag(key: &hmac::Key, payload: &str) -> hmac::Tag {
     context.sign()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn encode_transaction_cookie(
     key: &hmac::Key,
     flow_id: &str,
@@ -853,7 +853,7 @@ fn strict_form_decode(value: &str) -> Option<String> {
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut index = 0;
     while index < bytes.len() {
-        match bytes[index] {
+        match *bytes.get(index)? {
             b'+' => {
                 decoded.push(b' ');
                 index += 1;
@@ -886,7 +886,6 @@ fn parse_callback_query(query: &str) -> Result<CallbackParameters, ()> {
             "code" => &mut params.code,
             "state" => &mut params.state,
             "error" => &mut params.error,
-            "error_description" => continue,
             _ => continue,
         };
         if slot.replace(value).is_some() {
@@ -914,7 +913,7 @@ fn decrypt_cookie_value<'b>(key: &aead::LessSafeKey, value: &str, buf: &'b mut [
         if decoded_len <= AEAD_NONCE_LEN {
             return None;
         }
-        let (nonce_bytes, ciphertext) = buf[..decoded_len].split_at_mut(AEAD_NONCE_LEN);
+        let (nonce_bytes, ciphertext) = buf.get_mut(..decoded_len)?.split_at_mut(AEAD_NONCE_LEN);
         let nonce: [u8; AEAD_NONCE_LEN] = nonce_bytes.try_into().ok()?;
         let plaintext =
             key.open_in_place(aead::Nonce::assume_unique_for_key(nonce), aead::Aad::empty(), ciphertext).ok()?;
@@ -924,14 +923,10 @@ fn decrypt_cookie_value<'b>(key: &aead::LessSafeKey, value: &str, buf: &'b mut [
         if payload.len() <= AEAD_NONCE_LEN {
             return None;
         }
-        let nonce: [u8; AEAD_NONCE_LEN] = payload[..AEAD_NONCE_LEN].try_into().ok()?;
-        let plaintext = key
-            .open_in_place(
-                aead::Nonce::assume_unique_for_key(nonce),
-                aead::Aad::empty(),
-                &mut payload[AEAD_NONCE_LEN..],
-            )
-            .ok()?;
+        let (nonce_bytes, ciphertext) = payload.as_mut_slice().split_at_mut(AEAD_NONCE_LEN);
+        let nonce: [u8; AEAD_NONCE_LEN] = nonce_bytes.try_into().ok()?;
+        let plaintext =
+            key.open_in_place(aead::Nonce::assume_unique_for_key(nonce), aead::Aad::empty(), ciphertext).ok()?;
         std::str::from_utf8(plaintext).ok().map(|s| Cow::Owned(s.to_owned()))
     }
 }
@@ -996,6 +991,7 @@ fn hmac_domain<'a>(cookie_domain: Option<&'a str>, host: &'a str) -> &'a str {
     cookie_domain.filter(|domain| !domain.is_empty()).unwrap_or(host)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn session_hmac_tag(
     key: &hmac::Key,
     domain: &str,
@@ -1019,6 +1015,7 @@ fn session_hmac_tag(
     context.sign()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compute_session_hmac(
     key: &hmac::Key,
     domain: &str,
@@ -1030,6 +1027,7 @@ fn compute_session_hmac(
     BASE64_STANDARD.encode(session_hmac_tag(key, domain, expires, access_token, id_token, refresh_token).as_ref())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn verify_session_hmac(
     key: &hmac::Key,
     domain: &str,
@@ -1044,9 +1042,11 @@ fn verify_session_hmac(
     let Ok(decoded_len) = BASE64_STANDARD.decode_slice(signature, &mut decoded) else {
         return false;
     };
+    let Some(decoded_slice) = decoded.get(..decoded_len) else {
+        return false;
+    };
 
-    if decoded_len == tag.as_ref().len()
-        && constant_time::verify_slices_are_equal(tag.as_ref(), &decoded[..decoded_len]).is_ok()
+    if decoded_len == tag.as_ref().len() && constant_time::verify_slices_are_equal(tag.as_ref(), decoded_slice).is_ok()
     {
         return true;
     }
@@ -1057,11 +1057,13 @@ fn verify_session_hmac(
         return false;
     }
     let mut expected_legacy = [0_u8; 64];
-    for (byte, hex) in tag.as_ref().iter().zip(expected_legacy.chunks_exact_mut(2)) {
-        hex[0] = HEX_LOWER[(byte >> 4) as usize];
-        hex[1] = HEX_LOWER[(byte & 0x0f) as usize];
+    for (byte, [hi, lo]) in tag.as_ref().iter().zip(expected_legacy.as_chunks_mut::<2>().0) {
+        if let (Some(&h), Some(&l)) = (HEX_LOWER.get((byte >> 4) as usize), HEX_LOWER.get((byte & 0x0f) as usize)) {
+            *hi = h;
+            *lo = l;
+        }
     }
-    constant_time::verify_slices_are_equal(&expected_legacy, &decoded[..decoded_len]).is_ok()
+    constant_time::verify_slices_are_equal(&expected_legacy, decoded_slice).is_ok()
 }
 
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
@@ -1077,6 +1079,7 @@ fn add_oauth_response_headers(headers: &mut HeaderMap) {
     headers.insert(http::HeaderName::from_static("referrer-policy"), HeaderValue::from_static("no-referrer"));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_cookie(
     headers: &mut HeaderMap,
     name: &str,
