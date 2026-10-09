@@ -50,6 +50,13 @@ fn extract_cookie_value(response: &TestResponse, name: &str) -> Option<String> {
     None
 }
 
+fn extract_query_parameter<'a>(url: &'a str, name: &str) -> Option<&'a str> {
+    url.split_once('?')?.1.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == name).then_some(value)
+    })
+}
+
 struct OAuth2TestHarness {
     backend: TestBackend,
     oauth_server: TestBackend,
@@ -129,14 +136,12 @@ async fn test_oauth2_unauthenticated_request_redirects_to_auth() {
     let location = resp.header("location").expect("location header");
     assert!(location.contains("/oauth/authorize"), "location must contain authorize endpoint: {location}");
     assert!(location.contains("client_id="), "location must contain client_id: {location}");
-    assert!(
-        location.contains("state=") && location.contains("protected"),
-        "location must encode target state: {location}"
-    );
+    let state = extract_query_parameter(location, "state").expect("authorization redirect state");
+    assert!(!state.is_empty(), "authorization redirect state must not be empty");
 
-    // Assert CSRF nonce cookie is set
-    let nonce = extract_cookie_value(&resp, "OauthNonce");
-    assert!(nonce.is_some(), "response must set OauthNonce cookie");
+    // Assert the CSRF cookie is set. Its opaque value binds the state nonce to the local target.
+    let nonce_cookie = extract_cookie_value(&resp, "OauthNonce");
+    assert!(nonce_cookie.is_some(), "response must set OauthNonce cookie");
 }
 
 #[tokio::test]
@@ -148,11 +153,13 @@ async fn test_oauth2_full_authentication_flow_and_bearer_injection() {
     let resp1 = harness.client.get("/api/data").await.expect("initial request");
     resp1.assert_status(StatusCode::FOUND);
 
-    let nonce = extract_cookie_value(&resp1, "OauthNonce").expect("OauthNonce cookie");
+    let nonce_cookie = extract_cookie_value(&resp1, "OauthNonce").expect("OauthNonce cookie");
+    let authorization_location = resp1.header("location").expect("authorization redirect location");
+    let state = extract_query_parameter(authorization_location, "state").expect("authorization redirect state");
 
-    // Step 2: Callback with authorization code
-    let callback_path = "/callback?code=mockauthcode999&state=%2Fapi%2Fdata";
-    let callback_req = RequestBuilder::get(callback_path).header("cookie", format!("OauthNonce={nonce}"));
+    // Step 2: The IdP must reflect the opaque state received in the authorization request.
+    let callback_path = format!("/callback?code=mockauthcode999&state={state}");
+    let callback_req = RequestBuilder::get(callback_path).header("cookie", format!("OauthNonce={nonce_cookie}"));
 
     let resp2 = harness.client.send(callback_req).await.expect("callback request");
     resp2.assert_status(StatusCode::FOUND);

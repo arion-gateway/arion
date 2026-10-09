@@ -14,12 +14,17 @@
 
 use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
 use std::{
-    borrow::Cow, str::FromStr, time::{SystemTime, UNIX_EPOCH},
+    borrow::Cow,
+    str::FromStr,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use aws_lc_rs::{constant_time, hmac};
-use base64::{prelude::BASE64_STANDARD, Engine};
-use http::{HeaderMap, HeaderValue, Request, StatusCode, Version, header, uri::PathAndQuery};
+use base64::{
+    prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD},
+    Engine,
+};
+use http::{header, uri::PathAndQuery, HeaderMap, HeaderValue, Request, StatusCode, Version};
 use rand::Rng;
 use serde::Deserialize;
 use smol_str::SmolStr;
@@ -123,6 +128,7 @@ impl OAuth2Filter {
 
     pub async fn apply_request(&mut self, req: &mut Request<ArionRequestBody>) -> FilterDecision {
         let config = &self.inner.config;
+        let cnames = &config.credentials.cookie_names;
 
         // 1. Pass-through matcher: bypass authentication if configured headers match.
         for matcher in &config.pass_through_matcher {
@@ -152,7 +158,7 @@ impl OAuth2Filter {
         if let Some(pq) = req.uri().path_and_query() {
             if config.redirect_path_matcher.matches(pq).matched() {
                 debug!(target: "oauth2", "request matched redirect_path_matcher: {path}");
-                let (is_https, redirect_uri, query, version) = {
+                let (is_https, redirect_uri, query, csrf_cookie, version) = {
                     let ctx = DownstreamContext {
                         request: req,
                         request_head_size: 0,
@@ -164,9 +170,12 @@ impl OAuth2Filter {
                     let is_https = req.uri().scheme_str() == Some("https")
                         || req.headers().get("x-forwarded-proto").is_some_and(|v| v == "https");
                     let query = req.uri().query().unwrap_or_default();
-                    (is_https, redirect_uri, query, req.version())
+                    let csrf_cookie = extract_cookie(req.headers(), cnames.oauth_nonce.as_str()).map(str::to_owned);
+                    (is_https, redirect_uri, query, csrf_cookie, req.version())
                 };
-                return self.handle_callback(version, is_https, redirect_uri, query, host).await;
+                return self
+                    .handle_callback(version, is_https, redirect_uri, query, csrf_cookie.as_deref(), host)
+                    .await;
             }
         }
 
@@ -289,9 +298,11 @@ impl OAuth2Filter {
         let nonce: String =
             rand::thread_rng().sample_iter(&rand::distributions::Alphanumeric).take(32).map(char::from).collect();
 
-        // State encodes the original path and query
-        let original_target = req.uri().path_and_query().map_or("/", |pq| pq.as_str());
-        let state = utf8_percent_encode(original_target, NON_ALPHANUMERIC);
+        // Bind the callback to this browser-initiated flow. The cookie also retains the local
+        // target because callback query parameters are untrusted input.
+        let original_target = local_redirect_target(req.uri().path_and_query().map(PathAndQuery::as_str));
+        let csrf_cookie = encode_csrf_cookie(&nonce, original_target);
+        let state = utf8_percent_encode(&nonce, NON_ALPHANUMERIC);
         let encoded_redirect_uri = utf8_percent_encode(redirect_uri.as_str(), NON_ALPHANUMERIC);
         let scopes = config.auth_scopes.join(" ");
         let encoded_scopes = utf8_percent_encode(&scopes, NON_ALPHANUMERIC);
@@ -319,7 +330,7 @@ impl OAuth2Filter {
             || req.headers().get("x-forwarded-proto").is_some_and(|v| v == "https");
         if let Some(hv) = format_cookie(
             cnames.oauth_nonce.as_str(),
-            &nonce,
+            &csrf_cookie,
             Some(config.csrf_token_expires_in.as_secs()),
             config.cookie_configs.oauth_nonce_cookie_config.as_ref(),
             cdomain,
@@ -339,6 +350,7 @@ impl OAuth2Filter {
         is_https: bool,
         redirect_uri: SmolStr,
         query: &str,
+        csrf_cookie: Option<&str>,
         host: &str,
     ) -> FilterDecision {
         let config = &self.inner.config;
@@ -407,6 +419,14 @@ impl OAuth2Filter {
             return FilterDecision::DirectResponse(Box::new(resp));
         };
 
+        // Verify the callback belongs to an authorization flow initiated by this browser before
+        // exchanging its code. `state` alone is attacker-controlled callback input.
+        let Some(target_url) = verify_csrf_state(state.as_deref(), csrf_cookie) else {
+            warn!(target: "oauth2", "callback CSRF state validation failed");
+            let resp = SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into()).into_response(version);
+            return FilterDecision::DirectResponse(Box::new(resp));
+        };
+
         // Exchange authorization code for access token via token_endpoint
         let token_result = self.exchange_code(&code_val, &redirect_uri).await;
         let token_resp = match token_result {
@@ -444,9 +464,6 @@ impl OAuth2Filter {
         let hmac_val =
             compute_session_hmac(&self.inner.hmac_key, domain, expires, access_token, id_token, refresh_token);
 
-        // `state` is untrusted callback input; only redirect to a local origin-form target.
-        let target_url = local_redirect_target(state.as_deref());
-
         let mut resp = SyntheticHttpResponse::custom_error(
             StatusCode::FOUND,
             None,
@@ -455,7 +472,7 @@ impl OAuth2Filter {
         )
         .into_response(version);
 
-        if let Ok(loc) = HeaderValue::from_str(target_url) {
+        if let Ok(loc) = HeaderValue::from_str(&target_url) {
             resp.headers_mut().insert(header::LOCATION, loc);
         }
 
@@ -585,8 +602,8 @@ impl OAuth2Filter {
 
 // === Helper Functions ===
 
-fn local_redirect_target(state: Option<&str>) -> &str {
-    let Some(target) = state else {
+fn local_redirect_target(target: Option<&str>) -> &str {
+    let Some(target) = target else {
         return "/";
     };
 
@@ -596,6 +613,38 @@ fn local_redirect_target(state: Option<&str>) -> &str {
         && PathAndQuery::from_str(target).is_ok();
 
     is_local_path.then_some(target).unwrap_or("/")
+}
+
+fn encode_csrf_cookie(nonce: &str, target: &str) -> String {
+    let mut value = String::with_capacity(nonce.len() + target.len() + 1);
+    value.push_str(nonce);
+    value.push(':');
+    value.push_str(target);
+    BASE64_URL_SAFE_NO_PAD.encode(value)
+}
+
+fn verify_csrf_state(state: Option<&str>, csrf_cookie: Option<&str>) -> Option<String> {
+    let state = state?;
+    let decoded = BASE64_URL_SAFE_NO_PAD.decode(csrf_cookie?).ok()?;
+    let value = std::str::from_utf8(&decoded).ok()?;
+    let (nonce, target) = value.split_once(':')?;
+
+    (constant_time::verify_slices_are_equal(state.as_bytes(), nonce.as_bytes()).is_ok()
+        && local_redirect_target(Some(target)) == target)
+        .then(|| target.to_owned())
+}
+
+fn extract_cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    for value in headers.get_all(header::COOKIE) {
+        let Ok(cookie_header) = value.to_str() else { continue };
+        for pair in cookie_header.split(';') {
+            let Some((cookie_name, cookie_value)) = pair.split_once('=') else { continue };
+            if cookie_name.trim() == name {
+                return Some(cookie_value.trim());
+            }
+        }
+    }
+    None
 }
 
 fn extract_host(req: &Request<ArionRequestBody>) -> Option<&str> {
@@ -1065,6 +1114,29 @@ mod tests {
         assert_eq!(hmac_domain(None, "example.com:8080"), "example.com:8080");
         assert_eq!(hmac_domain(Some(".example.com"), "example.com:8080"), ".example.com");
         assert_eq!(hmac_domain(Some(""), "example.com:8080"), "example.com:8080");
+    }
+
+    #[test]
+    fn csrf_cookie_binds_state_to_local_redirect_target() {
+        let cookie = encode_csrf_cookie("nonce", "/dashboard?tab=profile");
+        assert_eq!(verify_csrf_state(Some("nonce"), Some(&cookie)).as_deref(), Some("/dashboard?tab=profile"));
+    }
+
+    #[test]
+    fn csrf_cookie_rejects_missing_or_mismatched_state() {
+        let cookie = encode_csrf_cookie("nonce", "/dashboard");
+        assert_eq!(verify_csrf_state(None, Some(&cookie)), None);
+        assert_eq!(verify_csrf_state(Some("other-nonce"), Some(&cookie)), None);
+        assert_eq!(verify_csrf_state(Some("nonce"), None), None);
+    }
+
+    #[test]
+    fn csrf_cookie_rejects_non_local_redirect_target() {
+        let cookie = encode_csrf_cookie("nonce", "https://evil.example");
+        assert_eq!(verify_csrf_state(Some("nonce"), Some(&cookie)), None);
+
+        let cookie = encode_csrf_cookie("nonce", "//evil.example");
+        assert_eq!(verify_csrf_state(Some("nonce"), Some(&cookie)), None);
     }
 
     #[tokio::test]
