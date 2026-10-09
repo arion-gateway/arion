@@ -67,13 +67,24 @@ struct TokenEndpointResponse {
     id_token: Option<String>,
 }
 
-#[derive(Debug)]
 pub struct OAuth2FilterInner {
     pub config: OAuth2Config,
     hmac_key: hmac::Key,
-    token_encryption_key: [u8; 32],
+    token_cipher: aead::LessSafeKey,
     pub redirect_uri_formatter: UriFormatter,
     pub client: reqwest::Client,
+}
+
+impl std::fmt::Debug for OAuth2FilterInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuth2FilterInner")
+            .field("config", &self.config)
+            .field("hmac_key", &"<redacted>")
+            .field("token_cipher", &"<redacted>")
+            .field("redirect_uri_formatter", &self.redirect_uri_formatter)
+            .field("client", &self.client)
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -102,14 +113,15 @@ impl OAuth2FilterBuilder {
 
         let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build()?;
         let hmac_key = hmac::Key::new(hmac::HMAC_SHA256, self.config.credentials.hmac_secret.as_bytes());
-        let mut token_encryption_key = [0_u8; 32];
-        token_encryption_key
-            .copy_from_slice(digest::digest(&digest::SHA256, self.config.credentials.hmac_secret.as_bytes()).as_ref());
+        let token_key_bytes = digest::digest(&digest::SHA256, self.config.credentials.hmac_secret.as_bytes());
+        let unbound_key = aead::UnboundKey::new(&aead::AES_256_GCM, token_key_bytes.as_ref())
+            .map_err(|err| format!("failed to initialize OAuth2 AES-256-GCM key: {err}"))?;
+        let token_cipher = aead::LessSafeKey::new(unbound_key);
 
         let inner = Arc::new(OAuth2FilterInner {
             config: self.config,
             hmac_key,
-            token_encryption_key,
+            token_cipher,
             redirect_uri_formatter,
             client,
         });
@@ -282,14 +294,14 @@ impl OAuth2Filter {
         if self.inner.config.disable_token_encryption {
             return Some(value.to_owned());
         }
-        decrypt_cookie_value(&self.inner.token_encryption_key, value)
+        decrypt_cookie_value(&self.inner.token_cipher, value)
     }
 
     fn encrypt_token_cookie(&self, value: &str) -> Option<String> {
         if self.inner.config.disable_token_encryption {
             return Some(value.to_owned());
         }
-        encrypt_cookie_value(&self.inner.token_encryption_key, value)
+        encrypt_cookie_value(&self.inner.token_cipher, value)
     }
 
     fn handle_signout(&self, req: &Request<ArionRequestBody>) -> FilterDecision {
@@ -359,7 +371,7 @@ impl OAuth2Filter {
             redirect_uri.as_str(),
         );
         let verifier_payload = format!("{issued_at}.{}", pkce_verifier.secret());
-        let Some(verifier_cookie) = encrypt_cookie_value(&self.inner.token_encryption_key, &verifier_payload) else {
+        let Some(verifier_cookie) = encrypt_cookie_value(&self.inner.token_cipher, &verifier_payload) else {
             error!(target: "oauth2", "failed to encrypt PKCE verifier cookie");
             let mut resp = SyntheticHttpResponse::internal_server_error(
                 EventFailure::DirectResponse.into(),
@@ -514,7 +526,7 @@ impl OAuth2Filter {
         };
         let verifier_cookie_name = flow_cookie_name(cnames.code_verifier.as_str(), flow_id);
         let Some(code_verifier) = extract_cookie(headers, &verifier_cookie_name)
-            .and_then(|value| decrypt_cookie_value(&self.inner.token_encryption_key, value))
+            .and_then(|value| decrypt_cookie_value(&self.inner.token_cipher, value))
             .and_then(|value| verify_code_verifier(&value, config.code_verifier_token_expires_in.as_secs()))
         else {
             warn!(target: "oauth2", "callback PKCE verifier validation failed");
@@ -882,9 +894,7 @@ fn parse_callback_query(query: &str) -> Result<CallbackParameters, ()> {
     Ok(params)
 }
 
-fn encrypt_cookie_value(key_bytes: &[u8; 32], value: &str) -> Option<String> {
-    let unbound_key = aead::UnboundKey::new(&aead::AES_256_GCM, key_bytes).ok()?;
-    let key = aead::LessSafeKey::new(unbound_key);
+fn encrypt_cookie_value(key: &aead::LessSafeKey, value: &str) -> Option<String> {
     let mut nonce = [0_u8; AEAD_NONCE_LEN];
     rand::thread_rng().fill_bytes(&mut nonce);
     let mut ciphertext = value.as_bytes().to_vec();
@@ -896,15 +906,13 @@ fn encrypt_cookie_value(key_bytes: &[u8; 32], value: &str) -> Option<String> {
     Some(format!("{ENCRYPTED_COOKIE_PREFIX}{}", BASE64_URL_SAFE_NO_PAD.encode(payload)))
 }
 
-fn decrypt_cookie_value(key_bytes: &[u8; 32], value: &str) -> Option<String> {
+fn decrypt_cookie_value(key: &aead::LessSafeKey, value: &str) -> Option<String> {
     let encoded = value.strip_prefix(ENCRYPTED_COOKIE_PREFIX)?;
     let mut payload = BASE64_URL_SAFE_NO_PAD.decode(encoded).ok()?;
     if payload.len() <= AEAD_NONCE_LEN {
         return None;
     }
     let nonce: [u8; AEAD_NONCE_LEN] = payload[..AEAD_NONCE_LEN].try_into().ok()?;
-    let unbound_key = aead::UnboundKey::new(&aead::AES_256_GCM, key_bytes).ok()?;
-    let key = aead::LessSafeKey::new(unbound_key);
     let plaintext = key
         .open_in_place(aead::Nonce::assume_unique_for_key(nonce), aead::Aad::empty(), &mut payload[AEAD_NONCE_LEN..])
         .ok()?;
@@ -1519,7 +1527,8 @@ mod tests {
 
     #[test]
     fn encrypted_cookie_round_trip_rejects_tampering() {
-        let key = [7_u8; 32];
+        let unbound = aead::UnboundKey::new(&aead::AES_256_GCM, &[7_u8; 32]).unwrap();
+        let key = aead::LessSafeKey::new(unbound);
         let encrypted = encrypt_cookie_value(&key, "access-token").expect("encryption succeeds");
         assert_ne!(encrypted, "access-token");
         assert_eq!(decrypt_cookie_value(&key, &encrypted).as_deref(), Some("access-token"));
