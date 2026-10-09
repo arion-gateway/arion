@@ -119,8 +119,7 @@ async fn test_tc1004_no_data_after_connect() {
     let (arion, _backend, tcp_client, config_path) = setup().await;
 
     // Connect but send nothing — just wait for timeout
-    let response =
-        tcp_client.receive_on_connect_with_timeout(*READ_TIMEOUT).await.expect("Failed to receive");
+    let response = tcp_client.receive_on_connect_with_timeout(*READ_TIMEOUT).await.expect("Failed to receive");
 
     // Proxy should eventually timeout and close the connection
     // Response may be empty (connection closed) or an error
@@ -177,8 +176,7 @@ async fn test_tc1006_tls_on_plaintext_port() {
         0x03, // dummy
     ];
 
-    let response =
-        tcp_client.send_with_timeout(tls_client_hello, *READ_TIMEOUT).await.expect("Failed to send");
+    let response = tcp_client.send_with_timeout(tls_client_hello, *READ_TIMEOUT).await.expect("Failed to send");
 
     // HTTP parser should reject this as invalid HTTP
     assert_rejected(&response, &[400]);
