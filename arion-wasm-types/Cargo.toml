@@ -6,8 +6,8 @@ description = "Shared ABI types between the Arion proxy (host) and the Arion Was
 license = "Apache-2.0"
 
 [dependencies]
-http = "1.0"
-serde = { version = "1.0.228", features = ["derive"] }
-smol_str  = { version = "0.3.5", features = ["serde"] }
+http = "1.5"
+serde = { version = "1.0.229", features = ["derive"] }
+smol_str  = { version = "0.3.6", features = ["serde"] }
 http-serde-ext = { version = "1.0.2" }
 bytes = { workspace = true, features = ["serde"] }

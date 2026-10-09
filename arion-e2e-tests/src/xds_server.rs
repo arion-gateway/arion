@@ -25,7 +25,7 @@ use arion_data_plane_api::envoy_data_plane_api::{
     tonic::{transport::Server, IntoStreamingRequest, Response, Status},
 };
 use atomic_take::AtomicTake;
-use dashmap::DashMap;
+use papaya::HashMap as PapayaMap;
 use tokio::sync::{
     broadcast,
     mpsc::{self, Receiver},
@@ -56,31 +56,33 @@ pub struct TrackedPush {
 }
 
 pub struct AckTracker {
-    pending: DashMap<String, oneshot::Sender<PushResult>>,
+    pending: PapayaMap<String, AtomicTake<oneshot::Sender<PushResult>>>,
 }
 
 impl AckTracker {
     pub fn new() -> Self {
-        Self { pending: DashMap::new() }
+        Self { pending: PapayaMap::new() }
     }
 
     pub fn register(&self, nonce: String, result_tx: oneshot::Sender<PushResult>) {
-        self.pending.insert(nonce, result_tx);
+        self.pending.pin().insert(nonce, AtomicTake::new(result_tx));
     }
 
     pub fn complete(&self, nonce: &str, result: PushResult) -> bool {
-        if let Some((_, tx)) = self.pending.remove(nonce) {
-            if tx.send(result).is_err() {
-                debug!("ack receiver dropped before result could be delivered for nonce {nonce}");
+        let pinned = self.pending.pin();
+        if let Some(entry) = pinned.remove(nonce) {
+            if let Some(tx) = entry.take() {
+                if tx.send(result).is_err() {
+                    debug!("ack receiver dropped before result could be delivered for nonce {nonce}");
+                }
+                return true;
             }
-            true
-        } else {
-            false
         }
+        false
     }
 
     pub fn clear_all(&self) {
-        self.pending.clear();
+        self.pending.pin().clear();
     }
 }
 
