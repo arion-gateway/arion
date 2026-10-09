@@ -22,7 +22,7 @@ use std::time::Duration;
 use arion_e2e_tests::config_builder::presets;
 use arion_e2e_tests::{
     assert_rejected, cleanup_config_file, ArionInstance, PartialSendClient, PreConfiguredResponse,
-    RawHttpRequestBuilder, RawHttpResponse, SpawnOptions, TcpTestClient, TestBackend,
+    RawHttpRequestBuilder, RawHttpResponse, SpawnOptions, TcpTestClient, TestBackend, READ_TIMEOUT,
 };
 
 async fn setup() -> (ArionInstance, TestBackend, TcpTestClient, std::path::PathBuf) {
@@ -66,7 +66,7 @@ async fn test_tc0801_truncated_body() {
     client.send_bytes(&[b'x'; 50]).await.expect("Failed to send partial body");
 
     client.shutdown_write().await.expect("Failed to shutdown");
-    let response = client.read_response(Duration::from_secs(5)).await.expect("Failed to read");
+    let response = client.read_response(*READ_TIMEOUT).await.expect("Failed to read");
     // Arion surfaces an upstream-side failure as 503 when the body is truncated.
     assert_rejected(&response, &[503]);
 
@@ -86,7 +86,7 @@ async fn test_tc0802_excess_body() {
         .body(b"0123456789EXCESS_DATA_SHOULD_BE_IGNORED")
         .build();
 
-    let response = tcp_client.send_with_timeout(&req, Duration::from_secs(3)).await.expect("Failed to send");
+    let response = tcp_client.send_with_timeout(&req, *READ_TIMEOUT).await.expect("Failed to send");
     let resp = RawHttpResponse::parse(&response).expect("Expected a response");
     resp.assert_status(200);
 
@@ -128,7 +128,7 @@ async fn test_tc0804_cl_zero_with_body() {
         .body(b"unexpected body data")
         .build();
 
-    let response = tcp_client.send_with_timeout(&req, Duration::from_secs(3)).await.expect("Failed to send");
+    let response = tcp_client.send_with_timeout(&req, *READ_TIMEOUT).await.expect("Failed to send");
     let resp = RawHttpResponse::parse(&response).expect("Expected a response");
     // Arion forwards the request and the excess body is ignored (RFC 7230 §3.3.3 case 4).
     resp.assert_status(200);
@@ -170,7 +170,7 @@ async fn test_tc0901_non_hex_chunk_size() {
         .body(b"xyz\r\nhello\r\n0\r\n\r\n")
         .build();
 
-    let response = tcp_client.send_with_timeout(&req, Duration::from_secs(3)).await.expect("Failed to send");
+    let response = tcp_client.send_with_timeout(&req, *READ_TIMEOUT).await.expect("Failed to send");
     // Arion fails the upstream body forward and returns 503.
     assert_rejected(&response, &[503]);
 
@@ -190,7 +190,7 @@ async fn test_tc0902_negative_chunk_size() {
         .body(b"-5\r\nhello\r\n0\r\n\r\n")
         .build();
 
-    let response = tcp_client.send_with_timeout(&req, Duration::from_secs(3)).await.expect("Failed to send");
+    let response = tcp_client.send_with_timeout(&req, *READ_TIMEOUT).await.expect("Failed to send");
     assert_rejected(&response, &[503]);
 
     cleanup(arion, &config_path);
@@ -209,7 +209,7 @@ async fn test_tc0903_chunk_size_overflow() {
         .body(b"FFFFFFFFFFFFFFFF\r\nhello\r\n0\r\n\r\n")
         .build();
 
-    let response = tcp_client.send_with_timeout(&req, Duration::from_secs(3)).await.expect("Failed to send");
+    let response = tcp_client.send_with_timeout(&req, *READ_TIMEOUT).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
     cleanup(arion, &config_path);
@@ -236,7 +236,7 @@ async fn test_tc0904_missing_terminator_chunk() {
     // Don't send terminator — close connection
     client.shutdown_write().await.expect("Failed to shutdown");
 
-    let response = client.read_response(Duration::from_secs(5)).await.expect("Failed to read");
+    let response = client.read_response(*READ_TIMEOUT).await.expect("Failed to read");
     assert_rejected(&response, &[503]);
 
     cleanup(arion, &config_path);
@@ -263,7 +263,7 @@ async fn test_tc0905_insufficient_chunk_data() {
     client.send_bytes(b"a\r\nhello").await.expect("Failed to send chunk");
     client.shutdown_write().await.expect("Failed to shutdown");
 
-    let response = client.read_response(Duration::from_secs(5)).await.expect("Failed to read");
+    let response = client.read_response(*READ_TIMEOUT).await.expect("Failed to read");
     assert_rejected(&response, &[503]);
 
     cleanup(arion, &config_path);
@@ -283,7 +283,7 @@ async fn test_tc0906_missing_crlf_after_chunk() {
         .body(b"5\r\nhello0\r\n\r\n")
         .build();
 
-    let response = tcp_client.send_with_timeout(&req, Duration::from_secs(3)).await.expect("Failed to send");
+    let response = tcp_client.send_with_timeout(&req, *READ_TIMEOUT).await.expect("Failed to send");
     assert_rejected(&response, &[503]);
 
     cleanup(arion, &config_path);
@@ -303,7 +303,7 @@ async fn test_tc0907_forbidden_trailer_header() {
         .body(b"5\r\nhello\r\n0\r\nHost: evil.com\r\n\r\n")
         .build();
 
-    let response = tcp_client.send_with_timeout(&req, Duration::from_secs(3)).await.expect("Failed to send");
+    let response = tcp_client.send_with_timeout(&req, *READ_TIMEOUT).await.expect("Failed to send");
     let resp = RawHttpResponse::parse(&response).expect("Expected a response");
     // Arion ignores the forbidden Host trailer as per RFC 7230 §4.1.2.
     resp.assert_status(200);
@@ -326,7 +326,7 @@ async fn test_tc0908_oversized_chunk_extension() {
         .body(chunk_line.into_bytes())
         .build();
 
-    let response = tcp_client.send_with_timeout(&req, Duration::from_secs(3)).await.expect("Failed to send");
+    let response = tcp_client.send_with_timeout(&req, *READ_TIMEOUT).await.expect("Failed to send");
     let resp = RawHttpResponse::parse(&response).expect("Expected a response");
     // Arion tolerates chunk extensions up to the header-size limit.
     resp.assert_status(200);

@@ -324,9 +324,6 @@ async fn test_access_log_hcm_all_operators() {
     let abs_req_len = abs_form_req.len();
     let (abs_resp_len, abs_resp_headers_len) = send_request(listener_addr, &abs_form_req).await;
 
-    // Wait for logs (blocking=true, so writes are synchronous)
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
     let log_content = read_log_file(&log_path, Duration::from_secs(5)).await;
     let log_lines: Vec<&str> = log_content.lines().collect();
     assert_eq!(log_lines.len(), 2, "Expected exactly 2 log lines, got {}", log_lines.len());
@@ -466,8 +463,6 @@ async fn test_access_log_hcm_upstream_down() {
         assert!(resp_str.contains("503"), "Expected 503, got: {resp_str}")
     };
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
     let log_content = read_log_file(&log_path, Duration::from_secs(5)).await;
     let log_line = log_content.lines().next().expect("No log line found");
     let parsed = parse_log_line(log_line);
@@ -574,8 +569,6 @@ async fn test_access_log_hcm_original_path_header() {
         assert!(String::from_utf8_lossy(&resp).contains("200 OK"))
     };
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
     let log_content = read_log_file(&log_path, Duration::from_secs(5)).await;
     let log_line = log_content.lines().next().expect("No log line found");
     let parsed = parse_log_line(log_line);
@@ -642,8 +635,6 @@ async fn test_access_log_hcm_backend_500() {
         stream.read_to_end(&mut resp).await.expect("Failed to read");
         assert!(String::from_utf8_lossy(&resp).contains("500"))
     };
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
 
     let log_content = read_log_file(&log_path, Duration::from_secs(5)).await;
     let log_line = log_content.lines().next().expect("No log line found");
@@ -724,8 +715,6 @@ async fn test_access_log_hcm_multiple_connections() {
         stream.read_to_end(&mut resp).await.expect("Failed to read");
         assert!(String::from_utf8_lossy(&resp).contains("200 OK"));
     }
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
 
     let log_content = read_log_file(&log_path, Duration::from_secs(5)).await;
     let log_lines: Vec<&str> = log_content.lines().collect();

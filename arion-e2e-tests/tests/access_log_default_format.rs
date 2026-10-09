@@ -98,8 +98,6 @@ async fn test_access_log_default_format_basic() {
         assert!(resp_str.contains("200 OK"), "Unexpected response: {resp_str}");
     };
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
     let log_content = read_log_file(&log_path, Duration::from_secs(5)).await;
     let log_line = log_content.lines().next().expect("No log line found");
 
@@ -218,8 +216,6 @@ async fn test_access_log_default_format_with_original_path() {
         stream.read_to_end(&mut resp).await.expect("Failed to read");
         assert!(String::from_utf8_lossy(&resp).contains("200 OK"));
     };
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
 
     let log_content = read_log_file(&log_path, Duration::from_secs(5)).await;
     let log_line = log_content.lines().next().expect("No log line found");

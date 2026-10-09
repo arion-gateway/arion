@@ -153,8 +153,6 @@ async fn test_access_log_custom_operator_incoming_request() {
         assert!(resp_str.contains("200 OK"), "Unexpected response: {resp_str}");
     };
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
     let log_content = read_log_file(&log_path, Duration::from_secs(5)).await;
     let log_line = log_content.lines().next().expect("No log line found");
     let parsed = parse_log_line(log_line);
@@ -232,8 +230,6 @@ async fn test_access_log_custom_operator_not_configured_is_graceful() {
         stream.read_to_end(&mut resp).await.expect("Failed to read");
         assert!(String::from_utf8_lossy(&resp).contains("200 OK"));
     };
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
 
     let log_content = read_log_file(&log_path, Duration::from_secs(5)).await;
     let log_line = log_content.lines().next().expect("No log line found");
@@ -317,8 +313,6 @@ async fn test_access_log_custom_operator_multiple_fields() {
         stream.read_to_end(&mut resp).await.expect("Failed to read");
         assert!(String::from_utf8_lossy(&resp).contains("200 OK"));
     };
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
 
     let log_content = read_log_file(&log_path, Duration::from_secs(5)).await;
     let log_line = log_content.lines().next().expect("No log line found");

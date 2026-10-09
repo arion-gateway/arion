@@ -22,7 +22,7 @@ use std::time::Duration;
 use arion_e2e_tests::config_builder::presets;
 use arion_e2e_tests::{
     cleanup_config_file, ArionInstance, PreConfiguredResponse, RawHttpResponse, SpawnOptions, TcpTestBackend,
-    TcpTestClient, TestBackend,
+    TcpTestClient, TestBackend, READ_TIMEOUT,
 };
 
 async fn setup() -> (ArionInstance, TestBackend, TcpTestClient, std::path::PathBuf) {
@@ -78,7 +78,7 @@ async fn test_tc0701_cl_te_smuggling() {
         Host: localhost\r\n\
         \r\n";
 
-    let response = tcp_client.send_with_timeout(payload, Duration::from_secs(3)).await.expect("Failed to send");
+    let response = tcp_client.send_with_timeout(payload, *READ_TIMEOUT).await.expect("Failed to send");
     let resp = RawHttpResponse::parse(&response).expect("Expected a response");
 
     // hyper uses TE:chunked for framing (stripping CL per RFC 9112 6.3), so POST /test is
@@ -110,7 +110,7 @@ async fn test_tc0703_te_obfuscation() {
         \r\n\
         5\r\nhello\r\n0\r\n\r\n";
 
-    let response = tcp_client.send_with_timeout(payload, Duration::from_secs(3)).await.expect("Failed to send");
+    let response = tcp_client.send_with_timeout(payload, *READ_TIMEOUT).await.expect("Failed to send");
     let resp = RawHttpResponse::parse(&response).expect("Expected a response");
     // Arion trims whitespace around the TE value and treats it as chunked (correct per RFC 7230 §3.2.3).
     resp.assert_status(200);
@@ -129,7 +129,7 @@ async fn test_tc0704_te_case_obfuscation() {
         \r\n\
         5\r\nhello\r\n0\r\n\r\n";
 
-    let response = tcp_client.send_with_timeout(payload, Duration::from_secs(3)).await.expect("Failed to send");
+    let response = tcp_client.send_with_timeout(payload, *READ_TIMEOUT).await.expect("Failed to send");
     let resp = RawHttpResponse::parse(&response).expect("Expected a response");
     // RFC 7230 §3.2 requires case-insensitive field-value parsing; Arion accepts "ChUnKeD".
     resp.assert_status(200);

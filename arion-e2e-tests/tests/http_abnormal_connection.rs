@@ -24,6 +24,7 @@ use arion_e2e_tests::config_builder::{BootstrapBuilder, ClusterBuilder, Downstre
 use arion_e2e_tests::{
     assert_rejected, cleanup_config_file, ArionInstance, PartialSendClient, PreConfiguredResponse,
     RawHttpRequestBuilder, RawHttpResponse, SpawnOptions, TcpTestClient, TestBackend, TestCerts, TestClient,
+    READ_TIMEOUT,
 };
 
 async fn setup() -> (ArionInstance, TestBackend, TcpTestClient, std::path::PathBuf) {
@@ -59,7 +60,7 @@ async fn test_tc1001_truncated_request_line() {
     client.send_bytes(b"GE").await.expect("Failed to send");
     client.shutdown_write().await.expect("Failed to shutdown");
 
-    let response = client.read_response(Duration::from_secs(5)).await.expect("Failed to read");
+    let response = client.read_response(*READ_TIMEOUT).await.expect("Failed to read");
     // Proxy should handle gracefully — either error response or connection close
     assert_rejected(&response, &[400, 408]);
 
@@ -83,7 +84,7 @@ async fn test_tc1002_truncated_header() {
     client.send_bytes(b"GET / HTTP/1.1\r\nHost: local").await.expect("Failed to send");
     client.shutdown_write().await.expect("Failed to shutdown");
 
-    let response = client.read_response(Duration::from_secs(5)).await.expect("Failed to read");
+    let response = client.read_response(*READ_TIMEOUT).await.expect("Failed to read");
     assert_rejected(&response, &[400, 408]);
 
     cleanup(arion, &config_path);
@@ -106,7 +107,7 @@ async fn test_tc1003_slowloris() {
     client.send_bytes_with_delay(first_ten, Duration::from_millis(500)).await.expect("Failed to send slow bytes");
 
     // The proxy should eventually time out this connection.
-    let response = client.read_response(Duration::from_secs(10)).await.expect("Failed to read");
+    let response = client.read_response(*READ_TIMEOUT).await.expect("Failed to read");
     assert_rejected(&response, &[400, 408, 504]);
 
     cleanup(arion, &config_path);
@@ -119,7 +120,7 @@ async fn test_tc1004_no_data_after_connect() {
 
     // Connect but send nothing — just wait for timeout
     let response =
-        tcp_client.receive_on_connect_with_timeout(Duration::from_secs(10)).await.expect("Failed to receive");
+        tcp_client.receive_on_connect_with_timeout(*READ_TIMEOUT).await.expect("Failed to receive");
 
     // Proxy should eventually timeout and close the connection
     // Response may be empty (connection closed) or an error
@@ -151,7 +152,7 @@ async fn test_tc1005_plaintext_on_tls_port() {
     // Send plaintext HTTP to the TLS port
     let tcp_client = TcpTestClient::new(arion.listener_addr().unwrap());
     let req = RawHttpRequestBuilder::new().host("localhost").build();
-    let response = tcp_client.send_with_timeout(&req, Duration::from_secs(3)).await.expect("Failed to send");
+    let response = tcp_client.send_with_timeout(&req, *READ_TIMEOUT).await.expect("Failed to send");
 
     assert!(
         RawHttpResponse::parse(&response).is_none(),
@@ -177,7 +178,7 @@ async fn test_tc1006_tls_on_plaintext_port() {
     ];
 
     let response =
-        tcp_client.send_with_timeout(tls_client_hello, Duration::from_secs(3)).await.expect("Failed to send");
+        tcp_client.send_with_timeout(tls_client_hello, *READ_TIMEOUT).await.expect("Failed to send");
 
     // HTTP parser should reject this as invalid HTTP
     assert_rejected(&response, &[400]);
@@ -198,7 +199,7 @@ async fn test_tc1007_http_pipelining() {
         );
     }
 
-    let response = tcp_client.send_with_timeout(&data, Duration::from_secs(5)).await.expect("Failed to send");
+    let response = tcp_client.send_with_timeout(&data, *READ_TIMEOUT).await.expect("Failed to send");
 
     // We should get at least one valid response
     let resp = RawHttpResponse::parse(&response).expect("Expected at least one response");
@@ -219,7 +220,7 @@ async fn test_tc1008_keep_alive_limit() {
         data.extend_from_slice(&single_req);
     }
 
-    let response = tcp_client.send_with_timeout(&data, Duration::from_secs(10)).await.expect("Failed to send");
+    let response = tcp_client.send_with_timeout(&data, *READ_TIMEOUT).await.expect("Failed to send");
 
     // Should get responses (possibly not all 100 if there's a limit)
     let resp = RawHttpResponse::parse(&response).expect("Expected at least one response");

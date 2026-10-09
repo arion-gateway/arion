@@ -123,8 +123,6 @@ async fn test_access_log_listener_all_operators() {
     let captured = backend.await_connection().await.expect("Failed to capture connection");
     assert_eq!(captured.received_data, b"Hello from client!");
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
     let log_content = read_log_file(&log_path, Duration::from_secs(5)).await;
     let log_line = log_content.lines().next().expect("No log line found");
     let parsed = parse_log_line(log_line);
@@ -225,8 +223,6 @@ async fn test_access_log_listener_upstream_down() {
         let n = stream.read(&mut buf).await.unwrap_or(0);
         assert_eq!(n, 0, "Connection should be closed by Arion")
     };
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
 
     let log_content = read_log_file(&log_path, Duration::from_secs(5)).await;
     let log_line = log_content.lines().next().expect("No log line found");
