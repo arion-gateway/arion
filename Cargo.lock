@@ -353,8 +353,11 @@ dependencies = [
 name = "arion-interner"
 version = "0.1.0"
 dependencies = [
+ "ahash",
+ "criterion",
  "http",
  "lasso",
+ "papaya",
  "serde",
  "smol_str",
 ]
