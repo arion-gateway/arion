@@ -526,7 +526,7 @@ impl ExternalProcessor {
                 for key in custom_keys {
                     if let Some(source) = key.source() {
                         if let Some(id) = metrics::extract_custom_partition_key(headers, Some(source)) {
-                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id.as_str()));
+                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
                         }
                     }
                 }
@@ -771,7 +771,7 @@ impl ExternalProcessor {
                 for key in custom_keys {
                     if let Some(source) = key.source() {
                         if let Some(id) = metrics::extract_custom_partition_key(headers, Some(source)) {
-                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id.as_str()));
+                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
                         }
                     }
                 }

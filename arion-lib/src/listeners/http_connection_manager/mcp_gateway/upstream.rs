@@ -212,7 +212,7 @@ async fn dispatch_rest_tool(
     }
     *request.version_mut() = acquired.channels().http_version().into();
     span.set_http_request(&request);
-    span.set_endpoint(acquired.cluster_id(), acquired.channels().upstream_authority().as_str());
+    span.set_endpoint(acquired.cluster_name(), acquired.channels().upstream_authority().as_str());
     span.inject_headers(request.headers_mut());
 
     if let Some(response) = http_modifiers::apply_preflight_functions(&mut request) {

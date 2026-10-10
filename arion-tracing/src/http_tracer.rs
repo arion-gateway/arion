@@ -17,7 +17,7 @@
 // limitations under the License.
 //
 
-use arion_interner::InternedStr;
+use arion_interner::{InternedStr, StringInterner};
 use bounded_integer::BoundedU16;
 use http::header::HOST;
 use http::{HeaderMap, HeaderValue, Request, StatusCode};
@@ -117,7 +117,7 @@ impl ScopedClientSpan {
             span.set_attribute(KeyValue::new("url.query", query.to_owned()));
         }
         if let Some(scheme) = request.uri().scheme() {
-            span.set_attribute(KeyValue::new("url.scheme", scheme.as_str().to_owned()));
+            span.set_attribute(KeyValue::new("url.scheme", scheme.to_static_str()));
         }
     }
 

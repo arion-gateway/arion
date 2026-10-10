@@ -32,7 +32,7 @@ use crate::{
     transport::{GrpcService, HttpChannel, HttpChannels, TcpChannelConnector},
 };
 use arion_configuration::config::cluster::{Cluster as ClusterConfig, ClusterSpecifier};
-use arion_interner::{InternedStr, StringInterner};
+use arion_interner::InternedStr;
 use http::{HeaderMap, HeaderName, HeaderValue, Request, header::HOST, uri::Authority};
 use rand::{prelude::SliceRandom, thread_rng};
 use smol_str::SmolStr;
@@ -182,7 +182,10 @@ pub fn resolve_cluster(selector: &ClusterSpecifier, header_map: Option<&HeaderMa
             debug!("Resolving cluster header '{}'...", name);
             if let Some(header_map) = header_map {
                 if let Some(header_value) = header_map.get(name.as_str()) {
-                    header_value.to_str().ok().map(StringInterner::to_interned_str)
+                    let cluster_name = header_value.to_str().ok()?;
+                    CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
+                        watcher.cached_or_latest().get_key_value(cluster_name).map(|(k, _)| *k)
+                    })
                 } else {
                     debug!("Header '{}' not found in the request/header map (no cluster found)", name);
                     None
@@ -435,6 +438,7 @@ mod tests {
         OriginalDstRoutingMethod, StandardLbPolicy,
     };
     use arion_configuration::config::cluster::{Cluster as ClusterConfig, HttpProtocolOptions};
+    use arion_interner::StringInterner;
     use std::sync::atomic::Ordering;
 
     fn make_cluster_config(name: impl StringInterner, max_requests: u32) -> ClusterConfig {
@@ -536,6 +540,34 @@ mod tests {
 
         let cb = cluster.circuit_breaker().expect("CB should exist on first add");
         assert_eq!(cb.get_state(RoutingPriority::Default).counters.active_requests.load(Ordering::Relaxed), 0);
+
+        remove_cluster(name).unwrap();
+    }
+
+    #[test]
+    fn resolve_cluster_header_safely_rejects_unknown_clusters() {
+        let name = "cluster-header-safe-test";
+        let partial = build_partial(make_cluster_config(name, 10));
+        let cluster = add_cluster(partial).unwrap();
+        let expected_interned = cluster.get_name();
+
+        let selector = ClusterSpecifier::ClusterHeader(http::HeaderName::from_static("x-cluster"));
+
+        // 1. Header matches existing cluster
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-cluster", name.parse().unwrap());
+        let resolved = resolve_cluster(&selector, Some(&headers));
+        assert_eq!(resolved, Some(expected_interned));
+
+        // 2. Header has unknown/untrusted cluster
+        headers.insert("x-cluster", "random-malicious-unknown-cluster-12345".parse().unwrap());
+        let resolved = resolve_cluster(&selector, Some(&headers));
+        assert_eq!(resolved, None);
+
+        // 3. Header is missing
+        headers.remove("x-cluster");
+        let resolved = resolve_cluster(&selector, Some(&headers));
+        assert_eq!(resolved, None);
 
         remove_cluster(name).unwrap();
     }

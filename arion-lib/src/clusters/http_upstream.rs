@@ -43,7 +43,7 @@ use {
 #[derive(Debug)]
 pub struct AcquiredHttpUpstream {
     channels: HttpChannels,
-    cluster_id: InternedStr,
+    cluster_name: InternedStr,
     overrides_host: bool,
     _permit: RequestPermit,
 }
@@ -55,8 +55,8 @@ impl AcquiredHttpUpstream {
     }
 
     #[inline]
-    pub fn cluster_id(&self) -> InternedStr {
-        self.cluster_id
+    pub fn cluster_name(&self) -> InternedStr {
+        self.cluster_name
     }
 
     /// Whether the cluster selects its endpoint by host override.
@@ -149,7 +149,7 @@ pub fn acquire_http_upstream(
     let channels = clusters_manager::get_http_connection(&cluster_id, routing_context)
         .map_err(|source| AcquireHttpUpstreamError::Connection { cluster_id, source })?;
 
-    Ok(AcquiredHttpUpstream { channels, cluster_id, overrides_host, _permit: permit })
+    Ok(AcquiredHttpUpstream { channels, cluster_name: cluster_id, overrides_host, _permit: permit })
 }
 
 #[cfg(feature = "metrics")]
@@ -307,7 +307,7 @@ mod tests {
             RoutingPriority::Default,
         )
         .unwrap();
-        assert_eq!(acquired.cluster_id(), cluster_name);
+        assert_eq!(acquired.cluster_name(), cluster_name);
         drop(acquired);
 
         // An unresolved cluster fails before routing, so it carries no cluster id.

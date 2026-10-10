@@ -113,7 +113,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
 
         #[cfg(feature = "metrics")]
         if let Some(cluster_id) = match &acquire_result {
-            Ok(upstream) => Some(upstream.cluster_id()),
+            Ok(upstream) => Some(upstream.cluster_name()),
             Err(error) => error.cluster_id(),
         } {
             ctx.tx.trans_state.lock().upstream_cluster_name = Some(cluster_id);

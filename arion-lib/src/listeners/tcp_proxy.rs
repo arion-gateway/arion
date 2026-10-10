@@ -221,7 +221,7 @@ impl TcpProxy {
                                     &[
                                         KeyValue::new(
                                             crate::metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                            user_partition_key.as_str()
+                                            user_partition_key.to_string()
                                         ),
                                         KeyValue::new("listener", metadata.listener_name.as_str())
                                     ]
@@ -234,7 +234,7 @@ impl TcpProxy {
                                     &[
                                         KeyValue::new(
                                             crate::metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                            user_partition_key.as_str()
+                                            user_partition_key.to_string()
                                         ),
                                         KeyValue::new("listener", metadata.listener_name.as_str())
                                     ]

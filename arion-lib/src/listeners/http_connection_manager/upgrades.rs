@@ -108,7 +108,7 @@ pub async fn handle_websocket_upgrade(
     match version {
         Version::HTTP_11 => {
             #[cfg(feature = "metrics")]
-            let user_partition_key = req_ctx.tx.user_partition_key;
+            let user_partition_key = req_ctx.tx.user_partition_key.clone();
 
             let request_upgrade = hyper::upgrade::on(&mut request);
             match svc_channel.to_response(req_ctx, request, UpstreamCallOpts::default()).await {
@@ -190,7 +190,7 @@ pub async fn handle_websocket_upgrade(
                                         shard_id,
                                         &[KeyValue::new(
                                             metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                            partition_key.as_str()
+                                            partition_key.to_string()
                                         )]
                                     );
                                     with_metric!(
@@ -200,7 +200,7 @@ pub async fn handle_websocket_upgrade(
                                         shard_id,
                                         &[KeyValue::new(
                                             metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                            partition_key.as_str()
+                                            partition_key.to_string()
                                         )]
                                     );
                                     with_metric!(
@@ -211,7 +211,7 @@ pub async fn handle_websocket_upgrade(
                                         &[
                                             KeyValue::new(
                                                 metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                                partition_key.as_str()
+                                                partition_key.to_string()
                                             ),
                                             KeyValue::new("listener", listener_name.as_str())
                                         ]
@@ -224,7 +224,7 @@ pub async fn handle_websocket_upgrade(
                                         &[
                                             KeyValue::new(
                                                 metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                                partition_key.as_str()
+                                                partition_key.to_string()
                                             ),
                                             KeyValue::new("listener", listener_name.as_str())
                                         ]
