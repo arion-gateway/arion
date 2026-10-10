@@ -40,6 +40,7 @@ static USER_RATE_LIMITERS: LazyLock<PapayaMap<SmolStr, TokenBucket, ahash::Rando
 static CLEANER_ONCE: Once = Once::new();
 static CLEANER_PERIOD: Duration = Duration::from_secs(10);
 static CLEANER_TOKEN_BUCKET_IDLE: Duration = Duration::from_secs(60);
+pub const MAX_USER_ID_LENGTH: usize = 256;
 
 #[derive(Clone, Debug)]
 pub struct UserRateLimiter {
@@ -87,7 +88,9 @@ impl UserRateLimiter {
         let Some(user) = request
             .headers()
             .get(self.inner.user_id_header.as_str())
-            .and_then(|v| v.to_str().ok().map(|s| String::from(s)))
+            .and_then(|v| v.to_str().ok())
+            .filter(|s| !s.is_empty() && s.len() <= MAX_USER_ID_LENGTH)
+            .map(String::from)
         else {
             debug!(target: "user_rate_limiter", "no user found in request headers");
             #[cfg(feature = "metrics")]

@@ -46,6 +46,8 @@ use triomphe::Arc;
 
 type ClustersMap = BTreeMap<InternedStr, ClusterType>;
 
+pub const MAX_CLUSTER_NAME_LENGTH: usize = 256;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MetadataKey(pub SmolStr);
 
@@ -183,6 +185,9 @@ pub fn resolve_cluster(selector: &ClusterSpecifier, header_map: Option<&HeaderMa
             if let Some(header_map) = header_map {
                 if let Some(header_value) = header_map.get(name.as_str()) {
                     let cluster_name = header_value.to_str().ok()?;
+                    if cluster_name.is_empty() || cluster_name.len() > MAX_CLUSTER_NAME_LENGTH {
+                        return None;
+                    }
                     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
                         watcher.cached_or_latest().get_key_value(cluster_name).map(|(k, _)| *k)
                     })
