@@ -19,11 +19,11 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use arion_e2e_tests::config_builder::{
-    presets, ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, RouteBuilder,
-    RouteConfigBuilder, VirtualHostBuilder,
+    ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, RouteBuilder, RouteConfigBuilder,
+    VirtualHostBuilder, presets,
 };
 use arion_e2e_tests::{
-    cleanup_config_file, ArionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient, XdsEnabledHarness,
+    ArionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient, XdsEnabledHarness, cleanup_config_file,
 };
 use http::StatusCode;
 
@@ -364,10 +364,10 @@ async fn test_path_matchers_when_configured_over_xds() {
     // With the old config it still returns "api", making this our propagation sentinel.
     pingora::time::timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(response) = client.get("/api/users").await {
-                if response.body_str() == Some("other") {
-                    break;
-                }
+            if let Ok(response) = client.get("/api/users").await
+                && response.body_str() == Some("other")
+            {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

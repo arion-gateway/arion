@@ -20,7 +20,7 @@ use crate::config::network_filters::network_rbac::Action;
 use http::uri::Authority;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use smol_str::{format_smolstr, SmolStr};
+use smol_str::{SmolStr, format_smolstr};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct McpGateway {
@@ -247,18 +247,17 @@ mod envoy_conversions {
 
     use crate::config::common::envoy_conversions::IsUsed;
     use crate::config::core::RustType;
-    use crate::config::{required, GenericError, WithNodeOnResult};
+    use crate::config::{GenericError, WithNodeOnResult, required};
 
     use super::*;
     use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        mcp_server_backend::TransportUpstream as ArionTransportUpstream, permission,
-        tool::UpstreamBackend as ArionUpstreamBackend, tool_rbac::Action as ArionAction,
         DynamicMcpServer as ArionDynamicMcpServer, HttpUpstreamPolicy as ArionHttpUpstreamPolicy, JwtClaimMatcher,
         JwtHeaderMatcher, McpGateway as ArionMcpGateway, Permission as ArionPermission,
         QueryParam as ArionMcpQueryParams, RemoteEmbeddings as ArionRemoteEmbeddings,
         SemanticSearch as ArionSemanticSearch, ServerInfo as ArionMcpServerInfo,
         SimilarityConfig as ArionSimilarityConfig, TdsSpecifier as ArionTdsSpecifier, Tool as ArionTool,
-        ToolRbac as ArionToolRbac,
+        ToolRbac as ArionToolRbac, mcp_server_backend::TransportUpstream as ArionTransportUpstream, permission,
+        tool::UpstreamBackend as ArionUpstreamBackend, tool_rbac::Action as ArionAction,
     };
     use tracing::warn;
 
@@ -608,7 +607,7 @@ mod envoy_conversions {
         #[allow(clippy::indexing_slicing)]
         fn test_tool_rbac_config_parsing() {
             use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::{
-                permission, JwtClaimMatcher, Permission as ArionPermission, ToolRbac as ArionToolRbac,
+                JwtClaimMatcher, Permission as ArionPermission, ToolRbac as ArionToolRbac, permission,
             };
 
             // Create a sample tool RBAC configuration
@@ -657,7 +656,7 @@ mod envoy_conversions {
         #[test]
         fn test_tool_rbac_deny_action() {
             use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::{
-                permission, JwtClaimMatcher, Permission as ArionPermission, ToolRbac as ArionToolRbac,
+                JwtClaimMatcher, Permission as ArionPermission, ToolRbac as ArionToolRbac, permission,
             };
 
             let arion_rbac = ArionToolRbac {

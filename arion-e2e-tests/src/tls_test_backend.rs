@@ -29,11 +29,11 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
+use rustls::RootCertStore;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::WebPkiClientVerifier;
-use rustls::RootCertStore;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::sync::{Mutex, Notify, mpsc};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
 
@@ -102,19 +102,13 @@ impl TlsBackendConfig {
         _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
         let client_auth = match (&self.client_ca, self.require_client_cert) {
-            (Some(ca_store), true) => {
-                let verifier = WebPkiClientVerifier::builder(Arc::new(ca_store.clone()))
-                    .build()
-                    .map_err(|e| Error::Config(format!("Failed to build client verifier: {e}")))?;
-                verifier
-            },
-            (Some(ca_store), false) => {
-                let verifier = WebPkiClientVerifier::builder(Arc::new(ca_store.clone()))
-                    .allow_unauthenticated()
-                    .build()
-                    .map_err(|e| Error::Config(format!("Failed to build client verifier: {e}")))?;
-                verifier
-            },
+            (Some(ca_store), true) => WebPkiClientVerifier::builder(Arc::new(ca_store.clone()))
+                .build()
+                .map_err(|e| Error::Config(format!("Failed to build client verifier: {e}")))?,
+            (Some(ca_store), false) => WebPkiClientVerifier::builder(Arc::new(ca_store.clone()))
+                .allow_unauthenticated()
+                .build()
+                .map_err(|e| Error::Config(format!("Failed to build client verifier: {e}")))?,
             (None, _) => WebPkiClientVerifier::no_client_auth(),
         };
 

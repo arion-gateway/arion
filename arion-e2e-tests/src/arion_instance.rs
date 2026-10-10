@@ -539,11 +539,7 @@ impl ArionInstance {
 
     #[must_use]
     pub fn is_running(&mut self) -> bool {
-        if let Some(ref mut process) = self.process {
-            matches!(process.try_wait(), Ok(None))
-        } else {
-            false
-        }
+        if let Some(ref mut process) = self.process { matches!(process.try_wait(), Ok(None)) } else { false }
     }
 
     pub fn shutdown(mut self) {
@@ -551,10 +547,10 @@ impl ArionInstance {
 
         if let Some(mut process) = self.process.take() {
             info!("Shutting down Arion instance");
-            if let Err(e) = process.kill() {
-                if e.kind() != std::io::ErrorKind::InvalidInput {
-                    error!("Failed to kill arion process during shutdown: {e}");
-                }
+            if let Err(e) = process.kill()
+                && e.kind() != std::io::ErrorKind::InvalidInput
+            {
+                error!("Failed to kill arion process during shutdown: {e}");
             }
             if let Err(e) = process.wait() {
                 error!("Failed to wait for arion process during shutdown: {e}");
@@ -598,10 +594,10 @@ impl Drop for ArionInstance {
             }
         }
 
-        if self.cleanup_config {
-            if let Err(e) = std::fs::remove_file(&self.config_path) {
-                warn!(?e, path = ?self.config_path, "Failed to remove config file");
-            }
+        if self.cleanup_config
+            && let Err(e) = std::fs::remove_file(&self.config_path)
+        {
+            warn!(?e, path = ?self.config_path, "Failed to remove config file");
         }
     }
 }

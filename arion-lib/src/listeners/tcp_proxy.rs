@@ -23,23 +23,25 @@ use {
     crate::access_log::Target,
     crate::event_error::{ConnectionTerminationDetails, ResponseCodeDetails, UpstreamTransportEventError},
     crate::with_access_log,
+    arion_format::LogFormatter,
     arion_format::context::{FinishContext, InitContext, SocketAddrContext, TcpContext, WireContext},
     arion_format::types::ResponseFlags,
-    arion_format::LogFormatter,
     std::time::Instant,
 };
 
 #[cfg(feature = "metrics")]
 use crate::utils::instrumented_stream::HasMetrics;
 use crate::{
+    AsyncInstrumentedStream, Result,
     clusters::clusters_manager::{self, RoutingContext},
     listeners::metadata::DownstreamMetadata,
-    with_metric, AsyncInstrumentedStream, Result,
+    with_metric,
 };
 use arion_configuration::config::{
     access_log::AccessLog, cluster::ClusterSpecifier as ClusterSpecifierConfig,
     network_filters::tcp_proxy::TcpProxy as TcpProxyConfig,
 };
+use arion_interner::InternedStr;
 use triomphe::Arc;
 
 #[cfg(feature = "metrics")]
@@ -54,7 +56,7 @@ use tracing::error;
 
 #[derive(Debug, Clone)]
 pub struct TcpProxy {
-    pub listener_name: &'static str,
+    pub listener_name: InternedStr,
     pub filterchain_id: u64,
     cluster: ClusterSpecifierConfig,
     pub access_log: Vec<AccessLog>,
@@ -62,7 +64,7 @@ pub struct TcpProxy {
 
 #[derive(Debug, Clone)]
 pub struct TcpProxyBuilder {
-    listener_name: Option<&'static str>,
+    listener_name: Option<InternedStr>,
     filterchain_id: Option<u64>,
     tcp_proxy_config: TcpProxyConfig,
 }
@@ -75,7 +77,7 @@ impl From<TcpProxyConfig> for TcpProxyBuilder {
 
 impl TcpProxyBuilder {
     #[inline]
-    pub fn with_listener_name(self, name: &'static str) -> Self {
+    pub fn with_listener_name(self, name: InternedStr) -> Self {
         TcpProxyBuilder { listener_name: Some(name), ..self }
     }
 
@@ -86,7 +88,7 @@ impl TcpProxyBuilder {
 
     #[inline]
     pub fn build(self) -> TcpProxy {
-        let listener_name = self.listener_name.unwrap_or("listener name is not set");
+        let listener_name = self.listener_name.unwrap_or("listener name is not set".into());
         let filterchain_id = self.filterchain_id.unwrap_or(0_u64);
         let TcpProxyConfig { cluster_specifier, access_log } = self.tcp_proxy_config;
         TcpProxy { listener_name, filterchain_id, access_log, cluster: cluster_specifier }
@@ -119,7 +121,7 @@ impl TcpProxy {
 
         let cluster_id = clusters_manager::resolve_cluster(cluster_selector, None)
             .ok_or("Failed to resolve cluster from specifier")?;
-        let maybe_connector = clusters_manager::get_tcp_connection(cluster_id, RoutingContext::None);
+        let maybe_connector = clusters_manager::get_tcp_connection(&cluster_id, RoutingContext::None);
 
         #[allow(unused_variables, unused_mut, unused_assignments)]
         let mut bytes_received_down = 0;
@@ -192,7 +194,7 @@ impl TcpProxy {
                             add,
                             bytes_received_up,
                             shard_id,
-                            &[KeyValue::new("cluster", channel.cluster_name)]
+                            &[KeyValue::new("cluster", channel.cluster_name.as_str())]
                         );
 
                         with_metric!(
@@ -200,7 +202,7 @@ impl TcpProxy {
                             add,
                             bytes_sent_up,
                             shard_id,
-                            &[KeyValue::new("cluster", channel.cluster_name)]
+                            &[KeyValue::new("cluster", channel.cluster_name.as_str())]
                         );
 
                         #[cfg(feature = "metrics")]
@@ -219,9 +221,9 @@ impl TcpProxy {
                                     &[
                                         KeyValue::new(
                                             crate::metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                            user_partition_key
+                                            user_partition_key.to_string()
                                         ),
-                                        KeyValue::new("listener", metadata.listener_name)
+                                        KeyValue::new("listener", metadata.listener_name.as_str())
                                     ]
                                 );
                                 with_metric!(
@@ -232,9 +234,9 @@ impl TcpProxy {
                                     &[
                                         KeyValue::new(
                                             crate::metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                            user_partition_key
+                                            user_partition_key.to_string()
                                         ),
-                                        KeyValue::new("listener", metadata.listener_name)
+                                        KeyValue::new("listener", metadata.listener_name.as_str())
                                     ]
                                 );
                             }
@@ -250,7 +252,7 @@ impl TcpProxy {
                                     upstream_local_addr: maybe_upstream_local_addr,
                                     upstream_peer_addr: maybe_upstream_peer_addr,
                                 },
-                                cluster_name: channel.cluster_name,
+                                cluster_name: channel.cluster_name.as_str(),
                             }
                         );
 
@@ -264,7 +266,7 @@ impl TcpProxy {
                             if let Some(tcp_error) = e.upstream_context() {
                                 maybe_upstream_peer_addr = tcp_error.upstream_addr;
                                 response_flags = tcp_error.response_flags;
-                                cluster_name = tcp_error.cluster_name;
+                                cluster_name = tcp_error.cluster_name.as_str();
                             } else {
                                 // no UpstreamConnection in the error chain (e.g. internal listener failure)
                                 maybe_upstream_peer_addr = None;
@@ -311,7 +313,7 @@ impl TcpProxy {
                                 upstream_local_addr: None,
                                 upstream_peer_addr: None,
                             },
-                            cluster_name: &cluster_selector.name(),
+                            cluster_name: cluster_selector.name(),
                         }
                     )
                 };
@@ -328,9 +330,11 @@ impl TcpProxy {
                 bytes_received: bytes_received_down,
                 bytes_sent: bytes_sent_down,
                 response_flags,
-                upstream_transport_failure_reason: maybe_upstream_transport_failure_reason.as_ref().map(|x| x.0),
-                response_code_details: maybe_response_code_details.as_ref().map(|x| x.0),
-                connection_termination_details: maybe_connection_termination_details.as_ref().map(|x| x.0),
+                upstream_transport_failure_reason: maybe_upstream_transport_failure_reason
+                    .as_ref()
+                    .map(|x| x.0.clone()),
+                response_code_details: maybe_response_code_details.as_ref().map(|x| x.0.clone()),
+                connection_termination_details: maybe_connection_termination_details.as_ref().map(|x| x.0.clone()),
             }
         );
 
@@ -344,7 +348,7 @@ impl TcpProxy {
         {
             use crate::access_log::log_access;
             let messages = access_loggers.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-            log_access(Target::ListenerFilterChain(self.listener_name.into(), self.filterchain_id), messages).await
+            log_access(Target::ListenerFilterChain(self.listener_name, self.filterchain_id), messages).await
         }
         res
     }

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #[link(wasm_import_module = "env")]
-extern "C" {
+unsafe extern "C" {
     /// Read the plugin configuration.
     pub fn arion_get_plugin_config(config_ptr: *mut u8, max_len: u32, written_len_ptr: *mut u32) -> i32;
 

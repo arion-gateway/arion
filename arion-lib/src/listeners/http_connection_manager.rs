@@ -42,6 +42,7 @@ mod route;
 mod upgrades;
 pub mod user_rate_limiter;
 
+use arion_interner::InternedStr;
 use smallvec::SmallVec;
 #[cfg(any(feature = "tracing", feature = "metrics", feature = "access-log"))]
 use std::sync::atomic::AtomicUsize;
@@ -54,8 +55,8 @@ use opentelemetry::KeyValue;
 
 #[cfg(feature = "tracing")]
 use {
-    crate::tracing_attributes::set_attributes_from_request,
     crate::tracing_attributes::HTTP_RESPONSE_STATUS_CODE,
+    crate::tracing_attributes::set_attributes_from_request,
     arion_tracing::{
         http_tracer::{SpanKind, SpanName},
         span_state::SpanState,
@@ -78,14 +79,14 @@ use arion_metrics::metrics::{custom::CUSTOM_METRICS, http, user};
 
 #[cfg(feature = "access-log")]
 use {
-    crate::access_log::{blocking_log_access, is_access_log_enabled, Target},
+    crate::access_log::{Target, blocking_log_access, is_access_log_enabled},
     crate::event_error::UpstreamTransportEventError,
     arion_configuration::config::access_log::AccessLog,
+    arion_format::LogFormatter,
     arion_format::context::{
         DownstreamResponseContext, FinishContext, HttpRequestDurationContext, HttpResponseDurationContext,
         InitHttpContext,
     },
-    arion_format::LogFormatter,
 };
 
 #[cfg(any(feature = "access-log", feature = "metrics"))]
@@ -94,18 +95,19 @@ use {parking_lot::Mutex, std::time::Instant};
 use ::http::HeaderValue;
 use arc_swap::ArcSwapOption;
 use arion_configuration::config::network_filters::http_connection_manager::{
-    route::{Action, RouteMatchResult},
     CodecType, ConfigSource, ConfigSourceSpecifier, HttpConnectionManager as HttpConnectionManagerConfig, RdsSpecifier,
     RouteSpecifier, UpgradeType,
+    route::{Action, RouteMatchResult},
 };
 #[cfg(feature = "metrics")]
 use arion_metrics::metrics::clusters;
 use core::time::Duration;
-use hyper::{body::Incoming, header::HOST, Request, Response, StatusCode};
+use hyper::{Request, Response, StatusCode, body::Incoming, header::HOST};
 
 use std::fmt::Write;
 
 use crate::{
+    ArionClientBody, ArionRequestBody, ArionResponseBody, ConversionContext, PolyBody, Result, RouteConfiguration,
     body::{
         instrumented_body::InstrumentedBody,
         response_flags::{BodyKind, ResponseFlags},
@@ -115,17 +117,16 @@ use crate::{
     get_shard_id,
     listeners::{
         http_connection_manager::http_modifiers::ModifiersExtractor,
-        http_filters::{per_route_http_filters, FilterDecision, FilterFactory, HttpFilter, HttpFilterValue},
+        http_filters::{FilterDecision, FilterFactory, HttpFilter, HttpFilterValue, per_route_http_filters},
         metadata::{ConnMeta, DownstreamMetadata},
         synthetic_http_response::SyntheticHttpResponse,
     },
-    with_client_span, with_metric, with_server_span, ArionClientBody, ArionRequestBody, ArionResponseBody,
-    ConversionContext, PolyBody, Result, RouteConfiguration,
+    with_client_span, with_metric, with_server_span,
 };
 
+use crate::utils::StreamMetrics;
 #[cfg(any(feature = "access-log", feature = "metrics"))]
 use crate::utils::instrumented_stream::OnFlush;
-use crate::utils::StreamMetrics;
 
 use arion_configuration::config::network_filters::{
     early_header_mutation::EarlyHeaderMutation,
@@ -139,7 +140,7 @@ use route::RouteContext;
 use smol_str::SmolStr;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::{fmt, future::Future, result::Result as StdResult, sync::Arc as StdArc};
+use std::{fmt, result::Result as StdResult, sync::Arc as StdArc};
 use triomphe::{Arc, UniqueArc};
 
 use tracing::{debug, error};
@@ -204,7 +205,7 @@ impl Write for LengthCounter {
 // =================================================================================================
 
 pub struct HttpConnectionManagerBuilder {
-    listener_name: Option<&'static str>,
+    listener_name: Option<InternedStr>,
     filterchain_id: Option<u64>,
     downstream_tls: bool,
     connection_manager: PartialHttpConnectionManager,
@@ -254,7 +255,7 @@ impl HttpConnectionManagerBuilder {
     }
 
     #[inline]
-    pub fn with_listener_name(self, name: &'static str) -> Self {
+    pub fn with_listener_name(self, name: InternedStr) -> Self {
         HttpConnectionManagerBuilder { listener_name: Some(name), ..self }
     }
 
@@ -391,7 +392,7 @@ impl RoutingState {
 
 #[derive(Debug)]
 pub struct HttpConnectionManager {
-    pub listener_name: &'static str,
+    pub listener_name: InternedStr,
     pub filterchain_id: u64,
     downstream_tls: bool,
     routing_state: ArcSwapOption<RoutingState>,
@@ -463,7 +464,7 @@ pub struct TransactionState {
     flags: ResponseFlags,
     event: Option<EventKind>,
     pub upstream_start_instant: Option<std::time::Instant>,
-    pub upstream_cluster_name: Option<&'static str>,
+    pub upstream_cluster_name: Option<InternedStr>,
     #[cfg(feature = "access-log")]
     pub(crate) loggers: Option<Box<[arion_format::LogFormatter]>>,
 }
@@ -498,13 +499,13 @@ thread_local! {
 }
 
 #[derive(Debug)]
-pub struct PooledTxCtx(Option<Arc<TransactionContext>>);
+pub struct PooledTxnCtx(Option<Arc<TransactionContext>>);
 
-impl PooledTxCtx {
+impl PooledTxnCtx {
     #[allow(clippy::too_many_arguments)]
     pub fn acquire(
         request_id: Option<RequestId>,
-        user_partition_key: Option<&'static str>,
+        user_partition_key: Option<SmolStr>,
         thread_id: ShardId,
         #[cfg(feature = "access-log")] access_log: &[AccessLog],
         #[cfg(feature = "tracing")] trace_ctx: Option<TraceContext>,
@@ -546,20 +547,20 @@ impl PooledTxCtx {
     }
 }
 
-impl Clone for PooledTxCtx {
+impl Clone for PooledTxnCtx {
     #[inline]
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-impl Default for PooledTxCtx {
+impl Default for PooledTxnCtx {
     fn default() -> Self {
         Self(Some(Arc::new(TransactionContext::default())))
     }
 }
 
-impl std::ops::Deref for PooledTxCtx {
+impl std::ops::Deref for PooledTxnCtx {
     type Target = TransactionContext;
 
     #[inline]
@@ -568,18 +569,18 @@ impl std::ops::Deref for PooledTxCtx {
     }
 }
 
-impl Drop for PooledTxCtx {
+impl Drop for PooledTxnCtx {
     #[inline]
     fn drop(&mut self) {
-        if let Some(arc) = self.0.take() {
-            if let Ok(unique) = Arc::try_unique(arc) {
-                TX_CONTEXT_POOL.with(|pool| {
-                    let mut pool = pool.borrow_mut();
-                    if pool.len() < 1024 {
-                        pool.push(unique);
-                    }
-                });
-            }
+        if let Some(arc) = self.0.take()
+            && let Ok(unique) = Arc::try_unique(arc)
+        {
+            TX_CONTEXT_POOL.with(|pool| {
+                let mut pool = pool.borrow_mut();
+                if pool.len() < 1024 {
+                    pool.push(unique);
+                }
+            });
         }
     }
 }
@@ -592,7 +593,7 @@ pub struct TransactionContext {
     start_instant: std::time::Instant,
     request_id: Option<RequestId>,
     #[allow(dead_code)]
-    pub user_partition_key: Option<&'static str>,
+    pub user_partition_key: Option<SmolStr>,
     shard_id: ShardId,
     #[cfg(feature = "tracing")]
     trace_ctx: Option<TraceContext>,
@@ -661,7 +662,7 @@ impl TransactionContext {
     pub fn reset(
         &mut self,
         request_id: Option<RequestId>,
-        user_partition_key: Option<&'static str>,
+        user_partition_key: Option<SmolStr>,
         thread_id: ShardId,
         #[cfg(feature = "access-log")] access_log: &[AccessLog],
         #[cfg(feature = "tracing")] trace_ctx: Option<TraceContext>,
@@ -707,7 +708,7 @@ impl TransactionContext {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         request_id: Option<RequestId>,
-        user_partition_key: Option<&'static str>,
+        user_partition_key: Option<SmolStr>,
         thread_id: ShardId,
         #[cfg(feature = "access-log")] access_log: &[AccessLog],
         #[cfg(feature = "tracing")] trace_ctx: Option<TraceContext>,
@@ -779,7 +780,7 @@ impl TransactionContext {
     #[allow(unused_variables)]
     #[allow(clippy::too_many_lines)]
     #[allow(clippy::let_unit_value)]
-    fn trace_status_code(&self, res: &Result<Response<ArionClientBody>>, listener_name: &'static str) {
+    fn trace_status_code(&self, res: &Result<Response<ArionClientBody>>, listener_name: InternedStr) {
         if let Ok(response) = &res {
             let status_code = response.status().as_u16();
 
@@ -787,12 +788,13 @@ impl TransactionContext {
                 .set_attribute(KeyValue::new(HTTP_RESPONSE_STATUS_CODE, i64::from(status_code))));
 
             #[cfg(feature = "metrics")]
-            let listener_attr = [KeyValue::new("listener", listener_name)];
+            let listener_attr = [KeyValue::new("listener", listener_name.as_str())];
 
             #[cfg(feature = "metrics")]
             let user_attrs = self
                 .user_partition_key
-                .map(|key| [KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), key)]);
+                .as_ref()
+                .map(|key| [KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), key.to_string())]);
 
             #[cfg(feature = "metrics")]
             if let Some(ref attrs) = user_attrs {
@@ -875,7 +877,13 @@ impl TransactionContext {
                 },
             }
         } else {
-            with_metric!(http::DOWNSTREAM_RQ_5XX, add, 1, self.shard_id(), &[KeyValue::new("listener", listener_name)]);
+            with_metric!(
+                http::DOWNSTREAM_RQ_5XX,
+                add,
+                1,
+                self.shard_id(),
+                &[KeyValue::new("listener", listener_name.as_str())]
+            );
 
             with_server_span!(self.span_state, |srv_span: &mut BoxedSpan| {
                 srv_span.set_attribute(KeyValue::new(HTTP_RESPONSE_STATUS_CODE, 500));
@@ -913,25 +921,25 @@ impl HttpPipelineSvc {
 
         if ctx.conn.stream_metrics.inc_requests() == 0 {
             #[cfg(feature = "metrics")]
-            if let Some(user_partition_key) = ctx.tx.user_partition_key {
+            if let Some(user_partition_key) = ctx.txn.user_partition_key.as_ref() {
                 let user_attr_name = metrics::USER_KEY.attribute_name().unwrap_or("user");
                 with_metric!(
                     user::CONNECTIONS,
                     add,
                     1,
-                    ctx.tx.shard_id,
-                    &[KeyValue::new(user_attr_name, user_partition_key)]
+                    ctx.txn.shard_id,
+                    &[KeyValue::new(user_attr_name, user_partition_key.to_string())]
                 );
                 with_metric!(
                     user::CONNECTIONS_ACTIVE,
                     add,
                     1,
-                    ctx.tx.shard_id,
-                    &[KeyValue::new(user_attr_name, user_partition_key)]
+                    ctx.txn.shard_id,
+                    &[KeyValue::new(user_attr_name, user_partition_key.to_string())]
                 );
 
                 // store the user_partition_key to decrement CONNECTIONS_ACTIVE later, when the stream is closed.
-                ctx.conn.stream_metrics.set_user_partition_key(user_partition_key);
+                ctx.conn.stream_metrics.set_user_partition_key(user_partition_key.clone());
             }
         }
 
@@ -956,7 +964,7 @@ impl HttpPipelineSvc {
             // set the request id on the response...
             manager
                 .request_id_handler
-                .apply_to(&mut response, ctx.tx.request_id.as_ref().and_then(|x| x.propagate_ref()));
+                .apply_to(&mut response, ctx.txn.request_id.as_ref().and_then(|x| x.propagate_ref()));
 
             #[cfg(feature = "access-log")]
             let (initial_flags, initial_event) = {
@@ -968,7 +976,7 @@ impl HttpPipelineSvc {
             {
                 use crate::with_access_log;
 
-                ctx.tx.with_loggers(|loggers| {
+                ctx.txn.with_loggers(|loggers| {
                     with_access_log!(
                         loggers,
                         DownstreamResponseContext {
@@ -980,7 +988,7 @@ impl HttpPipelineSvc {
             };
 
             #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
-            let trans_ctx = ctx.tx;
+            let trans_ctx = ctx.txn;
             let stream_metrics = ctx.conn.stream_metrics;
 
             response.map(move |body| {
@@ -1010,9 +1018,9 @@ impl HttpPipelineSvc {
                                         record,
                                         elapsed_ms,
                                         shard_id,
-                                        &[opentelemetry::KeyValue::new("cluster", cluster)]
+                                        &[opentelemetry::KeyValue::new("cluster", cluster.as_str())]
                                     );
-                                    if let Some(user_key) = trans_ctx.user_partition_key {
+                                    if let Some(user_key) = trans_ctx.user_partition_key.as_ref() {
                                         let user_attr_name =
                                             crate::metrics::USER_KEY.attribute_name().unwrap_or("user");
                                         crate::with_histogram!(
@@ -1020,7 +1028,7 @@ impl HttpPipelineSvc {
                                             record,
                                             elapsed_ms,
                                             shard_id,
-                                            &[opentelemetry::KeyValue::new(user_attr_name, user_key)]
+                                            &[opentelemetry::KeyValue::new(user_attr_name, user_key.to_string())]
                                         );
                                     }
                                 }
@@ -1058,10 +1066,10 @@ impl HttpPipelineSvc {
                         }
 
                         #[cfg(feature = "tracing")]
-                        if trans_ctx.trans_phase.is_complete() {
-                            if let Some(span) = trans_ctx.span_state.as_ref() {
-                                span.end();
-                            }
+                        if trans_ctx.trans_phase.is_complete()
+                            && let Some(span) = trans_ctx.span_state.as_ref()
+                        {
+                            span.end();
                         }
                     },
                 )
@@ -1251,12 +1259,11 @@ impl RequestHandler<Request<ArionRequestBody>, &HttpConnectionManager> for &Rout
                         let mut attrs = SmallVec::<[KeyValue; 2]>::new();
                         if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
                             for key in custom_keys {
-                                if let Some(source) = key.source() {
-                                    if let Some(id) =
+                                if let Some(source) = key.source()
+                                    && let Some(id) =
                                         metrics::extract_custom_partition_key(response.headers(), Some(source))
-                                    {
-                                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
-                                    }
+                                {
+                                    attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
                                 }
                             }
                         }
@@ -1268,7 +1275,7 @@ impl RequestHandler<Request<ArionRequestBody>, &HttpConnectionManager> for &Rout
                     }
 
                     #[cfg(feature = "access-log")]
-                    ctx.tx.with_loggers(|loggers| {
+                    ctx.txn.with_loggers(|loggers| {
                         if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
                             crate::access_log::AccessLogHook::IncomingResponse,
                             response.headers(),
@@ -1388,23 +1395,23 @@ fn apply_mutations_on_response<B>(
 #[derive(Clone, Debug, Default)]
 pub struct RequestCtx {
     pub conn: ConnMeta,
-    pub tx: PooledTxCtx,
+    pub txn: PooledTxnCtx,
 }
 
 impl RequestCtx {
     #[inline]
-    pub fn new(conn: ConnMeta, tx: PooledTxCtx) -> Self {
-        Self { conn, tx }
+    pub fn new(conn: ConnMeta, txn: PooledTxnCtx) -> Self {
+        Self { conn, txn }
     }
 
     #[inline]
     pub(crate) fn propagated_request_id(&self) -> Option<&HeaderValue> {
-        self.tx.propagated_request_id()
+        self.txn.propagated_request_id()
     }
 
     #[inline]
     pub(crate) fn begin_upstream_span(&self, span_name: &str) -> ScopedClientSpan {
-        self.tx.begin_upstream_span(span_name)
+        self.txn.begin_upstream_span(span_name)
     }
 }
 
@@ -1521,7 +1528,7 @@ impl TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
         #[allow(clippy::let_unit_value)]
         let shard_id = get_shard_id!();
 
-        let trans_ctx = PooledTxCtx::acquire(
+        let trans_ctx = PooledTxnCtx::acquire(
             request_id,
             user_partition_key,
             shard_id,
@@ -1546,7 +1553,7 @@ impl TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
         let response = self.inner.call(manager, http_req).await;
 
         trans_ctx.trace_status_code(&response, listener_name);
-        let response = if let Err(err) = response {
+        if let Err(err) = response {
             error!("Error during handling HTTP transaction: {}", err);
             let msg = err.to_string();
             let event_error = err.as_upstream_error().cloned().unwrap_or_else(|| UpstreamError::Other(msg.clone()));
@@ -1559,8 +1566,7 @@ impl TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
             Ok(response.map(|body| InstrumentedBody::new(BodyKind::Response, body, None, |_, _, _, _| {})))
         } else {
             response
-        };
-        response
+        }
     }
 }
 
@@ -1586,13 +1592,19 @@ impl TransactionSvc<HttpPipelineSvc> {
         let listener_name = manager.listener_name;
         let routing_state_guard = manager.routing_state.load();
 
-        with_metric!(http::DOWNSTREAM_RQ_TOTAL, add, 1, ctx.tx.shard_id(), &[KeyValue::new("listener", listener_name)]);
+        with_metric!(
+            http::DOWNSTREAM_RQ_TOTAL,
+            add,
+            1,
+            ctx.txn.shard_id(),
+            &[KeyValue::new("listener", listener_name.as_str())]
+        );
         with_metric!(
             http::DOWNSTREAM_RQ_ACTIVE,
             add,
             1,
-            ctx.tx.shard_id(),
-            &[KeyValue::new("listener", listener_name)]
+            ctx.txn.shard_id(),
+            &[KeyValue::new("listener", listener_name.as_str())]
         );
 
         #[cfg(feature = "metrics")]
@@ -1600,10 +1612,10 @@ impl TransactionSvc<HttpPipelineSvc> {
             let mut attrs = SmallVec::<[KeyValue; 2]>::new();
             if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
                 for key in custom_keys {
-                    if let Some(source) = key.source() {
-                        if let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source)) {
-                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
-                        }
+                    if let Some(source) = key.source()
+                        && let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source))
+                    {
+                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
                     }
                 }
             }
@@ -1611,7 +1623,7 @@ impl TransactionSvc<HttpPipelineSvc> {
         }
 
         #[cfg(feature = "access-log")]
-        ctx.tx.with_loggers(|loggers| {
+        ctx.txn.with_loggers(|loggers| {
             if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
                 crate::access_log::AccessLogHook::IncomingRequest,
                 request.headers(),
@@ -1622,33 +1634,33 @@ impl TransactionSvc<HttpPipelineSvc> {
         });
 
         #[allow(unused_variables)]
-        let shard_id = ctx.tx.shard_id();
+        let shard_id = ctx.txn.shard_id();
         scopeguard::defer! {
-            with_metric!(http::DOWNSTREAM_RQ_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
+            with_metric!(http::DOWNSTREAM_RQ_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name.as_str())]);
         }
 
         let req_timeout = manager.request_timeout;
         let filterchain_id = manager.filterchain_id;
 
-        eval_http_init_context(&request, &ctx.tx, Some(ctx.conn.downstream.as_ref()));
+        eval_http_init_context(&request, &ctx.txn, Some(ctx.conn.downstream.as_ref()));
 
         let Some(routing_state) = routing_state_guard.as_deref() else {
             return Ok(handle_route_conf_not_found(
                 request.version(),
-                &ctx.tx,
+                &ctx.txn,
                 Some(&ctx.conn.stream_metrics),
                 listener_name,
-                ctx.tx.user_partition_key,
+                ctx.txn.user_partition_key.as_ref(),
                 filterchain_id,
             ));
         };
 
         if let Some(response_error) = reject_request_if_invalid(
             &request,
-            &ctx.tx,
+            &ctx.txn,
             Some(&ctx.conn.stream_metrics),
             listener_name,
-            ctx.tx.user_partition_key,
+            ctx.txn.user_partition_key.as_ref(),
             filterchain_id,
         ) {
             return Ok(response_error);
@@ -1656,7 +1668,7 @@ impl TransactionSvc<HttpPipelineSvc> {
 
         let stream_metrics = Arc::clone(&ctx.conn.stream_metrics);
         #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
-        let trans_ctx = ctx.tx.clone();
+        let trans_ctx = ctx.txn.clone();
         let http = HttpRequest { request, ctx }.map_body(|body| {
             let body = TimeoutBody::new(req_timeout, PolyBody::from(body));
             InstrumentedBody::new(
@@ -1703,34 +1715,34 @@ impl TransactionSvc<HttpPipelineSvc> {
                     }
 
                     #[cfg(feature = "tracing")]
-                    if trans_ctx.trans_phase.is_complete() {
-                        if let Some(span) = trans_ctx.span_state.as_ref() {
-                            span.end();
-                        }
+                    if trans_ctx.trans_phase.is_complete()
+                        && let Some(span) = trans_ctx.span_state.as_ref()
+                    {
+                        span.end();
                     }
                 },
             )
         });
 
         #[cfg(feature = "access-log")]
-        let trans_ctx_clone = http.ctx.tx.clone();
+        let trans_ctx_clone = http.ctx.txn.clone();
         let response = self.inner.call(manager, RoutedHttpRequest { http, routing_state }).await;
 
         #[cfg(feature = "metrics")]
-        if let Ok(response) = &response {
-            if let Some(custom_metrics) = CUSTOM_METRICS.get() {
-                let mut attrs = SmallVec::<[KeyValue; 2]>::new();
-                if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
-                    for key in custom_keys {
-                        if let Some(source) = key.source() {
-                            if let Some(id) = metrics::extract_custom_partition_key(response.headers(), Some(source)) {
-                                attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
-                            }
-                        }
+        if let Ok(response) = &response
+            && let Some(custom_metrics) = CUSTOM_METRICS.get()
+        {
+            let mut attrs = SmallVec::<[KeyValue; 2]>::new();
+            if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
+                for key in custom_keys {
+                    if let Some(source) = key.source()
+                        && let Some(id) = metrics::extract_custom_partition_key(response.headers(), Some(source))
+                    {
+                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
                     }
                 }
-                custom_metrics.with_headers(MetricsHook::DownstreamResponse, response.headers(), attrs.as_slice());
             }
+            custom_metrics.with_headers(MetricsHook::DownstreamResponse, response.headers(), attrs.as_slice());
         }
 
         #[cfg(feature = "access-log")]
@@ -1805,8 +1817,8 @@ struct MetricsFinishContext {
 
 #[cfg(any(feature = "access-log", feature = "metrics"))]
 pub(crate) struct HttpTxnFlush {
-    trans_ctx: PooledTxCtx,
-    listener_name: &'static str,
+    trans_ctx: PooledTxnCtx,
+    listener_name: InternedStr,
     filterchain_id: u64,
     body_bytes: u64,
     body_is_response: bool,
@@ -1833,7 +1845,7 @@ impl OnFlush for HttpTxnFlush {
         eval_http_finish_context(FinishContextParams {
             stream_metrics,
             listener_name: self.listener_name,
-            user_partition_key: self.trans_ctx.user_partition_key,
+            user_partition_key: self.trans_ctx.user_partition_key.as_ref(),
             filterchain_id: self.filterchain_id,
             bytes_received,
             bytes_sent,
@@ -1856,9 +1868,9 @@ impl OnFlush for HttpTxnFlush {
 #[cfg(any(feature = "access-log", feature = "metrics"))]
 struct FinishContextParams<'a> {
     stream_metrics: &'a StreamMetrics,
-    listener_name: &'static str,
+    listener_name: InternedStr,
     #[allow(dead_code)]
-    user_partition_key: Option<&'static str>,
+    user_partition_key: Option<&'a SmolStr>,
     #[allow(dead_code)]
     filterchain_id: u64,
     #[allow(dead_code)]
@@ -1892,7 +1904,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
                 latency.as_millis() as u64
             },
             params.m_ctx.shard_id,
-            &[KeyValue::new(user_attr_name, user_partition_key)]
+            &[KeyValue::new(user_attr_name, user_partition_key.to_string())]
         );
     }
 
@@ -1947,7 +1959,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
         add,
         wire_bytes_received,
         shard_id,
-        &[KeyValue::new("listener", params.listener_name)]
+        &[KeyValue::new("listener", params.listener_name.as_str())]
     );
 
     with_metric!(
@@ -1955,7 +1967,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
         add,
         wire_bytes_sent,
         shard_id,
-        &[KeyValue::new("listener", params.listener_name)]
+        &[KeyValue::new("listener", params.listener_name.as_str())]
     );
 
     #[cfg(feature = "metrics")]
@@ -1966,27 +1978,30 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
             add,
             wire_bytes_received,
             shard_id,
-            &[KeyValue::new(user_attr_name, user_partition_key), KeyValue::new("listener", params.listener_name)]
+            &[
+                KeyValue::new(user_attr_name, user_partition_key.to_string()),
+                KeyValue::new("listener", params.listener_name.as_str())
+            ]
         );
         with_metric!(
             user::BYTES_RX,
             add,
             wire_bytes_sent,
             shard_id,
-            &[KeyValue::new(user_attr_name, user_partition_key), KeyValue::new("listener", params.listener_name)]
+            &[
+                KeyValue::new(user_attr_name, user_partition_key.to_string()),
+                KeyValue::new("listener", params.listener_name.as_str())
+            ]
         );
     }
 
     #[cfg(feature = "access-log")]
-    if let Some(loggers) = loggers {
-        if !loggers.is_empty() {
-            with_access_log!(&mut *loggers, WireContext { wire_bytes_received, wire_bytes_sent });
-            let messages = loggers.iter_mut().map(|l| l.clone().into_message()).collect::<Vec<_>>();
-            _ = blocking_log_access(
-                Target::ListenerFilterChain(params.listener_name.into(), params.filterchain_id),
-                messages,
-            );
-        }
+    if let Some(loggers) = loggers
+        && !loggers.is_empty()
+    {
+        with_access_log!(&mut *loggers, WireContext { wire_bytes_received, wire_bytes_sent });
+        let messages = loggers.iter_mut().map(|l| l.clone().into_message()).collect::<Vec<_>>();
+        _ = blocking_log_access(Target::ListenerFilterChain(params.listener_name, params.filterchain_id), messages);
     }
 }
 
@@ -1995,22 +2010,28 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
 #[allow(unused_variables)]
 fn instrument_early_failure_response(
     response: Response<crate::ArionResponseBody>,
-    trans_ctx: &PooledTxCtx,
+    trans_ctx: &PooledTxnCtx,
     stream_metrics: Option<&Arc<StreamMetrics>>,
-    listener_name: &'static str,
-    user_partition_key: Option<&'static str>,
+    listener_name: InternedStr,
+    user_partition_key: Option<&SmolStr>,
     filterchain_id: u64,
 ) -> Response<ArionClientBody> {
     #[cfg(feature = "access-log")]
     let first_byte_instant = Instant::now();
 
-    with_metric!(http::DOWNSTREAM_RQ_4XX, add, 1, trans_ctx.shard_id(), &[KeyValue::new("listener", listener_name)]);
+    with_metric!(
+        http::DOWNSTREAM_RQ_4XX,
+        add,
+        1,
+        trans_ctx.shard_id(),
+        &[KeyValue::new("listener", listener_name.as_str())]
+    );
 
     #[cfg(feature = "tracing")]
-    if let Some(state) = trans_ctx.span_state.as_ref() {
-        if let Some(ref mut span) = *state.server_span.lock() {
-            span.set_attribute(KeyValue::new(HTTP_RESPONSE_STATUS_CODE, 400));
-        }
+    if let Some(state) = trans_ctx.span_state.as_ref()
+        && let Some(ref mut span) = *state.server_span.lock()
+    {
+        span.set_attribute(KeyValue::new(HTTP_RESPONSE_STATUS_CODE, 400));
     }
 
     #[cfg(feature = "access-log")]
@@ -2080,10 +2101,10 @@ fn instrument_early_failure_response(
                 }
 
                 #[cfg(feature = "tracing")]
-                if trans_ctx.trans_phase.is_complete() {
-                    if let Some(span) = trans_ctx.span_state.as_ref() {
-                        span.end();
-                    }
+                if trans_ctx.trans_phase.is_complete()
+                    && let Some(span) = trans_ctx.span_state.as_ref()
+                {
+                    span.end();
                 }
             },
         )
@@ -2099,10 +2120,10 @@ const MAX_URI_LENGTH: usize = 2048;
 #[allow(clippy::too_many_arguments)]
 fn reject_request_if_invalid(
     request: &Request<Incoming>,
-    trans_ctx: &PooledTxCtx,
+    trans_ctx: &PooledTxnCtx,
     stream_metrics: Option<&Arc<StreamMetrics>>,
-    listener_name: &'static str,
-    user_partition_key: Option<&'static str>,
+    listener_name: InternedStr,
+    user_partition_key: Option<&SmolStr>,
     filterchain_id: u64,
 ) -> Option<Response<crate::ArionClientBody>> {
     // check if request has no host header, or if it has multiple ones (invalid for http1.1)
@@ -2175,10 +2196,10 @@ fn reject_request_if_invalid(
 #[allow(clippy::too_many_arguments)]
 fn handle_route_conf_not_found(
     version: ::http::Version,
-    trans_ctx: &PooledTxCtx,
+    trans_ctx: &PooledTxnCtx,
     stream_metrics: Option<&Arc<StreamMetrics>>,
-    listener_name: &'static str,
-    user_partition_key: Option<&'static str>,
+    listener_name: InternedStr,
+    user_partition_key: Option<&SmolStr>,
     filterchain_id: u64,
 ) -> Response<crate::ArionClientBody> {
     // immediately return a SyntheticHttpResponse, and calculate the first byte instant

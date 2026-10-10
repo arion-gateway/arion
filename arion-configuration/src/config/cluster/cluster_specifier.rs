@@ -18,34 +18,34 @@
 //
 //
 
+use arion_interner::{InternedStr, StringInterner};
 use http::HeaderName;
 use serde::{Deserialize, Serialize};
-use smol_str::SmolStr;
-use std::{borrow::Cow, num::NonZeroU32};
+use std::num::NonZeroU32;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub enum ClusterSpecifier {
-    Cluster(SmolStr),
+    Cluster(InternedStr),
     WeightedCluster(Vec<WeightedClusterSpecifier>),
     #[serde(with = "http_serde_ext::header_name")]
     ClusterHeader(HeaderName),
 }
 
 impl ClusterSpecifier {
-    pub fn name(&self) -> Cow<'_, str> {
+    pub fn name(&self) -> &'static str {
         match self {
-            ClusterSpecifier::Cluster(name) => name.as_str().into(),
+            ClusterSpecifier::Cluster(name) => name.as_str(),
             ClusterSpecifier::WeightedCluster(clusters) => {
-                clusters.iter().map(|c| c.cluster.as_str()).collect::<Vec<_>>().join(",").into()
+                clusters.iter().map(|c| c.cluster.as_str()).collect::<Vec<_>>().join(",").to_static_str()
             },
-            ClusterSpecifier::ClusterHeader(name) => name.as_str().into(),
+            ClusterSpecifier::ClusterHeader(name) => name.as_str().to_static_str(),
         }
     }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct WeightedClusterSpecifier {
-    pub cluster: SmolStr,
+    pub cluster: InternedStr,
     pub weight: NonZeroU32,
 }
 
@@ -56,16 +56,16 @@ mod envoy_conversions {
     use crate::config::common::*;
     use arion_data_plane_api::envoy_data_plane_api::envoy::{
         config::route::v3::{
-            route_action::ClusterSpecifier as EnvoyClusterSpecifier,
-            weighted_cluster::ClusterWeight as EnvoyClusterWeight, WeightedCluster as EnvoyWeightedCluster,
+            WeightedCluster as EnvoyWeightedCluster, route_action::ClusterSpecifier as EnvoyClusterSpecifier,
+            weighted_cluster::ClusterWeight as EnvoyClusterWeight,
         },
         extensions::filters::network::tcp_proxy::v3::tcp_proxy::{
-            weighted_cluster::ClusterWeight as EnvoyTcpClusterWeight, ClusterSpecifier as EnvoyTcpClusterSpecifier,
-            WeightedCluster as EnvoyTcpWeightedCluster,
+            ClusterSpecifier as EnvoyTcpClusterSpecifier, WeightedCluster as EnvoyTcpWeightedCluster,
+            weighted_cluster::ClusterWeight as EnvoyTcpClusterWeight,
         },
     };
+    use arion_interner::StringInterner;
     use http::HeaderName;
-    use smol_str::{SmolStr, ToSmolStr};
 
     impl TryFrom<EnvoyWeightedCluster> for ClusterSpecifier {
         type Error = GenericError;
@@ -91,7 +91,9 @@ mod envoy_conversions {
         type Error = GenericError;
         fn try_from(value: EnvoyClusterSpecifier) -> Result<Self, Self::Error> {
             match value {
-                EnvoyClusterSpecifier::Cluster(cluster) => required!(cluster).map(SmolStr::from).map(Self::Cluster),
+                EnvoyClusterSpecifier::Cluster(cluster) => {
+                    required!(cluster).map(|name| Self::Cluster(name.to_interned_str()))
+                },
                 EnvoyClusterSpecifier::WeightedClusters(envoy) => envoy.try_into(),
                 EnvoyClusterSpecifier::ClusterHeader(name) => {
                     let t = required!(name).map(|n| HeaderName::from_bytes(n.as_bytes()))??;
@@ -142,7 +144,7 @@ mod envoy_conversions {
                     .try_into()
                     .map_err(|_e| GenericError::from_msg("cluster-weight has to be > 0"))
                     .with_node("weight")?;
-                Ok(Self { cluster: cluster.to_smolstr(), weight })
+                Ok(Self { cluster: cluster.to_interned_str(), weight })
             })()
             .with_name(cluster)
         }
@@ -179,7 +181,7 @@ mod envoy_conversions {
         fn try_from(value: EnvoyTcpClusterWeight) -> Result<Self, Self::Error> {
             let EnvoyTcpClusterWeight { name, weight, metadata_match } = value;
             unsupported_field!(metadata_match)?;
-            let cluster = required!(name)?.into();
+            let cluster = required!(name)?.to_interned_str();
             let weight = weight
                 .try_into()
                 .map_err(|_e| GenericError::from_msg("cluster-weight has to be > 0"))

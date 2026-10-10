@@ -14,6 +14,7 @@
 
 use crate::body::channel_body::FrameBridge;
 use crate::event_error::EventFailure;
+use crate::listeners::http_connection_manager::ext_proc::EnvoyHeaderMap;
 use crate::listeners::http_connection_manager::ext_proc::kind;
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_trailer_mutations;
 use crate::listeners::http_connection_manager::ext_proc::r#override::{
@@ -21,7 +22,6 @@ use crate::listeners::http_connection_manager::ext_proc::r#override::{
 };
 use crate::listeners::http_connection_manager::ext_proc::status::{ProcessingStatus, ReadyStatus};
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
-use crate::listeners::http_connection_manager::ext_proc::EnvoyHeaderMap;
 use crate::transport::ServedEndpoint;
 use crate::utils::truncated_debug::TruncatedDebug;
 use crate::{body::response_flags::ResponseFlags, listeners::synthetic_http_response::SyntheticHttpResponse};
@@ -36,11 +36,11 @@ use arion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::{H
 use arion_data_plane_api::envoy_data_plane_api::envoy::{
     extensions::filters::http::ext_proc::v3::ProcessingMode as EnvoyProcessingMode,
     service::ext_proc::v3::{
-        body_mutation::Mutation, processing_request::Request as ProcessingRequestType, BodyResponse, HeadersResponse,
-        HttpBody, HttpHeaders, ProcessingRequest, TrailersResponse,
+        BodyResponse, HeadersResponse, HttpBody, HttpHeaders, ProcessingRequest, TrailersResponse,
+        body_mutation::Mutation, processing_request::Request as ProcessingRequestType,
     },
 };
-use arion_data_plane_api::envoy_data_plane_api::google::protobuf::{value::Kind, Struct, Value};
+use arion_data_plane_api::envoy_data_plane_api::google::protobuf::{Struct, Value, value::Kind};
 use bytes::{Bytes, BytesMut};
 use http_body::Frame;
 
@@ -447,22 +447,20 @@ impl Processing<kind::Processing, kind::RequestMsg> {
         override_mode: &OverridableGlobalModes,
     ) {
         // --- Body Mode Override ---
-        if let Ok(mode) = BodyProcessingMode::try_from(envoy_mode.request_body_mode) {
-            if allowed_override_modes.is_empty()
-                || allowed_override_modes.iter().any(|allowed| allowed.request_body_mode == mode)
-            {
-                override_mode.set_body_mode::<kind::RequestMsg>(mode);
-            }
+        if let Ok(mode) = BodyProcessingMode::try_from(envoy_mode.request_body_mode)
+            && (allowed_override_modes.is_empty()
+                || allowed_override_modes.iter().any(|allowed| allowed.request_body_mode == mode))
+        {
+            override_mode.set_body_mode::<kind::RequestMsg>(mode);
         }
 
         // --- Trailer Mode Override ---
-        if let Ok(mode) = TrailerProcessingMode::try_from(envoy_mode.request_trailer_mode) {
-            if mode != TrailerProcessingMode::Default
-                && (allowed_override_modes.is_empty()
-                    || allowed_override_modes.iter().any(|allowed| allowed.request_trailer_mode == mode))
-            {
-                override_mode.set_trailer_mode::<kind::RequestMsg>(mode);
-            }
+        if let Ok(mode) = TrailerProcessingMode::try_from(envoy_mode.request_trailer_mode)
+            && mode != TrailerProcessingMode::Default
+            && (allowed_override_modes.is_empty()
+                || allowed_override_modes.iter().any(|allowed| allowed.request_trailer_mode == mode))
+        {
+            override_mode.set_trailer_mode::<kind::RequestMsg>(mode);
         }
     }
 }
@@ -476,32 +474,29 @@ impl Processing<kind::Processing, kind::ResponseMsg> {
         override_mode: &OverridableGlobalModes,
     ) {
         // --- Header Mode Override ---
-        if let Ok(mode) = HeaderProcessingMode::try_from(envoy_mode.response_header_mode) {
-            if mode != HeaderProcessingMode::Default
-                && (allowed_override_modes.is_empty()
-                    || allowed_override_modes.iter().any(|allowed| allowed.response_header_mode == mode))
-            {
-                override_mode.set_header_mode::<kind::ResponseMsg>(mode);
-            }
+        if let Ok(mode) = HeaderProcessingMode::try_from(envoy_mode.response_header_mode)
+            && mode != HeaderProcessingMode::Default
+            && (allowed_override_modes.is_empty()
+                || allowed_override_modes.iter().any(|allowed| allowed.response_header_mode == mode))
+        {
+            override_mode.set_header_mode::<kind::ResponseMsg>(mode);
         }
 
         // --- Body Mode Override ---
-        if let Ok(mode) = BodyProcessingMode::try_from(envoy_mode.response_body_mode) {
-            if allowed_override_modes.is_empty()
-                || allowed_override_modes.iter().any(|allowed| allowed.response_body_mode == mode)
-            {
-                override_mode.set_body_mode::<kind::ResponseMsg>(mode);
-            }
+        if let Ok(mode) = BodyProcessingMode::try_from(envoy_mode.response_body_mode)
+            && (allowed_override_modes.is_empty()
+                || allowed_override_modes.iter().any(|allowed| allowed.response_body_mode == mode))
+        {
+            override_mode.set_body_mode::<kind::ResponseMsg>(mode);
         }
 
         // --- Trailer Mode Override ---
-        if let Ok(mode) = TrailerProcessingMode::try_from(envoy_mode.response_trailer_mode) {
-            if mode != TrailerProcessingMode::Default
-                && (allowed_override_modes.is_empty()
-                    || allowed_override_modes.iter().any(|allowed| allowed.response_trailer_mode == mode))
-            {
-                override_mode.set_trailer_mode::<kind::ResponseMsg>(mode);
-            }
+        if let Ok(mode) = TrailerProcessingMode::try_from(envoy_mode.response_trailer_mode)
+            && mode != TrailerProcessingMode::Default
+            && (allowed_override_modes.is_empty()
+                || allowed_override_modes.iter().any(|allowed| allowed.response_trailer_mode == mode))
+        {
+            override_mode.set_trailer_mode::<kind::ResponseMsg>(mode);
         }
     }
 }
@@ -635,7 +630,9 @@ impl<Msg: kind::MessageKind + OverridableModeSelector> Processing<kind::Processi
                 }
             }
         } else {
-            unreachable!("headers_response.response should never be None (prost artifact), but clippy doesn't allow unwrapping the option");
+            unreachable!(
+                "headers_response.response should never be None (prost artifact), but clippy doesn't allow unwrapping the option"
+            );
         }
 
         *timeout_active = false;
@@ -712,10 +709,10 @@ impl<Msg: kind::MessageKind + OverridableModeSelector> Processing<kind::Processi
                 }
             } else {
                 debug!(target: "ext_proc", "handle_body_response: no chunk replacement requested");
-                if !self.inflight_frames.is_empty() {
-                    if let Some(frame) = self.inflight_frames.drain(0..1).next() {
-                        _ = self.frame_bridge.inject_frame(Ok(frame), proof).await;
-                    }
+                if !self.inflight_frames.is_empty()
+                    && let Some(frame) = self.inflight_frames.drain(0..1).next()
+                {
+                    _ = self.frame_bridge.inject_frame(Ok(frame), proof).await;
                 }
             }
 
@@ -738,7 +735,9 @@ impl<Msg: kind::MessageKind + OverridableModeSelector> Processing<kind::Processi
             return None;
         }
 
-        unreachable!("body_response.response should never be None (prost artifact), but clippy doesn't allow unwrapping the option");
+        unreachable!(
+            "body_response.response should never be None (prost artifact), but clippy doesn't allow unwrapping the option"
+        );
     }
 
     #[inline]

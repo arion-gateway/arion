@@ -18,9 +18,9 @@
 //
 //
 
-use crate::config::{common::envoy_conversions::IsUsed, unsupported_field, GenericError};
+use crate::config::{GenericError, common::envoy_conversions::IsUsed, unsupported_field};
 use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::{
-    grpc_service::GoogleGrpc as EnvoyGoogleGrpc, GrpcService as EnvoyGrpcService,
+    GrpcService as EnvoyGrpcService, grpc_service::GoogleGrpc as EnvoyGoogleGrpc,
 };
 use serde::{Deserialize, Serialize};
 

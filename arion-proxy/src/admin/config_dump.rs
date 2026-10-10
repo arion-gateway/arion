@@ -26,9 +26,9 @@ use arion_configuration::config::{
     network_filters::http_connection_manager::RouteSpecifier,
     secret::{Secret, Type},
 };
-use arion_lib::{clusters::clusters_manager::get_all_clusters, ConfigDump};
+use arion_lib::{ConfigDump, clusters::clusters_manager::get_all_clusters};
 use axum::{extract::State, response::Json};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::admin::query_listener_configuration;
 
@@ -105,16 +105,16 @@ mod config_dump_tests {
     use tokio::sync::mpsc;
 
     use arion_configuration::config::{
+        Bootstrap, Listener,
         listener::ListenerType,
         network_filters::http_connection_manager::{HeaderModifiersAdd, HeaderModifiersRemove},
         secret::{TlsCertificate, ValidationContext},
-        Bootstrap, Listener,
     };
     use parking_lot::RwLock;
     use smol_str::SmolStr;
 
     use arion_data_plane_api::envoy_data_plane_api::envoy::{
-        config::core::v3::{data_source::Specifier::InlineString, DataSource as EnvoyDataSource},
+        config::core::v3::{DataSource as EnvoyDataSource, data_source::Specifier::InlineString},
         extensions::transport_sockets::tls::v3::{
             CertificateValidationContext as EnvoyCertificateValidationContext, TlsCertificate as EnvoyTlsCertificate,
         },
@@ -197,8 +197,8 @@ mod config_dump_tests {
     #[allow(clippy::indexing_slicing)]
     async fn config_dump_bootstrap() {
         use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::{
-            address::Address as EnvoyAddress, socket_address::PortSpecifier, Address as EnvoyOuterAddress,
-            SocketAddress as EnvoySocketAddress,
+            Address as EnvoyOuterAddress, SocketAddress as EnvoySocketAddress, address::Address as EnvoyAddress,
+            socket_address::PortSpecifier,
         };
         use serde_json::json;
         let envoy_sock_addr = EnvoySocketAddress {
@@ -237,8 +237,8 @@ mod config_dump_tests {
         use arion_configuration::config::{
             listener::{FilterChain, FilterChainMatch, Listener, MainFilter},
             network_filters::http_connection_manager::{
-                route::{Action, RouteMatch},
                 CodecType, HttpConnectionManager, Route, RouteConfiguration, RouteSpecifier, VirtualHost, XffSettings,
+                route::{Action, RouteMatch},
             },
         };
         use smol_str::SmolStr;
@@ -248,7 +248,7 @@ mod config_dump_tests {
             time::Duration,
         };
         let listener = Listener {
-            name: SmolStr::new_static("listener1"),
+            name: "listener1".into(),
             listener_type: ListenerType::Socket {
                 address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080),
                 bind_device: None,
@@ -348,11 +348,10 @@ mod config_dump_tests {
             },
             core::Address,
         };
-        use smol_str::SmolStr;
         use std::{num::NonZeroU32, time::Duration};
         let endpoint_addr = Address::Socket("127.0.0.1".to_owned(), 9000);
         let cluster = Cluster {
-            name: SmolStr::new_static("cluster1"),
+            name: "cluster1".into(),
             discovery_settings: ClusterDiscoveryType::Static(ClusterLoadAssignment {
                 cluster_name: "cluster1".into(),
                 endpoints: vec![LocalityLbEndpoints {
@@ -404,11 +403,10 @@ mod config_dump_tests {
             },
             core::Address,
         };
-        use smol_str::SmolStr;
         use std::{num::NonZeroU32, time::Duration};
         let endpoint_addr = Address::Socket("127.0.0.1".to_owned(), 9000);
         let cluster = Cluster {
-            name: SmolStr::new_static("cluster1"),
+            name: "cluster1".into(),
             discovery_settings: ClusterDiscoveryType::Static(ClusterLoadAssignment {
                 cluster_name: "cluster1".into(),
                 endpoints: vec![LocalityLbEndpoints {

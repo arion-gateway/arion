@@ -16,15 +16,15 @@ use std::borrow::Cow;
 
 use super::{CompiledTemplate, RestTranscoder, Transcoder, TranscoderError};
 use crate::{
+    ArionRequestBody,
     body::{
         instrumented_body::InstrumentedBody, poly_body::PolyBody, response_flags::BodyKind, timeout_body::TimeoutBody,
     },
-    ArionRequestBody,
 };
 use bytes::Bytes;
 use http::StatusCode;
 use http_body_util::Full;
-use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use rmcp::model::Request;
 use serde_json::Value;
 

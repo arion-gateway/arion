@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::admin::AdminState;
-use axum::{extract::State, Json};
-use serde_json::{json, Value};
+use axum::{Json, extract::State};
+use serde_json::{Value, json};
 
 pub async fn memory_handler(State(mut _admin_state): State<AdminState>) -> Json<Value> {
     let memory_physical = arion_stats::get_memory_physical_size().unwrap_or_default() as u64;

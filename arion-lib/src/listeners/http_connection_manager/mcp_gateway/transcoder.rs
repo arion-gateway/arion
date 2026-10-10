@@ -14,8 +14,8 @@
 
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpRestQueryParams;
 use bytes::Bytes;
-use http::header::InvalidHeaderValue;
 use http::StatusCode;
+use http::header::InvalidHeaderValue;
 use rmcp::model::Request;
 use upon::Engine;
 

@@ -50,10 +50,10 @@ impl RequestId {
         if value.is_empty() {
             return None;
         }
-        if let Ok(s) = value.to_str() {
-            if Uuid::parse_str(s).is_err() {
-                info!("Non-UUID value in X-Request-ID header: {}", s);
-            }
+        if let Ok(s) = value.to_str()
+            && Uuid::parse_str(s).is_err()
+        {
+            info!("Non-UUID value in X-Request-ID header: {}", s);
         }
         Some(RequestId::Propagate(value.clone()))
     }
@@ -114,11 +114,9 @@ impl RequestIdManager {
 
         // 3. Apply the changes to the request...
         if should_propagate_header {
-            if is_generated {
-                if let Some(authoritative_id) = authoritative_id.as_ref() {
-                    //info!("Generated new X-Request-ID: {}", authoritative_id.to_str().unwrap_or("invalid"));
-                    req.headers_mut().insert(X_REQUEST_ID, authoritative_id.clone());
-                }
+            if is_generated && let Some(authoritative_id) = authoritative_id.as_ref() {
+                //info!("Generated new X-Request-ID: {}", authoritative_id.to_str().unwrap_or("invalid"));
+                req.headers_mut().insert(X_REQUEST_ID, authoritative_id.clone());
             }
         } else if incoming_request_id.is_some() {
             req.headers_mut().remove(X_REQUEST_ID);

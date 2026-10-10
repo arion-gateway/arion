@@ -22,11 +22,10 @@
 use crate::with_access_log;
 
 use super::{RequestCtx, RequestHandler};
-use crate::{body::timeout_body::TimeoutBody, ArionRequestBody, ArionResponseBody, Result};
+use crate::{ArionRequestBody, ArionResponseBody, Result, body::timeout_body::TimeoutBody};
 use arion_configuration::config::network_filters::http_connection_manager::route::DirectResponseAction;
 use http_body_util::Full;
 use hyper::{Request, Response};
-use std::future::Future;
 
 #[cfg(feature = "access-log")]
 use arion_format::context::UpstreamContext;
@@ -41,7 +40,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, &'a str> for &DirectResponseA
         #[cfg(feature = "access-log")]
         let route_name = arg;
         #[cfg(feature = "access-log")]
-        ctx.tx.with_loggers(|loggers| {
+        ctx.txn.with_loggers(|loggers| {
             with_access_log!(loggers, UpstreamContext { authority: None, cluster_name: None, route_name });
         });
 

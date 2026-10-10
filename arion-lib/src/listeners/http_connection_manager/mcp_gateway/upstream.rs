@@ -21,11 +21,11 @@ use arion_configuration::config::{
 use arion_http_header::X_REQUEST_ID;
 use arion_interner::StringInterner;
 use bytes::Bytes;
-use http::{header::HOST, HeaderValue, Request, Response, StatusCode};
+use http::{HeaderValue, Request, Response, StatusCode, header::HOST};
 use opentelemetry::KeyValue;
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tracing::warn;
 
 #[cfg(feature = "metrics")]
@@ -39,15 +39,15 @@ use super::{
     transcoder::{Transcoder, TranscoderType},
 };
 use crate::{
+    ArionRequestBody, ArionResponseBody, UpstreamCallOpts,
     body::{poly_body::PolyBodyError, timeout_body::TimeoutBodyError},
     clusters::{
-        clusters_manager::RoutingContextError,
-        http_upstream::{acquire_http_upstream, AcquireHttpUpstreamError, AcquireHttpUpstreamErrorKind},
         RoutingPriority,
+        clusters_manager::RoutingContextError,
+        http_upstream::{AcquireHttpUpstreamError, AcquireHttpUpstreamErrorKind, acquire_http_upstream},
     },
     event_error::UpstreamError,
-    listeners::http_connection_manager::{http_modifiers, RequestCtx, RequestHandler},
-    ArionRequestBody, ArionResponseBody, UpstreamCallOpts,
+    listeners::http_connection_manager::{RequestCtx, RequestHandler, http_modifiers},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,7 +186,7 @@ async fn dispatch_rest_tool(
     } else {
         request.headers_mut().remove(X_REQUEST_ID);
     }
-    let cluster_specifier = ClusterSpecifier::Cluster(cluster.clone());
+    let cluster_specifier = ClusterSpecifier::Cluster(cluster.clone().into());
     let acquired = match acquire_http_upstream(
         &cluster_specifier,
         &request,
@@ -212,7 +212,7 @@ async fn dispatch_rest_tool(
     }
     *request.version_mut() = acquired.channels().http_version().into();
     span.set_http_request(&request);
-    span.set_endpoint(acquired.cluster_id(), acquired.channels().upstream_authority().as_str());
+    span.set_endpoint(acquired.cluster_name(), acquired.channels().upstream_authority().as_str());
     span.inject_headers(request.headers_mut());
 
     if let Some(response) = http_modifiers::apply_preflight_functions(&mut request) {
@@ -508,7 +508,7 @@ pub(crate) async fn collect_response_body(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{body::timeout_body::TimeoutBody, PolyBody};
+    use crate::{PolyBody, body::timeout_body::TimeoutBody};
 
     #[test]
     fn counting_writer_matches_compact_json() {

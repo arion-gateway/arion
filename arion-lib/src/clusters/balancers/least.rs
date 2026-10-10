@@ -21,9 +21,9 @@
 use std::fmt::Debug;
 use triomphe::Arc;
 
-use rand::{rngs::SmallRng, seq::IteratorRandom, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::SmallRng, seq::IteratorRandom};
 
-use super::{default_balancer::EndpointWithLoad, Balancer, WeightedEndpoint};
+use super::{Balancer, WeightedEndpoint, default_balancer::EndpointWithLoad};
 
 #[derive(Clone, Debug)]
 pub struct LbItem<E> {
@@ -142,11 +142,7 @@ impl<E: EndpointWithLoad> WeightedLeastRequestBalancer<E> {
             let best_item = chosen_items
                 .fold((first_item, first_item.load()), |(best_item, best_item_load), item| {
                     let load = item.load();
-                    if load < best_item_load {
-                        (item, load)
-                    } else {
-                        (best_item, best_item_load)
-                    }
+                    if load < best_item_load { (item, load) } else { (best_item, best_item_load) }
                 })
                 .0;
             Some(best_item.item.as_ref())
@@ -180,22 +176,18 @@ impl<E: EndpointWithLoad> Balancer<E> for WeightedLeastRequestBalancer<E> {
 
 fn all_equal<E>(items: &[LbItem<E>]) -> bool {
     let mut iter = items.iter();
-    if let Some(first) = iter.next() {
-        iter.all(|item| item.weight == first.weight)
-    } else {
-        true
-    }
+    if let Some(first) = iter.next() { iter.all(|item| item.weight == first.weight) } else { true }
 }
 
 #[cfg(test)]
 mod test {
     use triomphe::Arc;
 
-    use rand::{rngs::SmallRng, SeedableRng};
+    use rand::{SeedableRng, rngs::SmallRng};
 
     use crate::clusters::balancers::{
-        least::{DEFAULT_ACTIVE_REQUEST_BIAS, DEFAULT_P2C_CHOICE_COUNT},
         Balancer, EndpointWithLoad, WeightedEndpoint,
+        least::{DEFAULT_ACTIVE_REQUEST_BIAS, DEFAULT_P2C_CHOICE_COUNT},
     };
 
     use super::{LbItem, WeightedLeastRequestBalancer};

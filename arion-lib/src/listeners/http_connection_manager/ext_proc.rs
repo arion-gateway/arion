@@ -25,8 +25,8 @@ mod worker_config;
 use crate::body::channel_body::{BodyType, ChannelBody, FrameBridge};
 use crate::body::timeout_body::TimeoutBody;
 use crate::event_error::EventFailure;
-use crate::listeners::http_connection_manager::ext_proc::kind::{MessageType, RequestMsg, ResponseMsg};
 use crate::listeners::http_connection_manager::RequestCtx;
+use crate::listeners::http_connection_manager::ext_proc::kind::{MessageType, RequestMsg, ResponseMsg};
 use crate::{ArionRequestBody, ArionResponseBody};
 #[cfg(feature = "metrics")]
 use arion_metrics::metrics::custom::CUSTOM_METRICS;
@@ -35,48 +35,48 @@ use http_body_util::{BodyExt, Collected, LengthLimitError, Limited};
 use crate::listeners::http_connection_manager::ext_proc::mutation::{
     apply_request_header_mutations, apply_response_header_mutations,
 };
-use crate::listeners::http_connection_manager::ext_proc::processing::{
-    RequestProcessing, ResponseProcessing, LB_NAMESPACE,
-};
 use crate::listeners::http_connection_manager::ext_proc::r#override::{OverridableBodyMode, OverridableGlobalModes};
+use crate::listeners::http_connection_manager::ext_proc::processing::{
+    LB_NAMESPACE, RequestProcessing, ResponseProcessing,
+};
 use crate::listeners::http_connection_manager::ext_proc::status::ProcessingStatus;
 use crate::listeners::http_connection_manager::ext_proc::status::ReadyStatus;
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
 use crate::utils::truncated_debug::TruncatedDebug;
 use crate::{
+    Error, PolyBody,
     body::response_flags::ResponseFlags,
     clusters::clusters_manager::{self, RoutingContext},
     listeners::{http_filters::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
     transport::ServedEndpoint,
-    Error, PolyBody,
 };
 use arion_configuration::config::{
     cluster::ClusterSpecifier,
     network_filters::http_connection_manager::http_filters::{
+        ExtProcPerRoute,
         ext_proc::{
             ExternalProcessor as ExternalProcessorConfig, GrpcServiceSpecifier, HeaderForwardingRules, ProcessingMode,
         },
-        ExtProcPerRoute,
     },
 };
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::core::v3::{HeaderMap as ProstHeaderMap, HeaderValue},
         service::ext_proc::v3::{
+            ImmediateResponse, ProcessingRequest, ProcessingResponse, ProtocolConfiguration,
             external_processor_client::ExternalProcessorClient,
-            processing_response::Response as ProcessingResponseType, ImmediateResponse, ProcessingRequest,
-            ProcessingResponse, ProtocolConfiguration,
+            processing_response::Response as ProcessingResponseType,
         },
     },
     google,
-    tonic::{codec::Streaming, Response as TonicResponse, Status},
+    tonic::{Response as TonicResponse, Status, codec::Streaming},
 };
 use arion_format::types::ResponseFlags as FmtResponseFlags;
 use bytes::Bytes;
 use const_str::parse;
 use futures::{
-    future::{BoxFuture, Either},
     FutureExt, StreamExt,
+    future::{BoxFuture, Either},
 };
 use http::header::CONTENT_LENGTH;
 use http::{Request, Response, StatusCode};
@@ -223,19 +223,18 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>, Option<ExternalProc
         let mut processing_mode = config.processing_mode.clone().unwrap_or(ProcessingMode::default());
         let mut grpc_service = config.grpc_service;
         let mut failure_mode_allow = config.failure_mode_allow;
-        if let Some(per_route) = per_route_config {
-            if !per_route.disabled {
-                if let Some(overrides) = per_route.overrides {
-                    if let Some(override_processing_mode) = overrides.processing_mode {
-                        processing_mode = override_processing_mode;
-                    }
-                    if let Some(override_grpc_service) = overrides.grpc_service {
-                        grpc_service = override_grpc_service;
-                    }
-                    if let Some(override_failure_mode_allow) = overrides.failure_mode_allow {
-                        failure_mode_allow = override_failure_mode_allow;
-                    }
-                }
+        if let Some(per_route) = per_route_config
+            && !per_route.disabled
+            && let Some(overrides) = per_route.overrides
+        {
+            if let Some(override_processing_mode) = overrides.processing_mode {
+                processing_mode = override_processing_mode;
+            }
+            if let Some(override_grpc_service) = overrides.grpc_service {
+                grpc_service = override_grpc_service;
+            }
+            if let Some(override_failure_mode_allow) = overrides.failure_mode_allow {
+                failure_mode_allow = override_failure_mode_allow;
             }
         }
         let max_receive_message_length = match &grpc_service.service_specifier {
@@ -524,10 +523,10 @@ impl ExternalProcessor {
             let mut attrs = smallvec::SmallVec::<[KeyValue; 2]>::new();
             if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
                 for key in custom_keys {
-                    if let Some(source) = key.source() {
-                        if let Some(id) = metrics::extract_custom_partition_key(headers, Some(source)) {
-                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
-                        }
+                    if let Some(source) = key.source()
+                        && let Some(id) = metrics::extract_custom_partition_key(headers, Some(source))
+                    {
+                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
                     }
                 }
             }
@@ -537,7 +536,7 @@ impl ExternalProcessor {
         #[cfg(feature = "access-log")]
         {
             use crate::access_log;
-            req_ctx.tx.with_loggers(|loggers| {
+            req_ctx.txn.with_loggers(|loggers| {
                 if let Err(err) = access_log::evaluate_base64_access_log_hook(
                     access_log::AccessLogHook::ExtProcRequest,
                     headers,
@@ -769,10 +768,10 @@ impl ExternalProcessor {
             let mut attrs = smallvec::SmallVec::<[KeyValue; 2]>::new();
             if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
                 for key in custom_keys {
-                    if let Some(source) = key.source() {
-                        if let Some(id) = metrics::extract_custom_partition_key(headers, Some(source)) {
-                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
-                        }
+                    if let Some(source) = key.source()
+                        && let Some(id) = metrics::extract_custom_partition_key(headers, Some(source))
+                    {
+                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
                     }
                 }
             }
@@ -782,7 +781,7 @@ impl ExternalProcessor {
         #[cfg(feature = "access-log")]
         {
             use crate::access_log;
-            req_ctx.tx.with_loggers(|loggers| {
+            req_ctx.txn.with_loggers(|loggers| {
                 if let Err(err) = access_log::evaluate_base64_access_log_hook(
                     access_log::AccessLogHook::ExtProcResponse,
                     headers,
@@ -1251,12 +1250,11 @@ impl ExternalProcessingWorker<kind::Processing> {
                         },
                         Ok(Some(ProcessingResponse { mode_override, response: Some(ProcessingResponseType::RequestHeaders(headers_response)), ..})) => {
                             debug!(target: "ext_proc", "<- RequestHeaders response received");
-                            if self.inner.worker_config.allow_mode_override {
-                                if let Some(overrides) = mode_override {
+                            if self.inner.worker_config.allow_mode_override
+                                && let Some(overrides) = mode_override {
                                     self.request_processing.apply_mode_overrides(&overrides, &self.inner.worker_config.allowed_override_modes, &self.overridable_modes);
                                     self.response_processing.apply_mode_overrides(&overrides, &self.inner.worker_config.allowed_override_modes, &self.overridable_modes);
                                 }
-                            }
 
                             let proc_req = self.request_processing.handle_headers_response(
                                 headers_response,
@@ -1291,11 +1289,10 @@ impl ExternalProcessingWorker<kind::Processing> {
                         },
                         Ok(Some(ProcessingResponse { mode_override, response: Some(ProcessingResponseType::ResponseHeaders(headers_response)), ..})) => {
                             debug!(target: "ext_proc", "<- ResponseHeaders response received");
-                            if self.inner.worker_config.allow_mode_override {
-                                if let Some(overrides) = mode_override {
+                            if self.inner.worker_config.allow_mode_override
+                                && let Some(overrides) = mode_override {
                                     self.response_processing.apply_mode_overrides(&overrides, &self.inner.worker_config.allowed_override_modes, &self.overridable_modes);
                                 }
-                            }
 
                             let proc_req = self.response_processing.handle_headers_response(
                                 headers_response,
@@ -1793,14 +1790,14 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
         };
         let call = match grpc_service_specifier {
             GrpcServiceSpecifier::Cluster(cluster_grpc) => {
-                let cluster_spec = ClusterSpecifier::Cluster(cluster_grpc.cluster_name.clone());
+                let cluster_spec = ClusterSpecifier::Cluster(cluster_grpc.cluster_name);
                 let cluster_id = clusters_manager::resolve_cluster(&cluster_spec, None).ok_or_else(|| {
                     Error::from(format!(
                         "Failed to resolve cluster '{}' for external processor",
                         cluster_grpc.cluster_name
                     ))
                 })?;
-                let grpc_service = clusters_manager::get_grpc_connection(cluster_id, RoutingContext::None)?;
+                let grpc_service = clusters_manager::get_grpc_connection(&cluster_id, RoutingContext::None)?;
                 let mut client =
                     ExternalProcessorClient::new(grpc_service).max_decoding_message_size(max_receive_message_length);
 
@@ -1918,11 +1915,11 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
             info!(target:"ext_proc", "External processor: override_message_timeout must be >= 1ms");
             timeout_duration = self.inner.worker_config.message_timeout;
         }
-        if let Some(max_timeout) = self.inner.worker_config.max_message_timeout {
-            if timeout_duration > max_timeout {
-                info!(target:"ext_proc", "External processor: attempted to override message timeout to value > max_message_timeout (defaulting to max_message_timeout)");
-                timeout_duration = max_timeout;
-            }
+        if let Some(max_timeout) = self.inner.worker_config.max_message_timeout
+            && timeout_duration > max_timeout
+        {
+            info!(target:"ext_proc", "External processor: attempted to override message timeout to value > max_message_timeout (defaulting to max_message_timeout)");
+            timeout_duration = max_timeout;
         }
         self.timeout_state.duration = timeout_duration;
         self.timeout_state.extended = true;
@@ -1948,10 +1945,10 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
             )
             .ok();
         }
-        if let Some(grpc_status) = &response_attempt.grpc_status {
-            if let Ok(status_value) = http::HeaderValue::from_str(&grpc_status.status.to_string()) {
-                response.headers_mut().insert("grpc-status", status_value);
-            }
+        if let Some(grpc_status) = &response_attempt.grpc_status
+            && let Ok(status_value) = http::HeaderValue::from_str(&grpc_status.status.to_string())
+        {
+            response.headers_mut().insert("grpc-status", status_value);
         }
         response
     }

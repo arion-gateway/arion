@@ -20,7 +20,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use arion_e2e_tests::config_builder::presets;
-use arion_e2e_tests::{cleanup_config_file, parse_metric_value, ArionInstance, PortBlock, SpawnOptions, TestClient};
+use arion_e2e_tests::{ArionInstance, PortBlock, SpawnOptions, TestClient, cleanup_config_file, parse_metric_value};
 
 #[tokio::test]
 #[ignore]

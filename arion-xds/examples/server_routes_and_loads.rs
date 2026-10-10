@@ -20,11 +20,11 @@
 
 #![allow(clippy::expect_used)]
 
-use std::{future::IntoFuture, time::Duration};
+use std::time::Duration;
 
 use arion_xds::xds::{
     resources,
-    server::{start_aggregate_server, ServerAction},
+    server::{ServerAction, start_aggregate_server},
 };
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};

@@ -24,34 +24,34 @@ use arion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::{
             cluster::v3::{
-                cluster::{ClusterDiscoveryType, DiscoveryType, LbPolicy},
                 Cluster,
+                cluster::{ClusterDiscoveryType, DiscoveryType, LbPolicy},
             },
             core::v3::{
-                socket_address::PortSpecifier, Address, Http1ProtocolOptions, Http2ProtocolOptions,
-                HttpProtocolOptions as ConfigHttpProtocolOptions, Node,
+                Address, Http1ProtocolOptions, Http2ProtocolOptions, HttpProtocolOptions as ConfigHttpProtocolOptions,
+                Node, socket_address::PortSpecifier,
             },
             endpoint::v3::{
-                lb_endpoint::HostIdentifier, ClusterLoadAssignment, Endpoint, LbEndpoint, LocalityLbEndpoints,
+                ClusterLoadAssignment, Endpoint, LbEndpoint, LocalityLbEndpoints, lb_endpoint::HostIdentifier,
             },
-            listener::v3::{filter::ConfigType, Filter, FilterChain, Listener},
+            listener::v3::{Filter, FilterChain, Listener, filter::ConfigType},
             route::v3::{
+                HeaderMatcher, Route, RouteAction, RouteConfiguration, RouteMatch, VirtualHost, WeightedCluster,
                 header_matcher::HeaderMatchSpecifier, route::Action, route_action::ClusterSpecifier,
-                route_match::PathSpecifier, weighted_cluster::ClusterWeight, HeaderMatcher, Route, RouteAction,
-                RouteConfiguration, RouteMatch, VirtualHost, WeightedCluster,
+                route_match::PathSpecifier, weighted_cluster::ClusterWeight,
             },
         },
         extensions::{
             filters::network::http_connection_manager::v3::{
-                http_connection_manager::{CodecType, RouteSpecifier},
                 HttpConnectionManager,
+                http_connection_manager::{CodecType, RouteSpecifier},
             },
-            transport_sockets::tls::v3::{secret, Secret},
+            transport_sockets::tls::v3::{Secret, secret},
             upstreams::http::v3::{
-                http_protocol_options::{
-                    explicit_http_config::ProtocolConfig, ExplicitHttpConfig, UpstreamProtocolOptions,
-                },
                 HttpProtocolOptions,
+                http_protocol_options::{
+                    ExplicitHttpConfig, UpstreamProtocolOptions, explicit_http_config::ProtocolConfig,
+                },
             },
         },
         service::discovery::v3::{DeltaDiscoveryRequest, DiscoveryRequest, Resource},
@@ -117,12 +117,12 @@ pub fn create_addresses(addr: SocketAddr, count: u32) -> Vec<Address> {
     (0..count)
         .map(|i| {
             let mut socket = socket.clone();
-            if let arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::address::Address::SocketAddress(ref mut socket) =
-                socket
+            if let arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::address::Address::SocketAddress(
+                ref mut socket,
+            ) = socket
+                && let Some(PortSpecifier::PortValue(port)) = socket.port_specifier
             {
-                if let Some(PortSpecifier::PortValue(port)) = socket.port_specifier {
-                    socket.port_specifier = Some(PortSpecifier::PortValue(i + port));
-                }
+                socket.port_specifier = Some(PortSpecifier::PortValue(i + port));
             }
             Address { address: Some(socket) }
         })

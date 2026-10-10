@@ -17,18 +17,17 @@ use std::time::{Duration, Instant};
 use triomphe::Arc;
 
 use arion_configuration::config::{
-    network_filters::http_connection_manager::http_filters::user_rate_limit::UserRateLimiter as ArionUserRateLimiter,
     GenericError,
+    network_filters::http_connection_manager::http_filters::user_rate_limit::UserRateLimiter as ArionUserRateLimiter,
 };
 use papaya::HashMap as PapayaMap;
 use smol_str::SmolStr;
 use tracing::debug;
 
 use crate::listeners::rate_limiter::token_bucket::TokenBucket;
-use crate::{listeners::http_filters::FilterDecision, ArionRequestBody};
+use crate::{ArionRequestBody, listeners::http_filters::FilterDecision};
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::user_rate_limit::Limit;
 
-use arion_interner::StringInterner;
 #[cfg(feature = "metrics")]
 use {
     crate::{get_shard_id, with_metric},
@@ -41,6 +40,7 @@ static USER_RATE_LIMITERS: LazyLock<PapayaMap<SmolStr, TokenBucket, ahash::Rando
 static CLEANER_ONCE: Once = Once::new();
 static CLEANER_PERIOD: Duration = Duration::from_secs(10);
 static CLEANER_TOKEN_BUCKET_IDLE: Duration = Duration::from_secs(60);
+pub const MAX_USER_ID_LENGTH: usize = 256;
 
 #[derive(Clone, Debug)]
 pub struct UserRateLimiter {
@@ -85,7 +85,13 @@ impl UserRateLimiter {
         // Obtain the user-id from header (using the value of user_id_header)
         //
 
-        let Some(user) = request.headers().get(self.inner.user_id_header.as_str()).and_then(|v| v.to_str().ok()) else {
+        let Some(user) = request
+            .headers()
+            .get(self.inner.user_id_header.as_str())
+            .and_then(|v| v.to_str().ok())
+            .filter(|s| !s.is_empty() && s.len() <= MAX_USER_ID_LENGTH)
+            .map(String::from)
+        else {
             debug!(target: "user_rate_limiter", "no user found in request headers");
             #[cfg(feature = "metrics")]
             with_metric!(
@@ -94,14 +100,12 @@ impl UserRateLimiter {
                 1,
                 get_shard_id!(),
                 &[
-                    KeyValue::new("filter", self.inner.stat_prefix.0),
+                    KeyValue::new("filter", self.inner.stat_prefix.as_str()),
                     KeyValue::new("result", filters::EVENT_NOT_APPLICABLE)
                 ]
             );
             return FilterDecision::Continue;
         };
-
-        let static_user = user.to_static_str();
 
         // Try to look up the TokenBucket for the given user in the global USER_RATE_LIMITERS map.
         // If found, return a reference to the corresponding token bucket.
@@ -113,9 +117,9 @@ impl UserRateLimiter {
         //
         // `pin().get(...).map(...)` clones nothing: `consume` returns a plain
         // `bool`, so the papaya guard is released before any early return.
-        if let Some(allowed) = USER_RATE_LIMITERS.pin().get(static_user).map(|tb| tb.consume(1)) {
+        if let Some(allowed) = USER_RATE_LIMITERS.pin().get(user.as_str()).map(|tb| tb.consume(1)) {
             if allowed {
-                debug!(target: "user_rate_limiter", "consumed token for user: {static_user}");
+                debug!(target: "user_rate_limiter", "consumed token for user: {user}");
                 #[cfg(feature = "metrics")]
                 with_metric!(
                     filters::USER_RATE_LIMIT,
@@ -123,14 +127,14 @@ impl UserRateLimiter {
                     1,
                     get_shard_id!(),
                     &[
-                        KeyValue::new("filter", self.inner.stat_prefix.0),
-                        KeyValue::new("user", static_user),
+                        KeyValue::new("filter", self.inner.stat_prefix.as_str()),
+                        KeyValue::new("user", user),
                         KeyValue::new("result", filters::EVENT_OK)
                     ]
                 );
                 return FilterDecision::Continue;
             }
-            debug!(target: "user_rate_limiter", "rate limited for user: {static_user}");
+            debug!(target: "user_rate_limiter", "rate limited for user: {user}");
             #[cfg(feature = "metrics")]
             with_metric!(
                 filters::USER_RATE_LIMIT,
@@ -138,8 +142,8 @@ impl UserRateLimiter {
                 1,
                 get_shard_id!(),
                 &[
-                    KeyValue::new("filter", self.inner.stat_prefix.0),
-                    KeyValue::new("user", static_user),
+                    KeyValue::new("filter", self.inner.stat_prefix.as_str()),
+                    KeyValue::new("user", user),
                     KeyValue::new("result", filters::EVENT_RATE_LIMITED)
                 ]
             );
@@ -152,13 +156,13 @@ impl UserRateLimiter {
         // bucket with `get_or_insert`. On a concurrent race the winner's bucket
         // is reused, which matches the old `entry().or_try_insert_with()` semantics.
         //
-        let limit = if let Some(limit) = self.inner.user_rate_limits.get(&Some(static_user.into())) {
+        let limit = if let Some(limit) = self.inner.user_rate_limits.get(&Some(user.clone().into())) {
             limit
         } else if let Some(limit) = self.inner.user_rate_limits.get(&None) {
             limit
         } else {
             // Configuration not found for this user... return Continue
-            debug!(target: "user_rate_limiter", "no rate limit found for user: {static_user}");
+            debug!(target: "user_rate_limiter", "no rate limit found for user: {user}");
             #[cfg(feature = "metrics")]
             with_metric!(
                 filters::USER_RATE_LIMIT,
@@ -166,8 +170,8 @@ impl UserRateLimiter {
                 1,
                 get_shard_id!(),
                 &[
-                    KeyValue::new("filter", self.inner.stat_prefix.0),
-                    KeyValue::new("user", static_user),
+                    KeyValue::new("filter", self.inner.stat_prefix.as_str()),
+                    KeyValue::new("user", user),
                     KeyValue::new("result", filters::EVENT_NOT_APPLICABLE)
                 ]
             );
@@ -178,7 +182,7 @@ impl UserRateLimiter {
             Limit::LocalRateLimit(l) => {
                 let Some(tb) = &l.token_bucket else {
                     // Token bucket is not configured for this user, return Continue.
-                    debug!(target: "user_rate_limiter", "no token bucket found for user: {static_user}");
+                    debug!(target: "user_rate_limiter", "no token bucket found for user: {user}");
                     #[cfg(feature = "metrics")]
                     with_metric!(
                         filters::USER_RATE_LIMIT,
@@ -186,8 +190,8 @@ impl UserRateLimiter {
                         1,
                         get_shard_id!(),
                         &[
-                            KeyValue::new("filter", self.inner.stat_prefix.0),
-                            KeyValue::new("user", static_user),
+                            KeyValue::new("filter", self.inner.stat_prefix.as_str()),
+                            KeyValue::new("user", user),
                             KeyValue::new("result", filters::EVENT_NOT_APPLICABLE)
                         ]
                     );
@@ -202,9 +206,9 @@ impl UserRateLimiter {
         };
 
         let pinned = USER_RATE_LIMITERS.pin();
-        let tb = pinned.get_or_insert(static_user.into(), new_bucket);
+        let tb = pinned.get_or_insert(user.clone().into(), new_bucket);
         if tb.consume(1) {
-            debug!(target: "user_rate_limiter", "consumed token for user: {static_user}");
+            debug!(target: "user_rate_limiter", "consumed token for user: {user}");
             #[cfg(feature = "metrics")]
             with_metric!(
                 filters::USER_RATE_LIMIT,
@@ -212,14 +216,14 @@ impl UserRateLimiter {
                 1,
                 get_shard_id!(),
                 &[
-                    KeyValue::new("filter", self.inner.stat_prefix.0),
-                    KeyValue::new("user", static_user),
+                    KeyValue::new("filter", self.inner.stat_prefix.as_str()),
+                    KeyValue::new("user", user),
                     KeyValue::new("result", filters::EVENT_OK)
                 ]
             );
             FilterDecision::Continue
         } else {
-            debug!(target: "user_rate_limiter", "rate limited for user: {static_user}");
+            debug!(target: "user_rate_limiter", "rate limited for user: {user}");
             #[cfg(feature = "metrics")]
             with_metric!(
                 filters::USER_RATE_LIMIT,
@@ -227,8 +231,8 @@ impl UserRateLimiter {
                 1,
                 get_shard_id!(),
                 &[
-                    KeyValue::new("filter", self.inner.stat_prefix.0),
-                    KeyValue::new("user", static_user),
+                    KeyValue::new("filter", self.inner.stat_prefix.as_str()),
+                    KeyValue::new("user", user),
                     KeyValue::new("result", filters::EVENT_RATE_LIMITED)
                 ]
             );

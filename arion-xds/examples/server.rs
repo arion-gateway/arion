@@ -25,7 +25,7 @@ use arion_xds::xds::{
     resources,
     server::{ServerAction, start_aggregate_server},
 };
-use std::{future::IntoFuture, time::Duration};
+use std::time::Duration;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 

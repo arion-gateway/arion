@@ -33,7 +33,7 @@ tonic-prost.workspace = true
 hyper = { workspace = true, features = ["server", "http1"] }
 uuid = { workspace = true, features = ["v4"] }
 pingora-timeout.workspace = true
-dashmap.workspace = true
+papaya.workspace = true
 atomic-take.workspace = true
 jsonwebtoken.workspace = true
 tokio-rustls.workspace = true

@@ -31,8 +31,8 @@ use arion_e2e_tests::config_builder::{
     RouteBuilder, RouteConfigBuilder, VirtualHostBuilder,
 };
 use arion_e2e_tests::{
-    cleanup_config_file, ArionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient,
-    TestResponse,
+    ArionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient, TestResponse,
+    cleanup_config_file,
 };
 use http::StatusCode;
 
@@ -43,10 +43,10 @@ fn extract_cookie_value(response: &TestResponse, name: &str) -> Option<String> {
 fn extract_cookie_with_name(response: &TestResponse, predicate: impl Fn(&str) -> bool) -> Option<(String, String)> {
     for cookie_header in response.header_all("set-cookie") {
         let first_part = cookie_header.split(';').next()?.trim();
-        if let Some((name, value)) = first_part.split_once('=') {
-            if predicate(name.trim()) {
-                return Some((name.trim().to_owned(), value.trim().to_owned()));
-            }
+        if let Some((name, value)) = first_part.split_once('=')
+            && predicate(name.trim())
+        {
+            return Some((name.trim().to_owned(), value.trim().to_owned()));
         }
     }
     None

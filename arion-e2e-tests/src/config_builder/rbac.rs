@@ -17,14 +17,14 @@ use arion_data_plane_api::envoy_data_plane_api::{
         config::{
             core::v3::CidrRange,
             rbac::v3::{
-                permission::Rule as PermissionRule, principal::Identifier as PrincipalIdentifier,
-                rbac::Action as RbacAction, Permission, Policy, Principal, Rbac,
+                Permission, Policy, Principal, Rbac, permission::Rule as PermissionRule,
+                principal::Identifier as PrincipalIdentifier, rbac::Action as RbacAction,
             },
-            route::v3::{header_matcher::HeaderMatchSpecifier, HeaderMatcher},
+            route::v3::{HeaderMatcher, header_matcher::HeaderMatchSpecifier},
         },
         extensions::filters::{http::rbac::v3::Rbac as HttpRbac, network::rbac::v3::Rbac as NetworkRbac},
         r#type::{
-            matcher::v3::{string_matcher::MatchPattern, StringMatcher},
+            matcher::v3::{StringMatcher, string_matcher::MatchPattern},
             v3::Int32Range,
         },
     },

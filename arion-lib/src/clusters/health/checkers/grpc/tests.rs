@@ -30,8 +30,8 @@ use parking_lot::Mutex;
 use std::time::Duration;
 
 use crate::clusters::health::{
-    checkers::tests::{deref, TestFixture},
     HealthStatus,
+    checkers::tests::{TestFixture, deref},
 };
 
 use super::*;

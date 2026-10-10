@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use arion_interner::InternedStr;
 use std::{
     sync::{
-        atomic::{AtomicI64, AtomicU64, Ordering},
         LazyLock,
+        atomic::{AtomicI64, AtomicU64, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -31,9 +32,9 @@ use arion_configuration::config::{
     },
 };
 use arion_data_plane_api::envoy_data_plane_api::envoy::{
-    extensions::common::ratelimit::v3::{rate_limit_descriptor::Entry as DescriptorEntry, RateLimitDescriptor},
+    extensions::common::ratelimit::v3::{RateLimitDescriptor, rate_limit_descriptor::Entry as DescriptorEntry},
     service::ratelimit::v3::{
-        rate_limit_response, rate_limit_service_client::RateLimitServiceClient, RateLimitRequest, RateLimitResponse,
+        RateLimitRequest, RateLimitResponse, rate_limit_response, rate_limit_service_client::RateLimitServiceClient,
     },
 };
 use papaya::HashMap as PapayaMap;
@@ -68,7 +69,7 @@ enum RlsClient {
 
 #[derive(Debug, Clone)]
 pub struct NetworkGlobalRateLimit {
-    pub stat_prefix: SmolStr,
+    pub stat_prefix: InternedStr,
     domain: Option<SmolStr>,
     failure_mode_deny: bool,
     rls_client: RlsClient,
@@ -86,7 +87,7 @@ impl TryFrom<NetworkGlobalRateLimitConfig> for NetworkGlobalRateLimit {
                     .connect_lazy();
                 RlsClient::GoogleGrpc(RateLimitServiceClient::new(channel))
             },
-            GrpcServiceSpecifier::Cluster(c) => RlsClient::Cluster(c.cluster_name),
+            GrpcServiceSpecifier::Cluster(c) => RlsClient::Cluster(c.cluster_name.as_str().into()),
         };
 
         let descriptors = config
@@ -209,10 +210,10 @@ impl NetworkGlobalRateLimit {
 
         let resp = match &self.rls_client {
             RlsClient::Cluster(cluster_name) => {
-                let spec = ClusterSpecifier::Cluster(cluster_name.clone());
+                let spec = ClusterSpecifier::Cluster(cluster_name.clone().into());
                 let cluster_id = clusters_manager::resolve_cluster(&spec, None)
                     .ok_or_else(|| crate::Error::from(format!("RLS cluster '{cluster_name}' not found")))?;
-                let svc = clusters_manager::get_grpc_connection(cluster_id, RoutingContext::None)?;
+                let svc = clusters_manager::get_grpc_connection(&cluster_id, RoutingContext::None)?;
                 RateLimitServiceClient::new(svc)
                     .should_rate_limit(rls_request)
                     .await

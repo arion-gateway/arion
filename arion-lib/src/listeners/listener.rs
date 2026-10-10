@@ -31,24 +31,24 @@ use crate::utils::StreamMetrics;
 
 #[cfg(feature = "access-log")]
 use {
-    crate::access_log::{blocking_log_access, Target},
+    crate::access_log::{Target, blocking_log_access},
     arion_format::context::SocketAddrContext,
-    arion_format::{context::ConnectionContext, LogFormatter},
+    arion_format::{LogFormatter, context::ConnectionContext},
 };
 
 #[cfg(feature = "metrics")]
 use crate::get_shard_id;
 
 use crate::{
+    AsyncInstrumentedStream, ConversionContext, Error, Result, RouteConfigurationChange,
     listeners::{
         http_connection_manager::mcp_gateway::mcp::McpGatewayListenerContext,
         metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
         rate_limiter::local_rate_limiter::ListenerLocalRateLimit,
     },
     secrets::{TlsConfigurator, WantsToBuildServer},
-    transport::{bind_device::BindDevice, tls_inspector, ProxyProtocolReader},
+    transport::{ProxyProtocolReader, bind_device::BindDevice, tls_inspector},
     utils::instrumented_stream::InstrumentedStream,
-    AsyncInstrumentedStream, ConversionContext, Error, Result, RouteConfigurationChange,
 };
 
 use arion_configuration::config::{
@@ -56,10 +56,12 @@ use arion_configuration::config::{
     listener::{FilterChainMatch, Listener as ListenerConfig, ListenerType, MatchResult},
     listener_filters::{DownstreamProxyProtocolConfig, ListenerLocalRateLimitConfig},
 };
+use arion_interner::InternedStr;
+#[cfg(test)]
 use arion_interner::StringInterner;
 #[cfg(feature = "metrics")]
 use arion_metrics::metrics::filters;
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use tokio::sync::mpsc;
 
 #[cfg(feature = "access-log")]
@@ -83,8 +85,8 @@ use std::{
     fmt::Debug,
     net::SocketAddr,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc as StdArc, OnceLock,
+        atomic::{AtomicBool, Ordering},
     },
     time::Instant,
 };
@@ -114,7 +116,7 @@ enum ConnectionSource {
 
 #[derive(Debug, Clone)]
 struct PartialListener {
-    name: &'static str,
+    name: InternedStr,
     binding: ListenerBinding,
     filter_chains: HashMap<FilterChainMatch, FilterchainBuilder>,
     with_tls_inspector: bool,
@@ -132,12 +134,11 @@ impl TryFrom<ConversionContext<'_, ListenerConfig>> for PartialListener {
     type Error = Error;
     fn try_from(ctx: ConversionContext<'_, ListenerConfig>) -> std::result::Result<Self, Self::Error> {
         let ConversionContext { envoy_object: listener, secret_manager } = ctx;
-        let static_listener_name = listener.name.to_static_str();
         let with_tls_inspector = listener.with_tls_inspector;
         let proxy_protocol_config = listener.proxy_protocol_config;
         let listener_local_rate_limit_config = listener.listener_local_rate_limit_config;
         let access_log = listener.access_log;
-        debug!("Listener {static_listener_name} :TLS Inspector is {with_tls_inspector}");
+        debug!("Listener {} :TLS Inspector is {with_tls_inspector}", listener.name);
 
         let binding = match listener.listener_type {
             ListenerType::Socket { address, bind_device } => {
@@ -156,13 +157,13 @@ impl TryFrom<ConversionContext<'_, ListenerConfig>> for PartialListener {
             let has_server_names = filter_chains.keys().any(|m| !m.server_names.is_empty());
             if has_server_names {
                 return Err((format!(
-                    "Listener '{static_listener_name}' has server_names in filter_chain_match, but no TLS inspector so matches would always fail"
+                    "Listener '{}' has server_names in filter_chain_match, but no TLS inspector so matches would always fail", listener.name
                 )).into());
             }
         }
 
         Ok(PartialListener {
-            name: static_listener_name,
+            name: listener.name,
             binding,
             filter_chains,
             with_tls_inspector,
@@ -227,26 +228,26 @@ static LISTENERS_CONTEXT: OnceLock<PapayaMap<&'static str, StdArc<ListenerContex
     OnceLock::new();
 
 pub trait FilterListenerContext {
-    fn get_filter_context(listener_name: &'static str) -> ArcRef<ListenerContext, Self>;
+    fn get_filter_context(listener_name: InternedStr) -> ArcRef<ListenerContext, Self>;
 }
 
 impl FilterListenerContext for McpGatewayListenerContext {
     #[inline]
-    fn get_filter_context(listener_name: &'static str) -> ArcRef<ListenerContext, McpGatewayListenerContext> {
+    fn get_filter_context(listener_name: InternedStr) -> ArcRef<ListenerContext, McpGatewayListenerContext> {
         let ctx = get_listener_context(listener_name);
         ArcRef::new(ctx).map(|ctx| &ctx.mcp)
     }
 }
 
 #[inline]
-fn get_listener_context(listener_name: &'static str) -> StdArc<ListenerContext> {
-    let dmap = LISTENERS_CONTEXT.get_or_init(|| PapayaMap::with_hasher(ahash::RandomState::new()));
-    StdArc::clone(dmap.pin().get_or_insert_with(listener_name, || StdArc::new(ListenerContext::default())))
+fn get_listener_context(listener_name: InternedStr) -> StdArc<ListenerContext> {
+    let map = LISTENERS_CONTEXT.get_or_init(|| PapayaMap::with_hasher(ahash::RandomState::new()));
+    StdArc::clone(map.pin().get_or_insert_with(listener_name.as_str(), || StdArc::new(ListenerContext::default())))
 }
 
 #[derive(Debug)]
 pub struct Listener {
-    name: &'static str,
+    name: InternedStr,
     binding: ListenerBinding,
     pub filter_chains: HashMap<FilterChainMatch, FilterchainType>,
     with_tls_inspector: bool,
@@ -259,14 +260,14 @@ pub struct Listener {
 
 impl Listener {
     #[cfg(test)]
-    pub(crate) fn test_listener(
-        name: &'static str,
+    pub(crate) fn test_listener<T: StringInterner + ?Sized>(
+        name: &T,
         route_rx: broadcast::Receiver<RouteConfigurationChange>,
         secret_rx: broadcast::Receiver<TlsContextChange>,
     ) -> Self {
         use std::net::{IpAddr, Ipv4Addr};
         Listener {
-            name,
+            name: name.to_interned_str(),
             binding: ListenerBinding::Socket {
                 address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
                 bind_device: None,
@@ -282,7 +283,7 @@ impl Listener {
         }
     }
 
-    pub fn get_name(&self) -> &'static str {
+    pub fn get_name(&self) -> InternedStr {
         self.name
     }
 
@@ -343,8 +344,8 @@ impl Listener {
                                                 1,
                                                 get_shard_id!(),
                                                 &[
-                                                    KeyValue::new("listener", listener_name),
-                                                    KeyValue::new("filter", rate_limiter.stat_prefix.0),
+                                                    KeyValue::new("listener", listener_name.as_str()),
+                                                    KeyValue::new("filter", rate_limiter.stat_prefix.as_str()),
                                                     KeyValue::new("result", filters::EVENT_RATE_LIMITED),
                                                 ]
                                             );
@@ -357,8 +358,8 @@ impl Listener {
                                             1,
                                             get_shard_id!(),
                                             &[
-                                                KeyValue::new("listener", listener_name),
-                                                KeyValue::new("filter", rate_limiter.stat_prefix.0),
+                                                KeyValue::new("listener", listener_name.as_str()),
+                                                KeyValue::new("filter", rate_limiter.stat_prefix.as_str()),
                                                 KeyValue::new("result", filters::EVENT_OK)
                                             ]
                                         );
@@ -408,7 +409,7 @@ impl Listener {
                                                         add,
                                                         metrics.bytes_read(),
                                                         shard_id,
-                                                        &[KeyValue::new("listener", listener_name)]
+                                                        &[KeyValue::new("listener", listener_name.as_str())]
                                                     );
 
                                                     with_metric!(
@@ -416,7 +417,7 @@ impl Listener {
                                                         add,
                                                         metrics.bytes_written(),
                                                         shard_id,
-                                                        &[KeyValue::new("listener", listener_name)]
+                                                        &[KeyValue::new("listener", listener_name.as_str())]
                                                     );
 
                                                     ()
@@ -440,7 +441,7 @@ impl Listener {
 
                                                    if !conn_formatters.is_empty() {
                                                        let messages = conn_formatters.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-                                                       _ = blocking_log_access(Target::Listener(listener_name.into()), messages);
+                                                       _ = blocking_log_access(Target::Listener(listener_name), messages);
                                                    }
                                                }
                                             })
@@ -452,8 +453,8 @@ impl Listener {
                                            stream.metrics().with_drop_fn(drop_cb)
                                         }
 
-                                        with_metric!(listeners::DOWNSTREAM_CX_TOTAL, add, 1, shard_id,&[KeyValue::new("listener", listener_name)]);
-                                        with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, add, 1, shard_id,&[KeyValue::new("listener", listener_name)]);
+                                        with_metric!(listeners::DOWNSTREAM_CX_TOTAL, add, 1, shard_id,&[KeyValue::new("listener", listener_name.as_str())]);
+                                        with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, add, 1, shard_id,&[KeyValue::new("listener", listener_name.as_str())]);
 
                                         _ = Self::process_connection(
                                             name,
@@ -479,7 +480,7 @@ impl Listener {
                         },
                         maybe_route_update = route_updates_receiver.recv() => {
                             match maybe_route_update {
-                                Ok(route_update) => {Self::process_route_update(name, &filter_chains, route_update)},
+                                Ok(route_update) => {Self::process_route_update(name.as_str(), &filter_chains, route_update)},
                                 Err(e) => {return e.into();}
                             }
                         },
@@ -487,7 +488,7 @@ impl Listener {
                             match maybe_secret_update {
                                 Ok(secret_update) => {
                                     let mut filter_chains_clone = Arc::unwrap_or_clone(filter_chains);
-                                    Self::process_secret_update(name, &mut filter_chains_clone, secret_update);
+                                    Self::process_secret_update(name.as_str(), &mut filter_chains_clone, secret_update);
                                     filter_chains = Arc::new(filter_chains_clone);
                                 }
                                 Err(e) => {return e.into();}
@@ -501,7 +502,7 @@ impl Listener {
 
                 internal_registry::register(name, tx);
                 scopeguard::defer! {
-                    internal_registry::unregister(name);
+                    internal_registry::unregister(name.as_str());
                 }
                 info!("internal listener '{name}' started");
 
@@ -512,8 +513,8 @@ impl Listener {
                                 Some(InternalConnection { stream, downstream_metadata, start_instant }) => {
                                     #[cfg(feature = "metrics")]
                                     let shard_id = get_shard_id!();
-                                    with_metric!(listeners::DOWNSTREAM_CX_TOTAL, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
-                                    with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
+                                    with_metric!(listeners::DOWNSTREAM_CX_TOTAL, add, 1, shard_id, &[KeyValue::new("listener", listener_name.as_str())]);
+                                    with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, add, 1, shard_id, &[KeyValue::new("listener", listener_name.as_str())]);
 
                                     let filter_chains = Arc::clone(&filter_chains);
                                     tokio::spawn(Self::process_connection(
@@ -532,7 +533,7 @@ impl Listener {
                         },
                         maybe_route_update = route_updates_receiver.recv() => {
                             match maybe_route_update {
-                                Ok(route_update) => {Self::process_route_update(name, &filter_chains, route_update)},
+                                Ok(route_update) => {Self::process_route_update(name.as_str(), &filter_chains, route_update)},
                                 Err(e) => {return e.into();}
                             }
                         },
@@ -540,7 +541,7 @@ impl Listener {
                             match maybe_secret_update {
                                 Ok(secret_update) => {
                                     let mut filter_chains_clone = Arc::unwrap_or_clone(filter_chains);
-                                    Self::process_secret_update(name, &mut filter_chains_clone, secret_update);
+                                    Self::process_secret_update(name.as_str(), &mut filter_chains_clone, secret_update);
                                     filter_chains = Arc::new(filter_chains_clone);
                                 }
                                 Err(e) => {return e.into();}
@@ -587,10 +588,10 @@ impl Listener {
 
             // Now trim all the results that failed to match, or were less specific than the best match
             for (i, result) in scratchpad.iter().enumerate() {
-                if *result != best_match || *result == MatchResult::FailedMatch {
-                    if let Some(is_possible) = possible_filters.get_mut(i) {
-                        *is_possible = false;
-                    }
+                if (*result != best_match || *result == MatchResult::FailedMatch)
+                    && let Some(is_possible) = possible_filters.get_mut(i)
+                {
+                    *is_possible = false;
                 }
             }
         }
@@ -659,7 +660,7 @@ impl Listener {
     #[allow(clippy::too_many_lines)]
     #[allow(clippy::too_many_arguments)]
     async fn process_connection(
-        listener_name: &'static str,
+        listener_name: InternedStr,
         filter_chains: Arc<HashMap<FilterChainMatch, FilterchainType>>,
         with_tls_inspector: bool,
         source: ConnectionSource,
@@ -670,14 +671,14 @@ impl Listener {
         let shard_id = get_shard_id!();
         let ssl = AtomicBool::new(false);
         defer! {
-            with_metric!(listeners::DOWNSTREAM_CX_DESTROY, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
-            with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
+            with_metric!(listeners::DOWNSTREAM_CX_DESTROY, add, 1, shard_id, &[KeyValue::new("listener", listener_name.as_str())]);
+            with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name.as_str())]);
             if ssl.load(Ordering::Relaxed) {
-                with_metric!(http::DOWNSTREAM_CX_SSL_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
+                with_metric!(http::DOWNSTREAM_CX_SSL_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name.as_str())]);
             }
             with_histogram!(listeners::DOWNSTREAM_CX_LENGTH_MS, record,
                 u64::try_from(start_instant.elapsed().as_millis()).unwrap_or(u64::MAX),
-                shard_id, &[KeyValue::new("listener", listener_name)]);
+                shard_id, &[KeyValue::new("listener", listener_name.as_str())]);
         }
 
         let connection_metadata = match source {
@@ -705,14 +706,14 @@ impl Listener {
                         add,
                         1,
                         shard_id,
-                        &[KeyValue::new("listener", listener_name)]
+                        &[KeyValue::new("listener", listener_name.as_str())]
                     );
                     with_metric!(
                         http::DOWNSTREAM_CX_SSL_ACTIVE,
                         add,
                         1,
                         shard_id,
-                        &[KeyValue::new("listener", listener_name)]
+                        &[KeyValue::new("listener", listener_name.as_str())]
                     );
                     ssl.store(true, Ordering::Relaxed);
                     Some(sni)
@@ -724,14 +725,14 @@ impl Listener {
                         add,
                         1,
                         shard_id,
-                        &[KeyValue::new("listener", listener_name)]
+                        &[KeyValue::new("listener", listener_name.as_str())]
                     );
                     with_metric!(
                         http::DOWNSTREAM_CX_SSL_ACTIVE,
                         add,
                         1,
                         shard_id,
-                        &[KeyValue::new("listener", listener_name)]
+                        &[KeyValue::new("listener", listener_name.as_str())]
                     );
                     ssl.store(true, Ordering::Relaxed);
                     None
@@ -773,7 +774,7 @@ impl Listener {
                 add,
                 1,
                 shard_id,
-                &[KeyValue::new("listener", listener_name)]
+                &[KeyValue::new("listener", listener_name.as_str())]
             );
             warn!(
                 "{listener_name} : No match for {} {}",
@@ -839,28 +840,23 @@ impl Listener {
                         }
                     }
                 }
-                if applied {
-                    if let Some(notify) = notify {
-                        notify.notify_one();
-                    }
+                if applied && let Some(notify) = notify {
+                    notify.notify_one();
                 }
             },
             RouteConfigurationChange::Removed(id, notify) => {
                 let mut applied = false;
                 for chain in filter_chains.values() {
-                    if let ConnectionHandler::Http(http_manager) = &chain.handler {
-                        if let Some(route_id) = http_manager.get_route_id() {
-                            if route_id == &id {
-                                http_manager.remove_route();
-                                applied = true;
-                            }
-                        }
+                    if let ConnectionHandler::Http(http_manager) = &chain.handler
+                        && let Some(route_id) = http_manager.get_route_id()
+                        && route_id == &id
+                    {
+                        http_manager.remove_route();
+                        applied = true;
                     }
                 }
-                if applied {
-                    if let Some(notify) = notify {
-                        notify.notify_one();
-                    }
+                if applied && let Some(notify) = notify {
+                    notify.notify_one();
                 }
             },
         }
@@ -1008,9 +1004,10 @@ filter_chains:
         let conv = ConversionContext { envoy_object: listener, secret_manager: &secrets_man };
         let r = PartialListener::try_from(conv);
         let err = r.unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("has server_names in filter_chain_match, but no TLS inspector so matches would always fail"));
+        assert!(
+            err.to_string()
+                .contains("has server_names in filter_chain_match, but no TLS inspector so matches would always fail")
+        );
     }
 
     #[test]

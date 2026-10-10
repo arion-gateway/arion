@@ -20,21 +20,20 @@ use std::net::{IpAddr, Ipv4Addr};
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::{
-            accesslog::v3::{access_log::ConfigType as AccessLogConfigType, AccessLog as EnvoyAccessLog},
+            accesslog::v3::{AccessLog as EnvoyAccessLog, access_log::ConfigType as AccessLogConfigType},
             core::v3::{
-                address::Address as AddressType, socket_address::PortSpecifier,
-                substitution_format_string::Format as SubstitutionFormat, Address, SocketAddress,
-                SubstitutionFormatString,
+                Address, SocketAddress, SubstitutionFormatString, address::Address as AddressType,
+                socket_address::PortSpecifier, substitution_format_string::Format as SubstitutionFormat,
             },
             listener::v3::{
+                FilterChain, Listener as EnvoyListener, ListenerFilter,
                 listener::{InternalListenerConfig, ListenerSpecifier},
                 listener_filter::ConfigType,
-                FilterChain, Listener as EnvoyListener, ListenerFilter,
             },
         },
         extensions::{
             access_loggers::file::v3::{
-                file_access_log::AccessLogFormat as FileAccessLogFormat, FileAccessLog as EnvoyFileAccessLog,
+                FileAccessLog as EnvoyFileAccessLog, file_access_log::AccessLogFormat as FileAccessLogFormat,
             },
             filters::listener::{
                 local_ratelimit::v3::LocalRateLimit as EnvoyListenerLocalRateLimit,
@@ -161,8 +160,8 @@ impl ListenerBuilder {
     #[must_use]
     pub fn with_proxy_protocol_config(mut self, config: ProxyProtocolConfig) -> Self {
         use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::{
-            proxy_protocol_pass_through_tl_vs::PassTlVsMatchType as EnvoyPassTlvsMatchType,
             ProxyProtocolPassThroughTlVs as EnvoyPassThroughTlvs,
+            proxy_protocol_pass_through_tl_vs::PassTlVsMatchType as EnvoyPassTlvsMatchType,
         };
 
         let disallowed_versions = config

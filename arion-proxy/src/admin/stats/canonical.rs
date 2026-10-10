@@ -23,7 +23,7 @@ use tracing::debug;
 
 use crate::admin::AdminState;
 use arion_metrics::{
-    metrics::{clusters, custom, filters, http, listeners, server, tcp, tls, user, Metric},
+    metrics::{Metric, clusters, custom, filters, http, listeners, server, tcp, tls, user},
     sharded::{Gauge, ShardedHistogram, ShardedU64},
 };
 

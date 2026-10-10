@@ -21,7 +21,7 @@
 #![allow(clippy::print_stdout)]
 
 use anyhow::Context;
-use arion_configuration::{config::Config, options::Options, Result};
+use arion_configuration::{Result, config::Config, options::Options};
 
 fn main() -> Result<()> {
     let config = Config::new(&Options::from_path("bootstrap.yaml"))?;

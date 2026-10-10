@@ -32,9 +32,9 @@ use http::{Method, Request, Response, StatusCode};
 use http_body_util::Full;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 
 use crate::{Error, RequestBuilder, Result, TestClient};
 

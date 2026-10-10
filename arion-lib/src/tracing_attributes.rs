@@ -86,16 +86,16 @@ pub fn set_attributes_from_request<B>(span: &mut BoxedSpan, request: &Request<B>
 
     use arion_interner::StringInterner;
     use http::HeaderValue;
-    use opentelemetry::{trace::Span, KeyValue};
+    use opentelemetry::{KeyValue, trace::Span};
 
     span.set_attributes([
-        KeyValue::new(HTTP_REQUEST_METHOD, request.method().as_str().to_static_str()), // the number of HTTP methods is small, hence we can use the string interner here..
+        KeyValue::new(HTTP_REQUEST_METHOD, request.method().to_static_str()), // the number of HTTP methods is small, hence we can use the string interner here..
         KeyValue::new(URL_FULL, request.uri().to_string()),
         KeyValue::new(URL_PATH, request.uri().path().to_owned()),
         KeyValue::new(NETWORK_PROTOCOL_NAME, "http"),
         KeyValue::new(
             NETWORK_PROTOCOL_VERSION,
-            request.version().to_static_str().split_once('/').map(|(_, ver)| ver).unwrap_or("unknow"),
+            request.version().to_static_str().split_once('/').map(|(_, ver)| ver).unwrap_or("unknown"),
         ),
         KeyValue::new(
             USER_AGENT_ORIGINAL,
@@ -110,5 +110,5 @@ pub fn set_attributes_from_request<B>(span: &mut BoxedSpan, request: &Request<B>
     ]);
 
     request.uri().query().inspect(|q| span.set_attribute(KeyValue::new(URL_QUERY, q.to_string())));
-    request.uri().scheme().inspect(|s| span.set_attribute(KeyValue::new(URL_SCHEME, s.as_str().to_static_str())));
+    request.uri().scheme().inspect(|s| span.set_attribute(KeyValue::new(URL_SCHEME, s.to_static_str())));
 }

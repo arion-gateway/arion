@@ -16,8 +16,8 @@ use std::fmt::{self, Write as _};
 
 use arion_configuration::config::{
     cluster::{
-        CircuitBreakerThresholds, Cluster as ClusterConfig, ClusterDiscoveryType, HealthStatus, LocalityLbEndpoints,
-        RoutingPriority, DEFAULT_MAX_REQUESTS,
+        CircuitBreakerThresholds, Cluster as ClusterConfig, ClusterDiscoveryType, DEFAULT_MAX_REQUESTS, HealthStatus,
+        LocalityLbEndpoints, RoutingPriority,
     },
     core::Address,
 };
@@ -172,13 +172,12 @@ mod tests {
     use super::*;
     use crate::admin::build_admin_router;
     use arion_configuration::config::{
-        cluster::{Cluster, ClusterLoadAssignment, HttpProtocolOptions, LbEndpoint, LbPolicy, OriginalDstConfig},
         Bootstrap,
+        cluster::{Cluster, ClusterLoadAssignment, HttpProtocolOptions, LbEndpoint, LbPolicy, OriginalDstConfig},
     };
     use arion_lib::clusters::{add_cluster, cluster::PartialClusterType};
     use axum_test::TestServer;
     use parking_lot::RwLock;
-    use smol_str::SmolStr;
     use std::{num::NonZeroU32, time::Instant};
     use triomphe::Arc;
 
@@ -191,9 +190,9 @@ mod tests {
         }
     }
 
-    fn make_cluster(name: &str, discovery_settings: ClusterDiscoveryType) -> Cluster {
+    fn make_cluster(name: &'static str, discovery_settings: ClusterDiscoveryType) -> Cluster {
         Cluster {
-            name: SmolStr::new(name),
+            name: name.into(),
             discovery_settings,
             transport_socket: None,
             bind_device: None,

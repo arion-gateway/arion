@@ -18,10 +18,10 @@
 //
 //
 
-use futures::{future::BoxFuture, FutureExt, TryFutureExt};
+use futures::{FutureExt, TryFutureExt, future::BoxFuture};
 use http::{
-    uri::{Authority, Scheme},
     Request, Uri,
+    uri::{Authority, Scheme},
 };
 use std::{iter::Cycle, vec::IntoIter};
 use tracing::debug;
@@ -31,10 +31,10 @@ use arion_xds::grpc_deps::GrpcBody;
 use tower::Service;
 
 use crate::{
+    UpstreamCallOpts,
     body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody},
     listeners::http_connection_manager::{RequestCtx, RequestHandler},
     transport::HttpChannel,
-    UpstreamCallOpts,
 };
 
 /// Adapts a [`HttpChannel`] to a [`Service`] that can be used as a channel for gRPC.

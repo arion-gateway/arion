@@ -547,10 +547,10 @@ async fn test_hcm_rate_limit_aggregate_over_time() {
             let client = TestClient::new(addr);
             let mut successful = 0;
             for _ in 0..requests_per_client {
-                if let Ok(response) = client.get("/test").await {
-                    if response.status == StatusCode::OK {
-                        successful += 1;
-                    }
+                if let Ok(response) = client.get("/test").await
+                    && response.status == StatusCode::OK
+                {
+                    successful += 1;
                 }
             }
             successful
@@ -581,10 +581,10 @@ async fn test_hcm_rate_limit_aggregate_over_time() {
             let client = TestClient::new(addr);
             let mut successful = 0;
             for _ in 0..1 {
-                if let Ok(response) = client.get("/test").await {
-                    if response.status == StatusCode::OK {
-                        successful += 1;
-                    }
+                if let Ok(response) = client.get("/test").await
+                    && response.status == StatusCode::OK
+                {
+                    successful += 1;
                 }
             }
             successful

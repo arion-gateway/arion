@@ -22,9 +22,8 @@ use std::time::Duration;
 use arion_e2e_tests::config_builder::presets;
 use arion_e2e_tests::config_builder::{BootstrapBuilder, ClusterBuilder, DownstreamTlsBuilder};
 use arion_e2e_tests::{
-    assert_rejected, cleanup_config_file, ArionInstance, PartialSendClient, PreConfiguredResponse,
-    RawHttpRequestBuilder, RawHttpResponse, SpawnOptions, TcpTestClient, TestBackend, TestCerts, TestClient,
-    READ_TIMEOUT,
+    ArionInstance, PartialSendClient, PreConfiguredResponse, READ_TIMEOUT, RawHttpRequestBuilder, RawHttpResponse,
+    SpawnOptions, TcpTestClient, TestBackend, TestCerts, TestClient, assert_rejected, cleanup_config_file,
 };
 
 async fn setup() -> (ArionInstance, TestBackend, TcpTestClient, std::path::PathBuf) {

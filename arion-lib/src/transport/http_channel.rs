@@ -20,31 +20,31 @@
 
 use super::connector::{ConnectUsing, UnifiedConnector};
 use crate::{
+    ArionRequestBody, ArionResponseBody, Error, Result, UpstreamCallOpts,
     body::{instrumented_body::InstrumentedBody, response_flags::ResponseFlags, timeout_body::TimeoutBody},
     clusters::{
-        decrement_retries, retry_policy::RetryCondition, try_increment_retries, CircuitBreakerDenial, RoutingPriority,
+        CircuitBreakerDenial, RoutingPriority, decrement_retries, retry_policy::RetryCondition, try_increment_retries,
     },
     event_error::{EventKind, UpstreamError},
     instrument_block, instrument_function,
     listeners::{
-        http_connection_manager::{http_modifiers::strip_trailers_headers, RequestCtx, RequestHandler},
+        http_connection_manager::{RequestCtx, RequestHandler, http_modifiers::strip_trailers_headers},
         synthetic_http_response::SyntheticHttpResponse,
     },
     secrets::{TlsConfigurator, WantsToBuildClient},
-    transport::http1_pool::Http1ClientExt,
-    transport::http2_pool::Http2ClientExt,
-    ArionRequestBody, ArionResponseBody, Error, Result, UpstreamCallOpts,
+    transport::{http1_pool::Http1ClientExt, http2_pool::Http2ClientExt},
 };
 use arion_configuration::config::{
     cluster::http_protocol_options::{Codec, HttpProtocolOptions},
     network_filters::http_connection_manager::RetryPolicy,
 };
 use arion_format::types::{ResponseFlagsLong, ResponseFlagsShort};
+use arion_interner::{InternedStr, StringInterner};
 #[cfg(feature = "metrics")]
 use arion_metrics::metrics::custom::CUSTOM_METRICS;
 use http::{
-    uri::{Authority, Parts},
     HeaderValue, Response, Version,
+    uri::{Authority, Parts},
 };
 use http_body_util::BodyExt;
 use hyper::{Request, Uri};
@@ -61,7 +61,7 @@ use rustls::ClientConfig;
 #[cfg(feature = "metrics")]
 use smallvec::SmallVec;
 use smol_str::ToSmolStr;
-use std::{future::Future, io, mem, time::Duration};
+use std::{io, mem, time::Duration};
 use tracing::debug;
 use webpki::types::ServerName;
 
@@ -71,23 +71,24 @@ pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[must_use = "dropping the permit releases the retry circuit-breaker slot"]
 struct RetryCircuitBreakerPermit {
-    cluster_name: &'static str,
+    cluster_name: InternedStr,
     priority: RoutingPriority,
 }
 
 impl RetryCircuitBreakerPermit {
-    fn try_acquire(
-        cluster_name: &'static str,
+    fn try_acquire<T: StringInterner + ?Sized>(
+        cluster_name: &T,
         priority: RoutingPriority,
     ) -> std::result::Result<Self, CircuitBreakerDenial> {
-        try_increment_retries(cluster_name, priority)?;
-        Ok(Self { cluster_name, priority })
+        let name = cluster_name.to_interned_str();
+        try_increment_retries(name.as_str(), priority)?;
+        Ok(Self { cluster_name: name, priority })
     }
 }
 
 impl Drop for RetryCircuitBreakerPermit {
     fn drop(&mut self) {
-        decrement_retries(self.cluster_name, self.priority);
+        decrement_retries(self.cluster_name.as_str(), self.priority);
     }
 }
 
@@ -108,7 +109,7 @@ impl HttpChannels {
         &self.channel().upstream_authority
     }
 
-    pub fn cluster_name(&self) -> &'static str {
+    pub fn cluster_name(&self) -> InternedStr {
         self.channel().cluster_name
     }
 
@@ -127,7 +128,7 @@ pub struct HttpChannel {
     pub http_version: Codec,
     pub enable_trailers: bool,
     pub upstream_authority: Authority, // upstream authority
-    pub cluster_name: &'static str,
+    pub cluster_name: InternedStr,
 }
 
 #[derive(Clone, Debug)]
@@ -160,7 +161,7 @@ pub struct HttpChannelBuilder {
     tls: Option<TlsConfigurator<ClientConfig, WantsToBuildClient>>,
     server_name: Option<ServerName<'static>>,
     http_protocol_options: HttpProtocolOptions,
-    cluster_name: Option<&'static str>,
+    cluster_name: Option<InternedStr>,
 }
 
 impl HttpChannelBuilder {
@@ -178,7 +179,7 @@ impl HttpChannelBuilder {
         Self { tls: tls_configurator, ..self }
     }
 
-    pub fn with_cluster_name(self, cluster_name: &'static str) -> Self {
+    pub fn with_cluster_name(self, cluster_name: InternedStr) -> Self {
         Self { cluster_name: Some(cluster_name), ..self }
     }
 
@@ -303,7 +304,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
                                 debug!(
                                     attempt,
                                     status = %response.status(),
-                                    cluster = channel.cluster_name,
+                                    cluster = channel.cluster_name.as_str(),
                                     upstream = %channel.upstream_authority,
                                     "Server error response, trying next failover"
                                 );
@@ -315,7 +316,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
                         Err(err) => {
                             debug!(
                                 attempt,
-                                cluster = channel.cluster_name,
+                                cluster = channel.cluster_name.as_str(),
                                 upstream = %channel.upstream_authority,
                                 error = %err,
                                 "Failed to forward request upstream, trying next failover"
@@ -338,13 +339,14 @@ pub struct Retries {
 }
 
 impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &HttpChannel {
+    #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
         #[allow(unused_variables)] ctx: &RequestCtx,
         request: Request<ArionRequestBody>,
         arg: UpstreamCallOpts<'a>,
     ) -> Result<Response<ArionResponseBody>> {
-        instrument_function!(ctx.tx.clock, |nanos| {
+        instrument_function!(ctx.txn.clock, |nanos| {
             #[allow(clippy::cast_possible_truncation)]
             crate::instrumentation::metrics::REQUEST_TO_RESPONSE_TIME.observe(nanos as usize)
         });
@@ -353,11 +355,17 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
         #[cfg(feature = "metrics")]
         let shard_id = get_shard_id!();
 
-        with_metric!(clusters::UPSTREAM_RQ_ACTIVE, add, 1, shard_id, &[KeyValue::new("cluster", self.cluster_name)]);
+        with_metric!(
+            clusters::UPSTREAM_RQ_ACTIVE,
+            add,
+            1,
+            shard_id,
+            &[KeyValue::new("cluster", self.cluster_name.as_str())]
+        );
 
         #[cfg(feature = "metrics")]
         defer! {
-            with_metric!(clusters::UPSTREAM_RQ_ACTIVE, sub, 1, shard_id, &[KeyValue::new("cluster", self.cluster_name)]);
+            with_metric!(clusters::UPSTREAM_RQ_ACTIVE, sub, 1, shard_id, &[KeyValue::new("cluster", self.cluster_name.as_str())]);
         }
 
         #[cfg(feature = "metrics")]
@@ -368,10 +376,10 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
             let mut attrs = SmallVec::<[KeyValue; 2]>::new();
             if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
                 for key in custom_keys {
-                    if let Some(source) = key.source() {
-                        if let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source)) {
-                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
-                        }
+                    if let Some(source) = key.source()
+                        && let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source))
+                    {
+                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
                     }
                 }
             }
@@ -379,7 +387,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
         }
 
         #[cfg(feature = "access-log")]
-        ctx.tx.with_loggers(|loggers| {
+        ctx.txn.with_loggers(|loggers| {
             if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
                 crate::access_log::AccessLogHook::UpstreamRequest,
                 request.headers(),
@@ -394,7 +402,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
         let mut retries = Retries::default();
         let start_time = std::time::Instant::now();
         let result = instrument_block!(
-            ctx.tx.clock,
+            ctx.txn.clock,
             |nanos| {
                 #[allow(clippy::cast_possible_truncation)]
                 crate::instrumentation::metrics::SEND_REQUEST_WAIT_RESPONSE.observe(nanos as usize);
@@ -407,14 +415,20 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
                     priority,
                     Some(&mut retries),
                     #[cfg(feature = "instrumentation")]
-                    &ctx.tx.clock,
+                    &ctx.txn.clock,
                 )
                 .await
             }
         );
 
         if result.is_ok() {
-            with_metric!(clusters::UPSTREAM_RQ_TOTAL, add, 1, shard_id, &[KeyValue::new("cluster", self.cluster_name)]);
+            with_metric!(
+                clusters::UPSTREAM_RQ_TOTAL,
+                add,
+                1,
+                shard_id,
+                &[KeyValue::new("cluster", self.cluster_name.as_str())]
+            );
         }
 
         if retries.requests > 0 {
@@ -423,7 +437,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
                 add,
                 u64::from(retries.requests),
                 shard_id,
-                &[KeyValue::new("cluster", self.cluster_name)]
+                &[KeyValue::new("cluster", self.cluster_name.as_str())]
             );
         }
 
@@ -433,20 +447,20 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
                 add,
                 u64::from(retries.timeouts),
                 shard_id,
-                &[KeyValue::new("cluster", self.cluster_name)]
+                &[KeyValue::new("cluster", self.cluster_name.as_str())]
             );
         }
 
-        if let Err(ref err) = result {
-            if let Some(UpstreamError::RouteTimeout) = err.as_upstream_error() {
-                with_metric!(
-                    clusters::UPSTREAM_RQ_TIMEOUT,
-                    add,
-                    1,
-                    shard_id,
-                    &[KeyValue::new("cluster", self.cluster_name)]
-                );
-            }
+        if let Err(ref err) = result
+            && let Some(UpstreamError::RouteTimeout) = err.as_upstream_error()
+        {
+            with_metric!(
+                clusters::UPSTREAM_RQ_TIMEOUT,
+                add,
+                1,
+                shard_id,
+                &[KeyValue::new("cluster", self.cluster_name.as_str())]
+            );
         }
 
         HttpChannel::map_upstream_result(result, start_time.elapsed(), route_timeout, version)
@@ -672,11 +686,9 @@ impl HttpChannel {
                 return result;
             };
 
-            if is_per_try_timeout {
-                if let Some(retries) = output.as_deref_mut() {
-                    // Increment the timeout counter
-                    retries.timeouts += 1;
-                }
+            if is_per_try_timeout && let Some(retries) = output.as_deref_mut() {
+                // Increment the timeout counter
+                retries.timeouts += 1;
             }
 
             // check for a possible retry...
@@ -691,7 +703,8 @@ impl HttpChannel {
             // take an exponential back off break and retry...
             if index < retry_policy.num_retries() as usize {
                 if retry_permit.is_none() {
-                    let Ok(permit) = RetryCircuitBreakerPermit::try_acquire(self.cluster_name, priority) else {
+                    let Ok(permit) = RetryCircuitBreakerPermit::try_acquire(self.cluster_name.as_str(), priority)
+                    else {
                         debug!(
                             "retry_policy: circuit breaker denied retry #{}/{} for cluster {}",
                             index + 1,
@@ -706,7 +719,7 @@ impl HttpChannel {
                                 add,
                                 1,
                                 shard_id,
-                                &[KeyValue::new("cluster", self.cluster_name)]
+                                &[KeyValue::new("cluster", self.cluster_name.as_str())]
                             );
                         };
                         return result;
@@ -821,10 +834,10 @@ fn prepare_http1_request(request: &mut Request<ArionRequestBody>) -> Result<()> 
     if request.version() == Version::HTTP_11 {
         let uri = request.uri();
         if uri.scheme().is_none() && uri.authority().is_none() {
-            if let Some(host) = request.headers().get(http::header::HOST) {
-                if host.as_bytes().is_empty() {
-                    return Err("Empty Host header".into());
-                }
+            if let Some(host) = request.headers().get(http::header::HOST)
+                && host.as_bytes().is_empty()
+            {
+                return Err("Empty Host header".into());
             }
             return Ok(());
         }
@@ -837,10 +850,10 @@ fn prepare_http1_request(request: &mut Request<ArionRequestBody>) -> Result<()> 
                 .map_err(|e| format!("Invalid authority for Host header: {e}"))?;
             request.headers_mut().insert(http::header::HOST, val);
         }
-    } else if let Some(host) = request.headers().get(http::header::HOST) {
-        if host.as_bytes().is_empty() {
-            return Err("Empty Host header".into());
-        }
+    } else if let Some(host) = request.headers().get(http::header::HOST)
+        && host.as_bytes().is_empty()
+    {
+        return Err("Empty Host header".into());
     }
 
     if request.version() == Version::HTTP_2 {

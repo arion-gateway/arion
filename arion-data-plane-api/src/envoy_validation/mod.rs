@@ -52,7 +52,7 @@ impl FilterChainValidation for FilterChain {
             .as_ref()
             .and_then(|s| s.config_type.as_ref())
             .map(|cfg| {
-                let transport_socket::ConfigType::TypedConfig(ref any) = cfg;
+                let transport_socket::ConfigType::TypedConfig(any) = cfg;
                 any
             })
             .filter(|any| any.type_url == T_EXT_TLS_DOWNSTREAM_CONTEXT)
@@ -76,7 +76,7 @@ impl FilterValidation for Filter {
         self.config_type
             .as_ref()
             .and_then(|cfg| match cfg {
-                ConfigType::TypedConfig(ref any) => Some(any),
+                ConfigType::TypedConfig(any) => Some(any),
                 ConfigType::ConfigDiscovery(_) => None,
             })
             .filter(|any| any.type_url == T_EXT_HTTP_CONN_MANAGER)

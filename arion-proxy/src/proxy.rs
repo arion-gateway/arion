@@ -25,9 +25,9 @@ use crate::{
     xds_configurator::XdsConfigurationHandler,
 };
 use arion_configuration::config::{
-    bootstrap::Node, log::AccessLogConfig, metrics::MetricsConfig, runtime::Affinity, timezone::TimeZone, Bootstrap,
+    Bootstrap, bootstrap::Node, log::AccessLogConfig, metrics::MetricsConfig, runtime::Affinity, timezone::TimeZone,
 };
-use arion_stats::{set_proxy_state, ProxyState};
+use arion_stats::{ProxyState, set_proxy_state};
 use futures::future::join_all;
 
 #[cfg(feature = "tracing")]
@@ -39,16 +39,16 @@ use {
 use tokio::{sync::mpsc::Sender, task::JoinSet};
 
 #[cfg(feature = "access-log")]
-use arion_lib::access_log::{start_access_loggers, update_configuration, AccessLogHeaders};
+use arion_lib::access_log::{AccessLogHeaders, start_access_loggers, update_configuration};
 
 use anyhow::{Context, Result};
 use arion_lib::{
+    ConfigurationReceivers, ConfigurationSenders, ListenerConfigurationChange, PartialClusterType, SecretManager,
     build_listener_factories, clusters::cluster::ClusterType, get_secrets_and_clusters, new_configuration_channel,
-    runtime_config, ConfigurationReceivers, ConfigurationSenders, ListenerConfigurationChange, PartialClusterType,
-    SecretManager,
+    runtime_config,
 };
 #[cfg(feature = "metrics")]
-use arion_metrics::{metrics::init_global_metrics, wait_for_metrics_setup, OtelExporterConfig};
+use arion_metrics::{OtelExporterConfig, metrics::init_global_metrics, wait_for_metrics_setup};
 
 use parking_lot::RwLock;
 use std::{
@@ -337,11 +337,7 @@ fn spawn_services_runtime_from_thread(
 
 #[inline]
 fn build_thread_name(thread_name: &'static str, runtime_id: Option<RuntimeId>) -> String {
-    if let Some(id) = runtime_id {
-        format!("{thread_name}_RT{id}")
-    } else {
-        thread_name.to_owned()
-    }
+    if let Some(id) = runtime_id { format!("{thread_name}_RT{id}") } else { thread_name.to_owned() }
 }
 
 async fn spawn_services(info: ServiceInfo) -> Result<()> {

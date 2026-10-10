@@ -26,26 +26,27 @@ use super::{
     load_assignment::{ClusterLoadAssignmentBuilder, PartialClusterLoadAssignment},
 };
 use crate::{
-    clusters::cluster::{original_dst::DynamicDest, ClusterOps, PartialClusterType},
+    ArionRequestBody, Result,
+    clusters::cluster::{ClusterOps, PartialClusterType, original_dst::DynamicDest},
     secrets::TransportSecret,
     transport::{GrpcService, HttpChannel, HttpChannels, TcpChannelConnector},
-    ArionRequestBody, Result,
 };
 use arion_configuration::config::cluster::{Cluster as ClusterConfig, ClusterSpecifier};
-use arion_interner::StringInterner;
-use http::{header::HOST, uri::Authority, HeaderMap, HeaderName, HeaderValue, Request};
+use arion_interner::InternedStr;
+use http::{HeaderMap, HeaderName, HeaderValue, Request, header::HOST, uri::Authority};
 use rand::{prelude::SliceRandom, thread_rng};
 use smol_str::SmolStr;
 use std::{
     borrow::Cow,
     cell::RefCell,
-    collections::{btree_map::Entry as BTreeEntry, BTreeMap},
+    collections::{BTreeMap, btree_map::Entry as BTreeEntry},
 };
 use tracing::{debug, warn};
 use triomphe::Arc;
 
-type ClusterID = &'static str;
-type ClustersMap = BTreeMap<ClusterID, ClusterType>;
+type ClustersMap = BTreeMap<InternedStr, ClusterType>;
+
+pub const MAX_CLUSTER_NAME_LENGTH: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MetadataKey(pub SmolStr);
@@ -171,19 +172,25 @@ thread_local! {
     static CLUSTERS_MAP_CACHE : RefCell<CachedWatcher<'static, ClustersMap>> = RefCell::new(CLUSTERS_MAP.watcher());
 }
 
-pub fn resolve_cluster(selector: &ClusterSpecifier, header_map: Option<&HeaderMap>) -> Option<ClusterID> {
+pub fn resolve_cluster(selector: &ClusterSpecifier, header_map: Option<&HeaderMap>) -> Option<InternedStr> {
     debug!("Resolving cluster: {:?} with header map: {:?}", selector, header_map);
     match selector {
-        ClusterSpecifier::Cluster(cluster_name) => Some(cluster_name.to_static_str()),
+        ClusterSpecifier::Cluster(cluster_name) => Some(*cluster_name),
         ClusterSpecifier::WeightedCluster(weighted_clusters) => weighted_clusters
             .choose_weighted(&mut thread_rng(), |cluster| u32::from(cluster.weight))
             .ok()
-            .map(|cluster| cluster.cluster.to_static_str()),
+            .map(|cluster| cluster.cluster),
         ClusterSpecifier::ClusterHeader(name) => {
             debug!("Resolving cluster header '{}'...", name);
             if let Some(header_map) = header_map {
                 if let Some(header_value) = header_map.get(name.as_str()) {
-                    header_value.to_str().ok().map(|s| s.to_static_str())
+                    let cluster_name = header_value.to_str().ok()?;
+                    if cluster_name.is_empty() || cluster_name.len() > MAX_CLUSTER_NAME_LENGTH {
+                        return None;
+                    }
+                    CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
+                        watcher.cached_or_latest().get_key_value(cluster_name).map(|(k, _)| *k)
+                    })
                 } else {
                     debug!("Header '{}' not found in the request/header map (no cluster found)", name);
                     None
@@ -196,7 +203,7 @@ pub fn resolve_cluster(selector: &ClusterSpecifier, header_map: Option<&HeaderMa
     }
 }
 
-pub fn get_cluster_routing_requirements(cluster_id: ClusterID) -> RoutingRequirement {
+pub fn get_cluster_routing_requirements(cluster_id: &str) -> RoutingRequirement {
     with_cluster(cluster_id, |cluster| Ok(cluster.get_routing_requirements())).unwrap_or(RoutingRequirement::None)
 }
 
@@ -316,27 +323,27 @@ pub fn get_all_clusters() -> Vec<ClusterConfig> {
     CLUSTERS_MAP.get_clone().0.values().by_ref().filter_map(|cluster| ClusterConfig::try_from(cluster).ok()).collect()
 }
 
-pub fn get_http_connection(cluster_id: ClusterID, context: RoutingContext) -> Result<HttpChannels> {
+pub fn get_http_connection(cluster_id: &str, context: RoutingContext) -> Result<HttpChannels> {
     with_cluster(cluster_id, |cluster| cluster.get_http_connection(context))
 }
 
-pub fn get_tcp_connection(cluster_id: ClusterID, context: RoutingContext) -> Result<TcpChannelConnector> {
+pub fn get_tcp_connection(cluster_id: &str, context: RoutingContext) -> Result<TcpChannelConnector> {
     with_cluster(cluster_id, |cluster| cluster.get_tcp_connection(context))
 }
 
-pub fn get_grpc_connection(cluster_id: ClusterID, context: RoutingContext) -> Result<GrpcService> {
+pub fn get_grpc_connection(cluster_id: &str, context: RoutingContext) -> Result<GrpcService> {
     with_cluster(cluster_id, |cluster| cluster.get_grpc_connection(context))
 }
 
-pub fn all_http_connections(cluster_id: ClusterID) -> Result<Vec<(Authority, HttpChannel)>> {
+pub fn all_http_connections(cluster_id: &str) -> Result<Vec<(Authority, HttpChannel)>> {
     with_cluster(cluster_id, |cluster| Ok(cluster.all_http_channels()))
 }
 
-pub fn all_tcp_connections(cluster_id: ClusterID) -> Result<Vec<(Authority, TcpChannelConnector)>> {
+pub fn all_tcp_connections(cluster_id: &str) -> Result<Vec<(Authority, TcpChannelConnector)>> {
     with_cluster(cluster_id, |cluster| Ok(cluster.all_tcp_channels()))
 }
 
-pub fn all_grpc_connections(cluster_id: ClusterID) -> Result<Vec<Result<(Authority, GrpcService)>>> {
+pub fn all_grpc_connections(cluster_id: &str) -> Result<Vec<Result<(Authority, GrpcService)>>> {
     with_cluster(cluster_id, |cluster| Ok(cluster.all_grpc_channels()))
 }
 
@@ -356,73 +363,73 @@ where
 pub use super::circuit_breaker::{CircuitBreakerDenial, RoutingPriority};
 
 pub fn try_increment_connections(
-    cluster_id: ClusterID,
+    cluster_id: &str,
     priority: RoutingPriority,
 ) -> std::result::Result<(), CircuitBreakerDenial> {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
-        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
-            if let Some(cb) = cluster.circuit_breaker() {
-                return cb.try_increment_connections(priority);
-            }
+        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id)
+            && let Some(cb) = cluster.circuit_breaker()
+        {
+            return cb.try_increment_connections(priority);
         }
         Ok(())
     })
 }
 
-pub fn decrement_connections(cluster_id: ClusterID, priority: RoutingPriority) {
+pub fn decrement_connections(cluster_id: &str, priority: RoutingPriority) {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
-        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
-            if let Some(cb) = cluster.circuit_breaker() {
-                cb.decrement_connections(priority);
-            }
+        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id)
+            && let Some(cb) = cluster.circuit_breaker()
+        {
+            cb.decrement_connections(priority);
         }
     });
 }
 
 pub fn try_increment_requests(
-    cluster_id: ClusterID,
+    cluster_id: &str,
     priority: RoutingPriority,
 ) -> std::result::Result<(), CircuitBreakerDenial> {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
-        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
-            if let Some(cb) = cluster.circuit_breaker() {
-                return cb.try_increment_requests(priority);
-            }
+        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id)
+            && let Some(cb) = cluster.circuit_breaker()
+        {
+            return cb.try_increment_requests(priority);
         }
         Ok(())
     })
 }
 
-pub fn decrement_requests(cluster_id: ClusterID, priority: RoutingPriority) {
+pub fn decrement_requests(cluster_id: &str, priority: RoutingPriority) {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
-        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
-            if let Some(cb) = cluster.circuit_breaker() {
-                cb.decrement_requests(priority);
-            }
+        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id)
+            && let Some(cb) = cluster.circuit_breaker()
+        {
+            cb.decrement_requests(priority);
         }
     });
 }
 
 pub fn try_increment_retries(
-    cluster_id: ClusterID,
+    cluster_id: &str,
     priority: RoutingPriority,
 ) -> std::result::Result<(), CircuitBreakerDenial> {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
-        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
-            if let Some(cb) = cluster.circuit_breaker() {
-                return cb.try_increment_retries(priority);
-            }
+        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id)
+            && let Some(cb) = cluster.circuit_breaker()
+        {
+            return cb.try_increment_retries(priority);
         }
         Ok(())
     })
 }
 
-pub fn decrement_retries(cluster_id: ClusterID, priority: RoutingPriority) {
+pub fn decrement_retries(cluster_id: &str, priority: RoutingPriority) {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
-        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
-            if let Some(cb) = cluster.circuit_breaker() {
-                cb.decrement_retries(priority);
-            }
+        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id)
+            && let Some(cb) = cluster.circuit_breaker()
+        {
+            cb.decrement_retries(priority);
         }
     });
 }
@@ -436,11 +443,12 @@ mod tests {
         OriginalDstRoutingMethod, StandardLbPolicy,
     };
     use arion_configuration::config::cluster::{Cluster as ClusterConfig, HttpProtocolOptions};
+    use arion_interner::StringInterner;
     use std::sync::atomic::Ordering;
 
-    fn make_cluster_config(name: &str, max_requests: u32) -> ClusterConfig {
+    fn make_cluster_config<T: StringInterner + ?Sized>(name: &T, max_requests: u32) -> ClusterConfig {
         ClusterConfig {
-            name: name.into(),
+            name: name.to_interned_str(),
             discovery_settings: ClusterDiscoveryType::OriginalDst(OriginalDstConfig {
                 routing_method: OriginalDstRoutingMethod::HttpHeader { http_header_name: None },
                 upstream_port_override: None,
@@ -507,7 +515,7 @@ mod tests {
             let cluster = watcher.cached_or_latest().get_mut(name).unwrap();
             let cb = cluster.circuit_breaker().unwrap();
             let counter = cb.get_state(RoutingPriority::Default).counters.active_requests.load(Ordering::Relaxed);
-            assert_eq!(counter, 0, "counter must be zero, not underflowed to u32::MAX");
+            assert_eq!(counter, 0, "counter must be zero, not underflow to u32::MAX");
         });
 
         remove_cluster(name).unwrap();
@@ -537,6 +545,34 @@ mod tests {
 
         let cb = cluster.circuit_breaker().expect("CB should exist on first add");
         assert_eq!(cb.get_state(RoutingPriority::Default).counters.active_requests.load(Ordering::Relaxed), 0);
+
+        remove_cluster(name).unwrap();
+    }
+
+    #[test]
+    fn resolve_cluster_header_safely_rejects_unknown_clusters() {
+        let name = "cluster-header-safe-test";
+        let partial = build_partial(make_cluster_config(name, 10));
+        let cluster = add_cluster(partial).unwrap();
+        let expected_interned = cluster.get_name();
+
+        let selector = ClusterSpecifier::ClusterHeader(http::HeaderName::from_static("x-cluster"));
+
+        // 1. Header matches existing cluster
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-cluster", name.parse().unwrap());
+        let resolved = resolve_cluster(&selector, Some(&headers));
+        assert_eq!(resolved, Some(expected_interned));
+
+        // 2. Header has unknown/untrusted cluster
+        headers.insert("x-cluster", "random-malicious-unknown-cluster-12345".parse().unwrap());
+        let resolved = resolve_cluster(&selector, Some(&headers));
+        assert_eq!(resolved, None);
+
+        // 3. Header is missing
+        headers.remove("x-cluster");
+        let resolved = resolve_cluster(&selector, Some(&headers));
+        assert_eq!(resolved, None);
 
         remove_cluster(name).unwrap();
     }

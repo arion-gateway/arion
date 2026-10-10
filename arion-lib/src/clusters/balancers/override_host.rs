@@ -15,18 +15,18 @@
 use std::str::FromStr;
 use triomphe::Arc;
 
-use http::{uri::Authority, HeaderName, HeaderValue};
+use http::{HeaderName, HeaderValue, uri::Authority};
 use rustc_hash::FxHashMap as HashMap;
 use smol_str::{SmolStr, ToSmolStr};
 use tracing::debug;
 
 use super::{Balancer, EndpointWithAuthority};
+use crate::Result;
 use crate::clusters::{
     health::{EndpointHealth, HealthStatus, ValueUpdated},
     load_assignment::{BalancerType, LbEndpoint, LocalityLbEndpoints},
 };
 use crate::transport::HttpChannels;
-use crate::Result;
 
 #[derive(Debug, Clone)]
 struct OverrideEndpoint {

@@ -20,14 +20,14 @@
 
 #![allow(dead_code)]
 
-use std::{future::Future, pin::Pin};
+use std::pin::Pin;
 
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::service::{
         cluster::v3::cluster_discovery_service_client::ClusterDiscoveryServiceClient,
         discovery::v3::{
-            aggregated_discovery_service_client::AggregatedDiscoveryServiceClient, DeltaDiscoveryRequest,
-            DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse,
+            DeltaDiscoveryRequest, DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse,
+            aggregated_discovery_service_client::AggregatedDiscoveryServiceClient,
         },
         endpoint::v3::endpoint_discovery_service_client::EndpointDiscoveryServiceClient,
         listener::v3::listener_discovery_service_client::ListenerDiscoveryServiceClient,

@@ -17,6 +17,7 @@
 // limitations under the License.
 //
 
+use arion_interner::{InternedStr, StringInterner};
 use bounded_integer::BoundedU16;
 use http::header::HOST;
 use http::{HeaderMap, HeaderValue, Request, StatusCode};
@@ -116,14 +117,14 @@ impl ScopedClientSpan {
             span.set_attribute(KeyValue::new("url.query", query.to_owned()));
         }
         if let Some(scheme) = request.uri().scheme() {
-            span.set_attribute(KeyValue::new("url.scheme", scheme.as_str().to_owned()));
+            span.set_attribute(KeyValue::new("url.scheme", scheme.to_static_str()));
         }
     }
 
-    pub fn set_endpoint(&mut self, cluster_name: &str, authority: &str) {
+    pub fn set_endpoint(&mut self, cluster_name: InternedStr, authority: &str) {
         if let Some(span) = self.span.as_mut() {
             span.set_attributes([
-                KeyValue::new("upstream.cluster.name", cluster_name.to_owned()),
+                KeyValue::new("upstream.cluster.name", cluster_name.as_str()),
                 KeyValue::new("upstream.address", authority.to_owned()),
             ]);
         }
@@ -421,17 +422,17 @@ fn context_from_trace_info(trace_info: &TraceInfo, tracestate: Option<&HeaderVal
 
 pub fn get_host_from_request<B>(request: &Request<B>) -> Option<&str> {
     // 1. Prefer the ':authority' header, common in HTTP/2.
-    if let Some(authority) = request.headers().get(":authority") {
-        if let Ok(host) = authority.to_str() {
-            return Some(host);
-        }
+    if let Some(authority) = request.headers().get(":authority")
+        && let Ok(host) = authority.to_str()
+    {
+        return Some(host);
     }
 
     // 2. Fallback to the 'Host' header, standard for HTTP/1.1.
-    if let Some(host_header) = request.headers().get(HOST) {
-        if let Ok(host) = host_header.to_str() {
-            return Some(host);
-        }
+    if let Some(host_header) = request.headers().get(HOST)
+        && let Ok(host) = host_header.to_str()
+    {
+        return Some(host);
     }
 
     // 3. As a last resort, try to get the host from the URI.
@@ -542,7 +543,7 @@ mod tests {
 
         let span = tracer.try_create_span(
             context.as_ref(),
-            &TracingKey("test", 0),
+            &TracingKey("test".into(), 0),
             SpanKind::Server,
             SpanName::Str::<()>("test"),
         );
@@ -582,7 +583,7 @@ mod tests {
 
         let span = tracer.try_create_span(
             context.as_ref(),
-            &TracingKey("test", 0),
+            &TracingKey("test".into(), 0),
             SpanKind::Server,
             SpanName::Str::<()>("test"),
         );
@@ -610,11 +611,19 @@ mod tests {
         let context = tracer.try_build_trace_context(&request, None).unwrap();
 
         assert!(context.tracestate().is_none());
-        assert!(tracer
-            .try_create_span(Some(&context), &TracingKey("test", 0), SpanKind::Server, SpanName::Str::<()>("server"),)
-            .is_none());
+        assert!(
+            tracer
+                .try_create_span(
+                    Some(&context),
+                    &TracingKey("test".into(), 0),
+                    SpanKind::Server,
+                    SpanName::Str::<()>("server"),
+                )
+                .is_none()
+        );
 
-        let guard = HttpTracer::begin_scoped_client_span(Some(&context), Some(&TracingKey("test", 0)), "upstream");
+        let guard =
+            HttpTracer::begin_scoped_client_span(Some(&context), Some(&TracingKey("test".into(), 0)), "upstream");
         let mut headers = HeaderMap::new();
         guard.inject_headers(&mut headers);
 
@@ -627,9 +636,16 @@ mod tests {
         let request = Request::builder().header(X_ENVOY_FORCE_TRACE, "true").body(()).unwrap();
         let context = tracer.try_build_trace_context(&request, None).unwrap();
 
-        assert!(tracer
-            .try_create_span(Some(&context), &TracingKey("test", 0), SpanKind::Server, SpanName::Str::<()>("server"),)
-            .is_none());
+        assert!(
+            tracer
+                .try_create_span(
+                    Some(&context),
+                    &TracingKey("test".into(), 0),
+                    SpanKind::Server,
+                    SpanName::Str::<()>("server"),
+                )
+                .is_none()
+        );
 
         let server = context.map_child(Clone::clone).expect("forced tracing must create a server propagation context");
         assert_ne!(server.trace_id(), 0);
@@ -659,7 +675,7 @@ mod tests {
 
         let span = tracer.try_create_span(
             context.as_ref(),
-            &TracingKey("test", 0),
+            &TracingKey("test".into(), 0),
             SpanKind::Server,
             SpanName::Str::<()>("test"),
         );
@@ -698,7 +714,7 @@ mod tests {
 
         let span = tracer.try_create_span(
             context.as_ref(),
-            &TracingKey("test", 0),
+            &TracingKey("test".into(), 0),
             SpanKind::Server,
             SpanName::Str::<()>("test"),
         );
@@ -723,7 +739,7 @@ mod tests {
         assert!(trace_context.is_none());
         let span = no_tracer.try_create_span(
             trace_context.as_ref(),
-            &TracingKey("test", 0),
+            &TracingKey("test".into(), 0),
             SpanKind::Server,
             SpanName::Str::<()>("test"),
         );
@@ -754,7 +770,7 @@ mod tests {
 
         let span = tracer.try_create_span(
             trace_context.as_ref(),
-            &TracingKey("test", 0),
+            &TracingKey("test".into(), 0),
             SpanKind::Server,
             SpanName::Str::<()>("test"),
         );
@@ -786,9 +802,16 @@ mod tests {
             .body(())
             .unwrap();
         let context = tracer.try_build_trace_context(&request, None).unwrap();
-        assert!(tracer
-            .try_create_span(Some(&context), &TracingKey("test", 0), SpanKind::Server, SpanName::Str::<()>("server"),)
-            .is_none());
+        assert!(
+            tracer
+                .try_create_span(
+                    Some(&context),
+                    &TracingKey("test".into(), 0),
+                    SpanKind::Server,
+                    SpanName::Str::<()>("server"),
+                )
+                .is_none()
+        );
         let server = context.map_child(Clone::clone).unwrap();
 
         let guard = HttpTracer::begin_scoped_client_span(Some(&context), None, "upstream");
@@ -843,14 +866,16 @@ mod tests {
             let mut request = Request::new(());
             *request.headers_mut() = headers;
             let context = tracer.try_build_trace_context(&request, None).unwrap();
-            assert!(tracer
-                .try_create_span(
-                    Some(&context),
-                    &TracingKey("provider-test", 0),
-                    SpanKind::Server,
-                    SpanName::Str::<()>("server"),
-                )
-                .is_none());
+            assert!(
+                tracer
+                    .try_create_span(
+                        Some(&context),
+                        &TracingKey("provider-test".into(), 0),
+                        SpanKind::Server,
+                        SpanName::Str::<()>("server"),
+                    )
+                    .is_none()
+            );
 
             let guard = HttpTracer::begin_scoped_client_span(Some(&context), None, "upstream");
             let mut outbound = HeaderMap::new();
@@ -880,11 +905,19 @@ mod tests {
             .body(())
             .unwrap();
         let context = tracer.try_build_trace_context(&request, None).unwrap();
-        assert!(tracer
-            .try_create_span(Some(&context), &TracingKey("test", 0), SpanKind::Server, SpanName::Str::<()>("server"),)
-            .is_none());
+        assert!(
+            tracer
+                .try_create_span(
+                    Some(&context),
+                    &TracingKey("test".into(), 0),
+                    SpanKind::Server,
+                    SpanName::Str::<()>("server"),
+                )
+                .is_none()
+        );
 
-        let guard = HttpTracer::begin_scoped_client_span(Some(&context), Some(&TracingKey("test", 0)), "upstream");
+        let guard =
+            HttpTracer::begin_scoped_client_span(Some(&context), Some(&TracingKey("test".into(), 0)), "upstream");
         let mut headers = HeaderMap::new();
         guard.inject_headers(&mut headers);
         let propagated = TraceInfo::extract_from(&headers).unwrap().unwrap();

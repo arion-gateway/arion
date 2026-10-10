@@ -20,17 +20,18 @@
 
 use std::collections::BTreeMap;
 
+use arion_interner::InternedStr;
 use smol_str::SmolStr;
-use tokio::sync::{broadcast, mpsc, Notify};
+use tokio::sync::{Notify, broadcast, mpsc};
 use tracing::{info, warn};
 use triomphe::Arc;
 
 use arion_configuration::config::{
-    network_filters::http_connection_manager::RouteConfiguration, Listener as ListenerConfig,
+    Listener as ListenerConfig, network_filters::http_connection_manager::RouteConfiguration,
 };
 
 use super::listener::{Listener, ListenerFactory};
-use crate::{secrets::TransportSecret, ConfigDump, Result};
+use crate::{ConfigDump, Result, secrets::TransportSecret};
 #[derive(Debug, Clone)]
 pub enum ListenerConfigurationChange {
     Added(Box<(ListenerFactory, ListenerConfig)>),
@@ -71,7 +72,7 @@ impl ListenerInfo {
 pub struct ListenersManager {
     configuration_channel: mpsc::Receiver<ListenerConfigurationChange>,
     route_configuration_channel: mpsc::Receiver<RouteConfigurationChange>,
-    listener_handles: BTreeMap<&'static str, ListenerInfo>,
+    listener_handles: BTreeMap<InternedStr, ListenerInfo>,
 }
 
 impl ListenersManager {
@@ -183,7 +184,7 @@ mod tests {
     };
 
     use super::*;
-    use arion_configuration::config::{listener::ListenerType, Listener as ListenerConfig};
+    use arion_configuration::config::{Listener as ListenerConfig, listener::ListenerType};
     //use tracing_test::traced_test;
 
     #[tokio::test]

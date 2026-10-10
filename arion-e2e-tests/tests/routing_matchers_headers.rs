@@ -19,12 +19,12 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use arion_e2e_tests::config_builder::{
-    presets, ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, RouteBuilder,
-    RouteConfigBuilder, VirtualHostBuilder,
+    ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, RouteBuilder, RouteConfigBuilder,
+    VirtualHostBuilder, presets,
 };
 use arion_e2e_tests::{
-    cleanup_config_file, ArionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient,
-    XdsEnabledHarness,
+    ArionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient, XdsEnabledHarness,
+    cleanup_config_file,
 };
 use http::StatusCode;
 
@@ -534,10 +534,10 @@ async fn test_header_matchers_when_configured_over_xds() {
     // This distinguishes new config from old and serves as our propagation sentinel.
     pingora::time::timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(response) = client.get("/test").await {
-                if response.body_str() == Some("A") {
-                    break;
-                }
+            if let Ok(response) = client.get("/test").await
+                && response.body_str() == Some("A")
+            {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

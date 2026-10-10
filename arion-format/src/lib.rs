@@ -33,7 +33,7 @@ use context::Context;
 use operator::{Category, Operator};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
-use smol_str::{format_smolstr, SmolStr};
+use smol_str::{SmolStr, format_smolstr};
 use std::{
     collections::HashSet,
     fmt::{self, Display, Formatter},
@@ -221,20 +221,20 @@ impl LogFormatter {
 
         // Try to match against custom placeholders (Template::Custom)
         for (idx, template) in self.conf.templates.iter().enumerate() {
-            if let Template::Custom(name) = template {
-                if let Some(val) = obj.get(name.as_str()) {
-                    // SAFETY: `idx` is guaranteed to be valid for `format` vector by construction.
-                    if matches!(unsafe { self.format.get_unchecked(idx) }, StringType::None) {
-                        let res = json_value_to_string_type(val);
-                        if !matches!(res, StringType::None) {
-                            // SAFETY: `idx` is guaranteed to be valid for `format` vector, by construction.
-                            // SAFETY: ptr::write without dropping the old value, since it does not require destruction
-                            // (it is guaranteed to be StringType::None).
-                            #[allow(clippy::multiple_unsafe_ops_per_block)]
-                            unsafe {
-                                std::ptr::write(self.format.get_unchecked_mut(idx), res)
-                            };
-                        }
+            if let Template::Custom(name) = template
+                && let Some(val) = obj.get(name.as_str())
+            {
+                // SAFETY: `idx` is guaranteed to be valid for `format` vector by construction.
+                if matches!(unsafe { self.format.get_unchecked(idx) }, StringType::None) {
+                    let res = json_value_to_string_type(val);
+                    if !matches!(res, StringType::None) {
+                        // SAFETY: `idx` is guaranteed to be valid for `format` vector, by construction.
+                        // SAFETY: ptr::write without dropping the old value, since it does not require destruction
+                        // (it is guaranteed to be StringType::None).
+                        #[allow(clippy::multiple_unsafe_ops_per_block)]
+                        unsafe {
+                            std::ptr::write(self.format.get_unchecked_mut(idx), res)
+                        };
                     }
                 }
             }
@@ -245,19 +245,19 @@ impl LogFormatter {
 
     pub fn with_custom_value(&mut self, key: &str, value: &str) -> &mut Self {
         for (idx, template) in self.conf.templates.iter().enumerate() {
-            if let Template::Custom(name) = template {
-                if name.as_str() == key {
-                    // SAFETY: `idx` is guaranteed to be valid for `format` vector by construction.
-                    if matches!(unsafe { self.format.get_unchecked(idx) }, StringType::None) && value != "null" {
-                        let res = StringType::Smol(SmolStr::new(value));
-                        // SAFETY: `idx` is guaranteed to be valid for `format` vector, by construction.
-                        // SAFETY: ptr::write without dropping the old value, since it does not require destruction
-                        // (it is guaranteed to be StringType::None).
-                        #[allow(clippy::multiple_unsafe_ops_per_block)]
-                        unsafe {
-                            std::ptr::write(self.format.get_unchecked_mut(idx), res)
-                        };
-                    }
+            if let Template::Custom(name) = template
+                && name.as_str() == key
+            {
+                // SAFETY: `idx` is guaranteed to be valid for `format` vector by construction.
+                if matches!(unsafe { self.format.get_unchecked(idx) }, StringType::None) && value != "null" {
+                    let res = StringType::Smol(SmolStr::new(value));
+                    // SAFETY: `idx` is guaranteed to be valid for `format` vector, by construction.
+                    // SAFETY: ptr::write without dropping the old value, since it does not require destruction
+                    // (it is guaranteed to be StringType::None).
+                    #[allow(clippy::multiple_unsafe_ops_per_block)]
+                    unsafe {
+                        std::ptr::write(self.format.get_unchecked_mut(idx), res)
+                    };
                 }
             }
         }

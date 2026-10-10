@@ -20,12 +20,13 @@
 
 use abort_on_drop::ChildTask;
 use anyhow::Result;
-use arion_configuration::config::{bootstrap::Node, cluster::ClusterSpecifier, Listener};
+use arion_configuration::config::{Listener, bootstrap::Node, cluster::ClusterSpecifier};
+use arion_interner::StringInterner;
 use arion_lib::{
-    access_log::{update_configuration, Target},
-    clusters::cluster::ClusterType,
     ConfigurationSenders, ConversionContext, EndpointHealthUpdate, HealthCheckManager, ListenerConfigurationChange,
     ListenerFactory, PartialClusterLoadAssignment, PartialClusterType, RouteConfigurationChange, SecretManager,
+    access_log::{Target, update_configuration},
+    clusters::cluster::ClusterType,
 };
 use arion_xds::{
     start_aggregate_client_no_retry_loop,
@@ -48,8 +49,8 @@ use std::{sync::Arc as StdArc, time::Duration};
 use tokio::{
     select,
     sync::{
-        mpsc::{self, Receiver, Sender},
         Notify,
+        mpsc::{self, Receiver, Sender},
     },
 };
 use tracing::{debug, info, warn};
@@ -102,10 +103,10 @@ impl XdsConfigurationHandler {
         DeltaDiscoveryClient,
         DeltaDiscoverySubscriptionManager,
     )> {
-        let selector = ClusterSpecifier::Cluster(cluster_name.into());
+        let selector = ClusterSpecifier::Cluster(cluster_name.to_interned_str());
         let cluster_id = arion_lib::clusters::resolve_cluster(&selector, None)
             .ok_or_else(|| anyhow::anyhow!("Failed to resolve cluster {cluster_name} from specifier"))?;
-        let grpc_connections = match arion_lib::clusters::all_grpc_connections(cluster_id) {
+        let grpc_connections = match arion_lib::clusters::all_grpc_connections(cluster_id.as_str()) {
             Ok(connections) => connections,
             Err(err) => {
                 let msg = anyhow::anyhow!("Failed to get gRPC connections from cluster ({cluster_name}): {err}");
@@ -371,7 +372,7 @@ impl XdsConfigurationHandler {
     }
 
     async fn access_log_listener_remove(&mut self, id: &str) {
-        if let Err(err) = update_configuration(Target::Listener(id.into()), vec![]).await {
+        if let Err(err) = update_configuration(Target::Listener(id.to_interned_str()), vec![]).await {
             warn!("Failed to remove access log configuration for listener {id}: {err}");
         }
     }
@@ -384,11 +385,11 @@ impl XdsConfigurationHandler {
 
     async fn handle_extension_update(&self, type_url: &str, resource_id: &str, payload: &[u8]) -> Result<()> {
         for handler in &self.extension_handlers {
-            if handler.type_urls().contains(&type_url) {
-                if let Err(e) = handler.handle_update(type_url, resource_id, payload).await {
-                    warn!("Extension handler error for {type_url}: {e}");
-                    return Err(e.into());
-                }
+            if handler.type_urls().contains(&type_url)
+                && let Err(e) = handler.handle_update(type_url, resource_id, payload).await
+            {
+                warn!("Extension handler error for {type_url}: {e}");
+                return Err(e.into());
             }
         }
         Ok(())
@@ -396,11 +397,11 @@ impl XdsConfigurationHandler {
 
     async fn handle_extension_remove(&self, type_url: &str, resource_id: &str) -> Result<()> {
         for handler in &self.extension_handlers {
-            if handler.type_urls().contains(&type_url) {
-                if let Err(e) = handler.handle_remove(type_url, resource_id).await {
-                    warn!("Extension handler error for {type_url} removal: {e}");
-                    return Err(e.into());
-                }
+            if handler.type_urls().contains(&type_url)
+                && let Err(e) = handler.handle_remove(type_url, resource_id).await
+            {
+                warn!("Extension handler error for {type_url} removal: {e}");
+                return Err(e.into());
             }
         }
         Ok(())

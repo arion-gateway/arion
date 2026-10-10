@@ -25,17 +25,17 @@ use std::{
 };
 
 use crate::{
+    StringType,
     operator::Operator,
     types::{ResponseFlags, ResponseFlagsLong, ResponseFlagsShort},
-    StringType,
 };
 use arion_http_header::X_ENVOY_ORIGINAL_PATH;
 use arion_interner::StringInterner;
 use arrayvec::ArrayString;
 use chrono::{DateTime, Datelike, Timelike, Utc};
-use http::{uri::Authority, Request, Response};
+use http::{Request, Response, uri::Authority};
 use smol_str::ToSmolStr;
-use smol_str::{format_smolstr, SmolStr};
+use smol_str::{SmolStr, format_smolstr};
 
 pub trait Context {
     fn eval_op(&self, op: &Operator) -> StringType;
@@ -285,9 +285,9 @@ pub struct FinishContext {
     pub bytes_received: u64,
     pub bytes_sent: u64,
     pub response_flags: ResponseFlags,
-    pub upstream_transport_failure_reason: Option<&'static str>,
-    pub response_code_details: Option<&'static str>,
-    pub connection_termination_details: Option<&'static str>,
+    pub upstream_transport_failure_reason: Option<SmolStr>,
+    pub response_code_details: Option<SmolStr>,
+    pub connection_termination_details: Option<SmolStr>,
 }
 
 impl Context for FinishContext {
@@ -309,12 +309,14 @@ impl Context for FinishContext {
             },
             Operator::UpstreamTransportFailureReason => self
                 .upstream_transport_failure_reason
-                .map_or(StringType::None, |msg| StringType::Smol(SmolStr::new_static(msg))),
+                .as_ref()
+                .map_or(StringType::None, |msg| StringType::Smol(msg.clone())),
             Operator::ConnectionTerminationDetails => self
                 .connection_termination_details
-                .map_or(StringType::None, |msg| StringType::Smol(SmolStr::new_static(msg))),
+                .as_ref()
+                .map_or(StringType::None, |msg| StringType::Smol(msg.clone())),
             Operator::ResponseCodeDetails => {
-                self.response_code_details.map_or(StringType::None, |msg| StringType::Smol(SmolStr::new_static(msg)))
+                self.response_code_details.as_ref().map_or(StringType::None, |msg| StringType::Smol(msg.clone()))
             },
             _ => StringType::None,
         }
@@ -368,9 +370,11 @@ impl Context for ConnectionContext<'_> {
                 let mut buffer = itoa::Buffer::new();
                 StringType::Smol(SmolStr::new(buffer.format(self.duration.as_millis())))
             },
-            Operator::ConnectionTerminationDetails => {
-                self.connection_termination_details.map_or(StringType::None, |msg| StringType::Smol(SmolStr::new(msg)))
-            },
+            Operator::ConnectionTerminationDetails => self
+                .connection_termination_details
+                .as_ref()
+                .as_ref()
+                .map_or(StringType::None, |msg| StringType::Smol(SmolStr::new(msg))),
             _ => StringType::None,
         }
     }

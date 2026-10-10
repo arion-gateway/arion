@@ -116,9 +116,10 @@ mod envoy_conversions {
     use super::{Secret, TlsCertificate, Type, ValidationContext};
     use crate::config::{common::*, secret::TrustChainVerification};
     use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::transport_sockets::tls::v3::{
+        CertificateValidationContext as EnvoyCertificateValidationContext, Secret as EnvoySecret,
+        TlsCertificate as EnvoyTlsCertificate,
         certificate_validation_context::TrustChainVerification as EnvoyTrustChainVerification,
-        secret::Type as EnvoyType, CertificateValidationContext as EnvoyCertificateValidationContext,
-        Secret as EnvoySecret, TlsCertificate as EnvoyTlsCertificate,
+        secret::Type as EnvoyType,
     };
     use smol_str::SmolStr;
 

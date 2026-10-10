@@ -20,13 +20,15 @@
 #![allow(clippy::manual_let_else)]
 #![allow(clippy::too_many_lines)]
 
+use arion_interner::InternedStr;
+use arion_interner::StringInterner;
 use std::sync::LazyLock;
 use triomphe::Arc;
 
-use crate::body::timeout_body::TimeoutBody;
-use crate::listeners::http_connection_manager::RequestCtx;
 use crate::ArionRequestBody;
 use crate::ArionResponseBody;
+use crate::body::timeout_body::TimeoutBody;
+use crate::listeners::http_connection_manager::RequestCtx;
 use bytes::Bytes;
 
 use http::HeaderValue;
@@ -39,7 +41,7 @@ use arion_wasm_types::{
     ArionWasmError, CalloutRequest, CalloutResponse, GrpcCalloutRequest, GrpcCalloutResponse, HeaderMutation, LogLevel,
 };
 pub struct WasmState {
-    pub name: &'static str,
+    pub name: InternedStr,
     pub plugin_config: Option<String>,
     pub direct_response: Option<Response<ArionResponseBody>>,
     pub buffered_request_body: Option<bytes::Bytes>,
@@ -687,12 +689,12 @@ fn arion_get_status_code(mut caller: Caller<'_, WasmState>, out_status_ptr: u32)
 
 fn arion_set_status_code(caller: Caller<'_, WasmState>, status_code: u32) -> i32 {
     if let Some(res_ptr) = caller.data().active_response_handle {
-        if let Ok(code) = u16::try_from(status_code) {
-            if let Ok(status) = http::StatusCode::from_u16(code) {
-                let response = unsafe { &mut *(res_ptr as *mut Response<ArionResponseBody>) };
-                *response.status_mut() = status;
-                return 0;
-            }
+        if let Ok(code) = u16::try_from(status_code)
+            && let Ok(status) = http::StatusCode::from_u16(code)
+        {
+            let response = unsafe { &mut *(res_ptr as *mut Response<ArionResponseBody>) };
+            *response.status_mut() = status;
+            return 0;
         }
         ArionWasmError::InternalError.into()
     } else {
@@ -931,10 +933,9 @@ fn apply_mutations_to_map(map: &mut http::HeaderMap, mutations: Vec<HeaderMutati
                 if let (Ok(n), Ok(v)) = (
                     http::header::HeaderName::from_bytes(name.as_bytes()),
                     http::header::HeaderValue::from_bytes(value.as_bytes()),
-                ) {
-                    if map.contains_key(&n) {
-                        map.insert(n, v);
-                    }
+                ) && map.contains_key(&n)
+                {
+                    map.insert(n, v);
                 }
             },
             HeaderMutation::Remove(name) => {
@@ -989,7 +990,7 @@ fn arion_apply_header_mutations(mut caller: Caller<'_, WasmState>, is_trailer: u
     0
 }
 
-use crate::clusters::{clusters_manager, RoutingContext, RoutingPriority};
+use crate::clusters::{RoutingContext, RoutingPriority, clusters_manager};
 use arion_configuration::config::cluster::ClusterSpecifier;
 use http_body_util::BodyExt;
 
@@ -998,7 +999,7 @@ fn arion_dispatch_http_call(
     (req_ptr, req_len, resp_ptr_ptr, resp_len_ptr): (u32, u32, u32, u32),
 ) -> Box<dyn std::future::Future<Output = i32> + Send + '_> {
     Box::new(async move {
-        let mut callout_req: CalloutRequest = {
+        let callout_req: CalloutRequest = {
             let Some(memory) = guest_memory(&mut caller) else {
                 return ArionWasmError::InvalidMemoryAccess.into();
             };
@@ -1019,13 +1020,13 @@ fn arion_dispatch_http_call(
         };
 
         // 2. Resolve cluster and acquire connection
-        let cluster_spec = ClusterSpecifier::Cluster(std::mem::take(&mut callout_req.cluster_name));
+        let cluster_spec = ClusterSpecifier::Cluster(callout_req.cluster_name.to_interned_str());
         let cluster_id = match clusters_manager::resolve_cluster(&cluster_spec, None) {
             Some(id) => id,
             None => return ArionWasmError::NotFound.into(),
         };
 
-        let http_service = match clusters_manager::get_http_connection(cluster_id, RoutingContext::None) {
+        let http_service = match clusters_manager::get_http_connection(&cluster_id, RoutingContext::None) {
             Ok(svc) => svc,
             Err(e) => {
                 tracing::error!("Callout failed to get HTTP connection: {:?}", e);
@@ -1035,12 +1036,11 @@ fn arion_dispatch_http_call(
 
         let (mut parts, body_bytes) = callout_req.request.into_parts();
 
-        if !parts.headers.contains_key(http::header::HOST) {
-            if let Some(host) = parts.uri.host() {
-                if let Ok(host_val) = http::header::HeaderValue::from_str(host) {
-                    parts.headers.insert(http::header::HOST, host_val);
-                }
-            }
+        if !parts.headers.contains_key(http::header::HOST)
+            && let Some(host) = parts.uri.host()
+            && let Ok(host_val) = http::header::HeaderValue::from_str(host)
+        {
+            parts.headers.insert(http::header::HOST, host_val);
         }
 
         let instrumented = crate::ArionRequestBody::default().map_inner(|_| {
@@ -1240,7 +1240,7 @@ fn arion_dispatch_grpc_call(
     (req_ptr, req_len, resp_ptr_ptr, resp_len_ptr): (u32, u32, u32, u32),
 ) -> Box<dyn std::future::Future<Output = i32> + Send + '_> {
     Box::new(async move {
-        let mut callout_req: GrpcCalloutRequest = {
+        let callout_req: GrpcCalloutRequest = {
             let Some(memory) = guest_memory(&mut caller) else {
                 return ArionWasmError::InvalidMemoryAccess.into();
             };
@@ -1260,13 +1260,13 @@ fn arion_dispatch_grpc_call(
             }
         };
 
-        let cluster_spec = ClusterSpecifier::Cluster(std::mem::take(&mut callout_req.cluster_name));
+        let cluster_spec = ClusterSpecifier::Cluster(callout_req.cluster_name.to_interned_str());
         let cluster_id = match clusters_manager::resolve_cluster(&cluster_spec, None) {
             Some(id) => id,
             None => return ArionWasmError::NotFound.into(),
         };
 
-        let grpc_service = match clusters_manager::get_grpc_connection(cluster_id, RoutingContext::None) {
+        let grpc_service = match clusters_manager::get_grpc_connection(&cluster_id, RoutingContext::None) {
             Ok(svc) => svc,
             Err(e) => {
                 tracing::error!("gRPC Callout failed to get connection: {:?}", e);
@@ -1291,10 +1291,10 @@ fn arion_dispatch_grpc_call(
 
         let mut grpc_req = tonic::Request::new(callout_req.message);
         for (k, v) in callout_req.initial_metadata {
-            if let Ok(metadata_name) = tonic::metadata::MetadataKey::from_bytes(k.as_bytes()) {
-                if let Ok(metadata_value) = tonic::metadata::MetadataValue::try_from(v.as_bytes()) {
-                    grpc_req.metadata_mut().insert(metadata_name, metadata_value);
-                }
+            if let Ok(metadata_name) = tonic::metadata::MetadataKey::from_bytes(k.as_bytes())
+                && let Ok(metadata_value) = tonic::metadata::MetadataValue::try_from(v.as_bytes())
+            {
+                grpc_req.metadata_mut().insert(metadata_name, metadata_value);
             }
         }
 
@@ -1464,11 +1464,7 @@ fn arion_clear_io_timeout(mut caller: Caller<'_, WasmState>, remaining_us_ptr: u
 
     let remaining_us: u64 = if let Some(deadline) = caller.data_mut().io_deadline.take() {
         let now = std::time::Instant::now();
-        if deadline > now {
-            u64::try_from((deadline - now).as_micros()).unwrap_or(0)
-        } else {
-            0
-        }
+        if deadline > now { u64::try_from((deadline - now).as_micros()).unwrap_or(0) } else { 0 }
     } else {
         0
     };
@@ -1515,11 +1511,7 @@ fn arion_sleep(
             pingora_timeout::fast_timeout::fast_sleep(duration).await;
         }
 
-        if is_timeout {
-            ArionWasmError::Timeout.into()
-        } else {
-            0
-        }
+        if is_timeout { ArionWasmError::Timeout.into() } else { 0 }
     })
 }
 
@@ -1607,7 +1599,7 @@ fn arion_get_downstream_metadata(
         let guest_meta = SerDownstreamMetadata {
             connection: mapped_connection,
             sni: host_meta.sni.as_deref(),
-            listener_name: host_meta.listener_name,
+            listener_name: host_meta.listener_name.as_str(),
         };
 
         let encoded = match bincode_next::serde::encode_to_vec(&guest_meta, bincode_next::config::standard()) {

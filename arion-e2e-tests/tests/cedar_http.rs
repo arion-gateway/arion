@@ -14,24 +14,24 @@
 
 use arion_data_plane_api::envoy_data_plane_api::envoy::{
     config::{
-        core::v3::{data_source::Specifier, DataSource},
-        route::v3::{route_match::PathSpecifier, RouteMatch},
+        core::v3::{DataSource, data_source::Specifier},
+        route::v3::{RouteMatch, route_match::PathSpecifier},
     },
     extensions::filters::http::jwt_authn::v3::{
-        jwt_provider::JwksSourceSpecifier, jwt_requirement::RequiresType, requirement_rule::RequirementType,
-        JwtAuthentication, JwtHeader, JwtProvider, JwtRequirement, RequirementRule,
+        JwtAuthentication, JwtHeader, JwtProvider, JwtRequirement, RequirementRule, jwt_provider::JwksSourceSpecifier,
+        jwt_requirement::RequiresType, requirement_rule::RequirementType,
     },
 };
 use arion_e2e_tests::{
+    ArionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient,
     config_builder::{
         BootstrapBuilder, CedarPolicyBuilder, ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder,
         ListenerBuilder, RouteBuilder, RouteConfigBuilder, VirtualHostBuilder,
     },
-    ArionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient,
 };
 use futures::future::join_all;
 use http::StatusCode;
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use serde::Serialize;
 
 // RSA-2048 test key pair (generated for tests only, not used outside this file).

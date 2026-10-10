@@ -14,7 +14,21 @@ http.workspace = true
 lasso = { workspace = true, features = [
   "ahash",
   "ahasher",
-  "dashmap",
   "multi-threaded",
 ] }
 serde.workspace = true
+ahash.workspace = true
+papaya.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+# 4 threads re-interning a fixed, pre-warmed set (no new allocations while measuring).
+[[bench]]
+harness = false
+name    = "intern_hit"
+
+# 4 threads interning always-new strings for a fixed duration (custom harness).
+[[bench]]
+harness = false
+name    = "intern_miss"

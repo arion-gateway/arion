@@ -27,31 +27,31 @@ use triomphe::Arc;
 use arion_configuration::config::cluster::health_check::{ClusterHealthCheck, HttpHealthCheck};
 use bytes::Bytes;
 use http::{
-    uri::{Authority, PathAndQuery, Scheme},
     Request, Response,
+    uri::{Authority, PathAndQuery, Scheme},
 };
 use http_body_util::Empty;
 use smol_str::SmolStr;
 use tokio::{
-    sync::{mpsc, Notify},
+    sync::{Notify, mpsc},
     task::JoinHandle,
 };
 
 use super::checker::{IntervalWaiter, ProtocolChecker, WaitInterval};
 use crate::{
+    ArionRequestBody, ArionResponseBody, UpstreamCallOpts,
     body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody},
     listeners::http_connection_manager::RequestCtx,
-    ArionRequestBody, ArionResponseBody, UpstreamCallOpts,
 };
 // use crate::clusters::cluster::HyperService;
 use crate::{
+    Error,
     clusters::health::{
-        checkers::checker::HealthCheckerLoop, counter::HealthStatusCounter, EndpointHealthUpdate, EndpointId,
-        HealthStatus,
+        EndpointHealthUpdate, EndpointId, HealthStatus, checkers::checker::HealthCheckerLoop,
+        counter::HealthStatusCounter,
     },
     listeners::http_connection_manager::RequestHandler,
     transport::HttpChannel,
-    Error,
 };
 
 /// Spawns an HTTP health checker and returns its handle. Must be called from a Tokio runtime context.

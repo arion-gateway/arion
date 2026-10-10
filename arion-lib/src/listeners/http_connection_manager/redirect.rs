@@ -26,19 +26,19 @@ use arion_format::context::UpstreamContext;
 #[cfg(feature = "access-log")]
 use crate::with_access_log;
 
-use crate::{body::timeout_body::TimeoutBody, ArionRequestBody, ArionResponseBody, Error, PolyBody, Result};
+use crate::{ArionRequestBody, ArionResponseBody, Error, PolyBody, Result, body::timeout_body::TimeoutBody};
 use arion_configuration::config::network_filters::http_connection_manager::route::{
     AuthorityRedirect, RedirectAction, RouteMatchResult,
 };
 use http::{
+    HeaderValue, StatusCode, Uri,
     header::{HOST, LOCATION},
     uri::{Authority, Parts as UriParts, PathAndQuery, Scheme},
-    HeaderValue, StatusCode, Uri,
 };
 use hyper::{Request, Response};
 use smol_str::format_smolstr;
 
-use std::{future::Future, str::FromStr};
+use std::str::FromStr;
 
 fn strip_default_port(authority: Authority, scheme: &Scheme) -> Authority {
     match (authority.port_u16(), scheme.as_str()) {
@@ -60,7 +60,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (&'a RouteMatchResult, &'a st
     ) -> impl Future<Output = Result<Response<ArionResponseBody>>> {
         let res = (|| -> Result<Response<ArionResponseBody>> {
             #[cfg(feature = "access-log")]
-            ctx.tx.with_loggers(|loggers| {
+            ctx.txn.with_loggers(|loggers| {
                 with_access_log!(loggers, UpstreamContext { authority: None, cluster_name: None, route_name });
             });
 

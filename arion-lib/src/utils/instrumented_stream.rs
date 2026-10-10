@@ -16,13 +16,14 @@ use std::{
     io,
     pin::Pin,
     sync::{
-        atomic::{AtomicU64, Ordering},
         LazyLock,
+        atomic::{AtomicU64, Ordering},
     },
     task::{Context, Poll},
     time::Duration,
 };
 
+use smol_str::SmolStr;
 use triomphe::Arc;
 
 use atomicoption::AtomicOption;
@@ -103,7 +104,7 @@ pub struct StreamMetrics<C: OnFlush = ()> {
     #[allow(clippy::type_complexity)]
     drop_fn: AtomicOption<Box<dyn FnOnce(&StreamMetrics<C>, Duration) + Send>>,
     flush_callbacks: CallbackQueue<C>,
-    user_partition_key: AtomicOption<&'static str>,
+    user_partition_key: AtomicOption<SmolStr>,
 }
 
 impl<C: OnFlush> Default for StreamMetrics<C> {
@@ -118,7 +119,7 @@ impl<C: OnFlush> std::fmt::Debug for StreamMetrics<C> {
             None => None,
             Some(ErrorSource::Read(err) | ErrorSource::Write(err)) => Some(err.to_string()),
         };
-        let user_partition_key = self.user_partition_key.as_ref(Ordering::Relaxed).map(|s| *s);
+        let user_partition_key = self.user_partition_key.as_ref(Ordering::Relaxed).cloned();
         f.debug_struct("StreamMetrics")
             .field("total_bytes_read", &self.total_bytes_read)
             .field("total_bytes_written", &self.total_bytes_written)
@@ -147,7 +148,7 @@ impl<C: OnFlush> Drop for StreamMetrics<C> {
                 sub,
                 1,
                 get_shard_id!(),
-                &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), *user_partition_key)]
+                &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key.to_string())]
             );
         }
     }
@@ -234,7 +235,7 @@ impl<C: OnFlush> StreamMetrics<C> {
     }
 
     #[inline]
-    pub fn set_user_partition_key(&self, key: &'static str) {
+    pub fn set_user_partition_key(&self, key: SmolStr) {
         self.user_partition_key.store(Ordering::Release, key);
     }
 

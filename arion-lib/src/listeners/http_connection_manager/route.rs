@@ -17,14 +17,14 @@
 // limitations under the License.
 //
 //
-use super::{http_modifiers, upgrades as upgrade_utils, RequestCtx, RequestHandler};
+use super::{RequestCtx, RequestHandler, http_modifiers, upgrades as upgrade_utils};
 use crate::event_error::{EventFailure, EventKind, UpstreamError};
 use crate::{
+    Result,
     body::response_flags::ResponseFlags,
-    clusters::http_upstream::{acquire_http_upstream, AcquireHttpUpstreamError},
+    clusters::http_upstream::{AcquireHttpUpstreamError, acquire_http_upstream},
     listeners::{http_connection_manager::HttpConnectionManager, synthetic_http_response::SyntheticHttpResponse},
     transport::{HttpChannels, ServedEndpoint},
-    Result,
 };
 
 #[cfg(feature = "access-log")]
@@ -32,14 +32,14 @@ use crate::with_access_log;
 
 #[cfg(feature = "metrics")]
 use crate::with_metric;
-use crate::{instrument_block, instrument_function, ArionRequestBody, ArionResponseBody, UpstreamCallOpts};
+use crate::{ArionRequestBody, ArionResponseBody, UpstreamCallOpts, instrument_block, instrument_function};
 use arion_configuration::config::network_filters::http_connection_manager::{
-    route::{RouteAction, RouteMatchResult},
     RetryPolicy,
+    route::{RouteAction, RouteMatchResult},
 };
 #[cfg(feature = "metrics")]
 use arion_metrics::metrics::http as http_metrics;
-use http::{uri::Parts as UriParts, Uri};
+use http::{Uri, uri::Parts as UriParts};
 use hyper::{Request, Response};
 #[cfg(any(feature = "metrics", feature = "tracing"))]
 use opentelemetry::KeyValue;
@@ -79,7 +79,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
         request: Request<ArionRequestBody>,
         (route_context, connection_manager): (RouteContext<'a>, &HttpConnectionManager),
     ) -> Result<Response<ArionResponseBody>> {
-        instrument_function!(ctx.tx.clock, |nanos| {
+        instrument_function!(ctx.txn.clock, |nanos| {
             #[allow(clippy::cast_possible_truncation)]
             crate::instrumentation::metrics::TOTAL_ROUTE_ACTION.observe(nanos as usize)
         });
@@ -90,12 +90,12 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
 
         #[cfg(feature = "metrics")]
         {
-            let mut state = ctx.tx.trans_state.lock();
+            let mut state = ctx.txn.trans_state.lock();
             state.upstream_start_instant = Some(Instant::now())
         };
 
         let acquire_result = instrument_block!(
-            ctx.tx.clock,
+            ctx.txn.clock,
             |nanos| {
                 #[allow(clippy::cast_possible_truncation)]
                 crate::instrumentation::metrics::ACQUIRE_HTTP_STREAM.observe(nanos as usize);
@@ -113,22 +113,22 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
 
         #[cfg(feature = "metrics")]
         if let Some(cluster_id) = match &acquire_result {
-            Ok(upstream) => Some(upstream.cluster_id()),
+            Ok(upstream) => Some(upstream.cluster_name()),
             Err(error) => error.cluster_id(),
         } {
-            ctx.tx.trans_state.lock().upstream_cluster_name = Some(cluster_id);
+            ctx.txn.trans_state.lock().upstream_cluster_name = Some(cluster_id);
         }
 
         match acquire_result {
             Ok(acquired) => {
                 let svc_channel = acquired.channels();
                 #[cfg(feature = "access-log")]
-                ctx.tx.with_loggers(|loggers| {
+                ctx.txn.with_loggers(|loggers| {
                     with_access_log!(
                         loggers,
                         UpstreamContext {
                             authority: Some(svc_channel.upstream_authority()),
-                            cluster_name: Some(svc_channel.cluster_name()),
+                            cluster_name: Some(svc_channel.cluster_name().as_str()),
                             route_name,
                         }
                     );
@@ -159,7 +159,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
 
                 #[cfg(feature = "tracing")]
                 let mut client_span = connection_manager.http_tracer.try_create_span(
-                    ctx.tx.trace_ctx.as_ref(),
+                    ctx.txn.trace_ctx.as_ref(),
                     &connection_manager.get_tracing_key(),
                     SpanKind::Client,
                     SpanName::Str::<()>(svc_channel.upstream_authority().as_str()),
@@ -172,19 +172,19 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
 
                     // set additional attributes for client span...
                     client_span.set_attributes([
-                        KeyValue::new(UPSTREAM_CLUSTER_NAME, svc_channel.cluster_name()),
+                        KeyValue::new(UPSTREAM_CLUSTER_NAME, svc_channel.cluster_name().as_str()),
                         KeyValue::new(UPSTREAM_ADDRESS, svc_channel.upstream_authority().to_string()),
                     ]);
                 }
 
                 // ... store the span in the span_state
                 #[cfg(feature = "tracing")]
-                if let Some(ref span_state) = ctx.tx.span_state {
+                if let Some(ref span_state) = ctx.txn.span_state {
                     *span_state.client_span.lock() = client_span;
                 }
 
                 #[cfg(feature = "access-log")]
-                ctx.tx.with_loggers(|loggers| {
+                ctx.txn.with_loggers(|loggers| {
                     with_access_log!(loggers, UpstreamRequestContext(&upstream_request));
                 });
 
@@ -231,8 +231,8 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
                         http_metrics::DOWNSTREAM_RQ_WS_ON_NON_WS_ROUTE,
                         add,
                         1,
-                        ctx.tx.shard_id(),
-                        &[KeyValue::new("listener", connection_manager.listener_name)]
+                        ctx.txn.shard_id(),
+                        &[KeyValue::new("listener", connection_manager.listener_name.as_str())]
                     );
                     return Ok(SyntheticHttpResponse::bad_request(EventFailure::UpgradeFailed.into())
                         .with_close_connection(true)
@@ -252,10 +252,10 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
                     )
                     .await;
                 // Failover answers already carry the endpoint of the attempt that produced them.
-                if acquired.overrides_host() {
-                    if let (HttpChannels::Single(channel), Ok(response)) = (svc_channel, &mut resp) {
-                        response.extensions_mut().insert(ServedEndpoint(channel.upstream_authority.clone()));
-                    }
+                if acquired.overrides_host()
+                    && let (HttpChannels::Single(channel), Ok(response)) = (svc_channel, &mut resp)
+                {
+                    response.extensions_mut().insert(ServedEndpoint(channel.upstream_authority.clone()));
                 }
                 // Match the existing route accounting lifetime: release the
                 // request permit once response headers (or an error) arrive.

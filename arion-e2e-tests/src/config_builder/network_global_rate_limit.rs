@@ -15,13 +15,13 @@
 use arion_data_plane_api::envoy_data_plane_api::envoy::{
     config::{
         core::v3::{
-            grpc_service::{EnvoyGrpc, TargetSpecifier},
             GrpcService,
+            grpc_service::{EnvoyGrpc, TargetSpecifier},
         },
         ratelimit::v3::RateLimitServiceConfig,
     },
     extensions::{
-        common::ratelimit::v3::{rate_limit_descriptor::Entry, RateLimitDescriptor},
+        common::ratelimit::v3::{RateLimitDescriptor, rate_limit_descriptor::Entry},
         filters::network::ratelimit::v3::RateLimit as EnvoyNetworkRateLimit,
     },
 };
