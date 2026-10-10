@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use arion_interner::InternedStr;
 use std::{
     sync::{
         LazyLock,
@@ -68,7 +69,7 @@ enum RlsClient {
 
 #[derive(Debug, Clone)]
 pub struct NetworkGlobalRateLimit {
-    pub stat_prefix: SmolStr,
+    pub stat_prefix: InternedStr,
     domain: Option<SmolStr>,
     failure_mode_deny: bool,
     rls_client: RlsClient,

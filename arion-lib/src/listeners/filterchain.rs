@@ -49,7 +49,7 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as HyperServerBuilder;
 
 #[cfg(feature = "metrics")]
-use {crate::get_shard_id, arion_interner::StringInterner, opentelemetry::KeyValue};
+use {crate::get_shard_id, opentelemetry::KeyValue};
 
 #[cfg(feature = "metrics")]
 use arion_metrics::metrics::{filters, http, tcp, tls};
@@ -219,7 +219,7 @@ impl FilterchainType {
             return Ok(());
         };
         #[cfg(feature = "metrics")]
-        let static_stat_prefix = rate_limit.stat_prefix.to_static_str();
+        let static_stat_prefix = rate_limit.stat_prefix.as_str();
         match rate_limit.check(sni).await {
             Ok(()) => {
                 #[cfg(feature = "metrics")]
