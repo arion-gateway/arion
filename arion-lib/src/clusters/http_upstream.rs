@@ -188,7 +188,7 @@ mod tests {
 
     fn build_original_dst_cluster(name: InternedStr, max_requests: u32) -> PartialClusterType {
         let config = Cluster {
-            name: name,
+            name,
             discovery_settings: ClusterDiscoveryType::OriginalDst(OriginalDstConfig {
                 routing_method: OriginalDstRoutingMethod::Default,
                 upstream_port_override: None,
@@ -213,7 +213,7 @@ mod tests {
         let cluster = clusters_manager::add_cluster(build_original_dst_cluster(cluster_name, 1)).unwrap();
         let circuit_breaker = cluster.circuit_breaker().unwrap();
         let request = Request::builder().uri("http://127.0.0.1:18080/tool").body(ArionRequestBody::default()).unwrap();
-        let specifier = ClusterSpecifier::Cluster(cluster_name.into());
+        let specifier = ClusterSpecifier::Cluster(cluster_name);
 
         let acquired = acquire_http_upstream(
             &specifier,
@@ -253,7 +253,7 @@ mod tests {
         let cluster = clusters_manager::add_cluster(build_original_dst_cluster(cluster_name, 1)).unwrap();
         let circuit_breaker = cluster.circuit_breaker().unwrap();
         let request = Request::builder().uri("/tool").body(ArionRequestBody::default()).unwrap();
-        let specifier = ClusterSpecifier::Cluster(cluster_name.into());
+        let specifier = ClusterSpecifier::Cluster(cluster_name);
 
         let error = acquire_http_upstream(
             &specifier,
@@ -351,7 +351,7 @@ load_balancing_policy:
 "#;
         let envoy: EnvoyCluster = arion_data_plane_api::decode::from_yaml(CLUSTER).unwrap();
         let config = Cluster::try_from(envoy).unwrap();
-        let override_host = config.name.clone();
+        let override_host = config.name;
         clusters_manager::add_cluster(PartialClusterType::try_from((Box::new(config), &SecretManager::new())).unwrap())
             .unwrap();
         let original_dst = "http-upstream-original-dst-flag-test".to_interned_str();

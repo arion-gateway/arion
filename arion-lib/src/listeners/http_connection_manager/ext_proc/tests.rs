@@ -258,12 +258,11 @@ impl ExternalProcessorService for MockExternalProcessor {
                                 break;
                             }
 
-                            if let Some(expected_end_of_stream) = processing_response.expected_end_of_stream() {
-                                if end_of_stream != Some(expected_end_of_stream) {
+                            if let Some(expected_end_of_stream) = processing_response.expected_end_of_stream()
+                                && end_of_stream != Some(expected_end_of_stream) {
                                     let _ = tx.send(Err(Status::internal(format!("MockExternalProcessor: Received a processing request with end_of_stream={end_of_stream:?} but expected end_of_stream={expected_end_of_stream:?}. Request: {processing_request:#?}, Response: {processing_response:#?}")))).await.ok();
                                     break;
                                 }
-                            }
 
                             if processing_response.mode_override.is_some() {
                                 last_end_of_stream = None;
@@ -574,10 +573,10 @@ fn create_headers_response<M: MessageKind>(
     let header_mutation = transform(headers).and_then(|hdrs| create_header_mutation(hdrs));
     let body_mutation = body_data.map(|body| create_body_mutation(body, end_of_stream));
     let mut trailers_new = None;
-    if status == ResponseStatus::ContinueAndReplace as i32 {
-        if let Some(trailers) = transform(trailers) {
-            trailers_new = Some(convert_trailers_to_envoy_header_map(trailers));
-        }
+    if status == ResponseStatus::ContinueAndReplace as i32
+        && let Some(trailers) = transform(trailers)
+    {
+        trailers_new = Some(convert_trailers_to_envoy_header_map(trailers));
     }
 
     let header_response = HeadersResponse {
@@ -659,10 +658,10 @@ fn create_body_response<M: MessageKind>(
     let header_mutation = transform(headers).and_then(|hdrs| create_header_mutation(hdrs));
     let body_mutation = body_data.map(|body| create_body_mutation(body, end_of_stream));
     let mut trailers_new = None;
-    if status == ResponseStatus::ContinueAndReplace as i32 {
-        if let Some(trailers) = transform(trailers) {
-            trailers_new = Some(convert_trailers_to_envoy_header_map(trailers));
-        }
+    if status == ResponseStatus::ContinueAndReplace as i32
+        && let Some(trailers) = transform(trailers)
+    {
+        trailers_new = Some(convert_trailers_to_envoy_header_map(trailers));
     }
 
     let body_response = BodyResponse {

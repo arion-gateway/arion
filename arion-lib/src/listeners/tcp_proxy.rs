@@ -313,7 +313,7 @@ impl TcpProxy {
                                 upstream_local_addr: None,
                                 upstream_peer_addr: None,
                             },
-                            cluster_name: &cluster_selector.name(),
+                            cluster_name: cluster_selector.name(),
                         }
                     )
                 };
@@ -348,7 +348,7 @@ impl TcpProxy {
         {
             use crate::access_log::log_access;
             let messages = access_loggers.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-            log_access(Target::ListenerFilterChain(self.listener_name.into(), self.filterchain_id), messages).await
+            log_access(Target::ListenerFilterChain(self.listener_name, self.filterchain_id), messages).await
         }
         res
     }

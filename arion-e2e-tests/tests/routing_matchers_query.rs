@@ -434,10 +434,10 @@ async fn test_query_matchers_when_configured_over_xds() {
     // This distinguishes new config from old and serves as our propagation sentinel.
     pingora::time::timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(response) = client.get("/test").await {
-                if response.body_str() == Some("v1") {
-                    break;
-                }
+            if let Ok(response) = client.get("/test").await
+                && response.body_str() == Some("v1")
+            {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

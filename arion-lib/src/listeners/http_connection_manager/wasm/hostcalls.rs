@@ -689,12 +689,12 @@ fn arion_get_status_code(mut caller: Caller<'_, WasmState>, out_status_ptr: u32)
 
 fn arion_set_status_code(caller: Caller<'_, WasmState>, status_code: u32) -> i32 {
     if let Some(res_ptr) = caller.data().active_response_handle {
-        if let Ok(code) = u16::try_from(status_code) {
-            if let Ok(status) = http::StatusCode::from_u16(code) {
-                let response = unsafe { &mut *(res_ptr as *mut Response<ArionResponseBody>) };
-                *response.status_mut() = status;
-                return 0;
-            }
+        if let Ok(code) = u16::try_from(status_code)
+            && let Ok(status) = http::StatusCode::from_u16(code)
+        {
+            let response = unsafe { &mut *(res_ptr as *mut Response<ArionResponseBody>) };
+            *response.status_mut() = status;
+            return 0;
         }
         ArionWasmError::InternalError.into()
     } else {
@@ -933,10 +933,9 @@ fn apply_mutations_to_map(map: &mut http::HeaderMap, mutations: Vec<HeaderMutati
                 if let (Ok(n), Ok(v)) = (
                     http::header::HeaderName::from_bytes(name.as_bytes()),
                     http::header::HeaderValue::from_bytes(value.as_bytes()),
-                ) {
-                    if map.contains_key(&n) {
-                        map.insert(n, v);
-                    }
+                ) && map.contains_key(&n)
+                {
+                    map.insert(n, v);
                 }
             },
             HeaderMutation::Remove(name) => {
@@ -1037,12 +1036,11 @@ fn arion_dispatch_http_call(
 
         let (mut parts, body_bytes) = callout_req.request.into_parts();
 
-        if !parts.headers.contains_key(http::header::HOST) {
-            if let Some(host) = parts.uri.host() {
-                if let Ok(host_val) = http::header::HeaderValue::from_str(host) {
-                    parts.headers.insert(http::header::HOST, host_val);
-                }
-            }
+        if !parts.headers.contains_key(http::header::HOST)
+            && let Some(host) = parts.uri.host()
+            && let Ok(host_val) = http::header::HeaderValue::from_str(host)
+        {
+            parts.headers.insert(http::header::HOST, host_val);
         }
 
         let instrumented = crate::ArionRequestBody::default().map_inner(|_| {
@@ -1293,10 +1291,10 @@ fn arion_dispatch_grpc_call(
 
         let mut grpc_req = tonic::Request::new(callout_req.message);
         for (k, v) in callout_req.initial_metadata {
-            if let Ok(metadata_name) = tonic::metadata::MetadataKey::from_bytes(k.as_bytes()) {
-                if let Ok(metadata_value) = tonic::metadata::MetadataValue::try_from(v.as_bytes()) {
-                    grpc_req.metadata_mut().insert(metadata_name, metadata_value);
-                }
+            if let Ok(metadata_name) = tonic::metadata::MetadataKey::from_bytes(k.as_bytes())
+                && let Ok(metadata_value) = tonic::metadata::MetadataValue::try_from(v.as_bytes())
+            {
+                grpc_req.metadata_mut().insert(metadata_name, metadata_value);
             }
         }
 

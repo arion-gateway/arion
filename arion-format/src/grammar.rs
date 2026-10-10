@@ -235,15 +235,15 @@ impl AccessLogGrammar {
 
     #[allow(clippy::string_slice)]
     fn extract_operator_arg(input: &str) -> Result<(&str, usize), FormatError> {
-        if let Some(rest) = input.strip_prefix('(') {
-            if let Some(end) = rest.find(')') {
-                let arg = &rest[..end];
-                if arg.is_empty() {
-                    return Err(FormatError::EmptyArgument(input.into()));
-                }
-                let total_len = end + 2; // '(' + arg.len() + ')'
-                return Ok((arg, total_len));
+        if let Some(rest) = input.strip_prefix('(')
+            && let Some(end) = rest.find(')')
+        {
+            let arg = &rest[..end];
+            if arg.is_empty() {
+                return Err(FormatError::EmptyArgument(input.into()));
             }
+            let total_len = end + 2; // '(' + arg.len() + ')'
+            return Ok((arg, total_len));
         }
         Err(FormatError::MissingBracket(input.into()))
     }

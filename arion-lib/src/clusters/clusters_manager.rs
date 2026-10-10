@@ -367,10 +367,10 @@ pub fn try_increment_connections(
     priority: RoutingPriority,
 ) -> std::result::Result<(), CircuitBreakerDenial> {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
-        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
-            if let Some(cb) = cluster.circuit_breaker() {
-                return cb.try_increment_connections(priority);
-            }
+        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id)
+            && let Some(cb) = cluster.circuit_breaker()
+        {
+            return cb.try_increment_connections(priority);
         }
         Ok(())
     })
@@ -378,10 +378,10 @@ pub fn try_increment_connections(
 
 pub fn decrement_connections(cluster_id: &str, priority: RoutingPriority) {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
-        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
-            if let Some(cb) = cluster.circuit_breaker() {
-                cb.decrement_connections(priority);
-            }
+        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id)
+            && let Some(cb) = cluster.circuit_breaker()
+        {
+            cb.decrement_connections(priority);
         }
     });
 }
@@ -391,10 +391,10 @@ pub fn try_increment_requests(
     priority: RoutingPriority,
 ) -> std::result::Result<(), CircuitBreakerDenial> {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
-        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
-            if let Some(cb) = cluster.circuit_breaker() {
-                return cb.try_increment_requests(priority);
-            }
+        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id)
+            && let Some(cb) = cluster.circuit_breaker()
+        {
+            return cb.try_increment_requests(priority);
         }
         Ok(())
     })
@@ -402,10 +402,10 @@ pub fn try_increment_requests(
 
 pub fn decrement_requests(cluster_id: &str, priority: RoutingPriority) {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
-        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
-            if let Some(cb) = cluster.circuit_breaker() {
-                cb.decrement_requests(priority);
-            }
+        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id)
+            && let Some(cb) = cluster.circuit_breaker()
+        {
+            cb.decrement_requests(priority);
         }
     });
 }
@@ -415,10 +415,10 @@ pub fn try_increment_retries(
     priority: RoutingPriority,
 ) -> std::result::Result<(), CircuitBreakerDenial> {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
-        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
-            if let Some(cb) = cluster.circuit_breaker() {
-                return cb.try_increment_retries(priority);
-            }
+        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id)
+            && let Some(cb) = cluster.circuit_breaker()
+        {
+            return cb.try_increment_retries(priority);
         }
         Ok(())
     })
@@ -426,10 +426,10 @@ pub fn try_increment_retries(
 
 pub fn decrement_retries(cluster_id: &str, priority: RoutingPriority) {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
-        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
-            if let Some(cb) = cluster.circuit_breaker() {
-                cb.decrement_retries(priority);
-            }
+        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id)
+            && let Some(cb) = cluster.circuit_breaker()
+        {
+            cb.decrement_retries(priority);
         }
     });
 }
@@ -446,7 +446,7 @@ mod tests {
     use arion_interner::StringInterner;
     use std::sync::atomic::Ordering;
 
-    fn make_cluster_config(name: impl StringInterner, max_requests: u32) -> ClusterConfig {
+    fn make_cluster_config<T: StringInterner + ?Sized>(name: &T, max_requests: u32) -> ClusterConfig {
         ClusterConfig {
             name: name.to_interned_str(),
             discovery_settings: ClusterDiscoveryType::OriginalDst(OriginalDstConfig {
@@ -504,18 +504,18 @@ mod tests {
         let partial = build_partial(make_cluster_config(name, 5));
         add_cluster(partial).unwrap();
 
-        try_increment_requests(name.into(), RoutingPriority::Default).unwrap();
+        try_increment_requests(name, RoutingPriority::Default).unwrap();
 
         let partial2 = build_partial(make_cluster_config(name, 5));
         add_cluster(partial2).unwrap();
 
-        decrement_requests(name.into(), RoutingPriority::Default);
+        decrement_requests(name, RoutingPriority::Default);
 
         CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
             let cluster = watcher.cached_or_latest().get_mut(name).unwrap();
             let cb = cluster.circuit_breaker().unwrap();
             let counter = cb.get_state(RoutingPriority::Default).counters.active_requests.load(Ordering::Relaxed);
-            assert_eq!(counter, 0, "counter must be zero, not underflowed to u32::MAX");
+            assert_eq!(counter, 0, "counter must be zero, not underflow to u32::MAX");
         });
 
         remove_cluster(name).unwrap();

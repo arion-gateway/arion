@@ -84,14 +84,14 @@ fn filter_disallowed_requests<T>(request: &Request<T>) -> Option<Response<ArionR
                 .into_response(request.version()),
         );
     }
-    if let Some(connection_header) = request.headers().get(header::CONNECTION) {
-        if upgrade_utils::is_upgrade_connection(connection_header.to_str().ok()?) {
-            return Some(
-                SyntheticHttpResponse::forbidden(EventFailure::UpgradeFailed.into())
-                    .with_body("Upgrade not permitted")
-                    .into_response(request.version()),
-            );
-        }
+    if let Some(connection_header) = request.headers().get(header::CONNECTION)
+        && upgrade_utils::is_upgrade_connection(connection_header.to_str().ok()?)
+    {
+        return Some(
+            SyntheticHttpResponse::forbidden(EventFailure::UpgradeFailed.into())
+                .with_body("Upgrade not permitted")
+                .into_response(request.version()),
+        );
     }
     None
 }
@@ -112,10 +112,10 @@ pub fn strip_trailers_headers(http_version: Codec, headers: &mut HeaderMap) {
         // TE header is allowed in HTTP2 only if its value is "trailers"
         Codec::Http2 => {
             headers.remove(header::TRAILER);
-            if let Some(hdr_value) = headers.get(header::TE) {
-                if hdr_value != "trailers" {
-                    headers.remove(header::TE);
-                }
+            if let Some(hdr_value) = headers.get(header::TE)
+                && hdr_value != "trailers"
+            {
+                headers.remove(header::TE);
             }
         },
     }
@@ -156,15 +156,15 @@ fn apply_xff_headers<T>(request: &mut Request<T>, downstream_addr: SocketAddr, x
         (xff_settings.use_remote_address && downstream_is_external && !has_incoming_xff)
             || xff_contains_single_external_ip;
 
-    if should_update_xff {
-        if let Ok(updated_xff) = HeaderValue::from_str(&append_hop_to_xff(existing_xff, downstream_addr.ip())) {
-            headers.insert(X_FORWARDED_FOR, updated_xff);
-        }
+    if should_update_xff
+        && let Ok(updated_xff) = HeaderValue::from_str(&append_hop_to_xff(existing_xff, downstream_addr.ip()))
+    {
+        headers.insert(X_FORWARDED_FOR, updated_xff);
     }
-    if should_set_envoy_external {
-        if let Ok(envoy_external_addr) = HeaderValue::from_str(&trusted_client_address.to_string()) {
-            headers.insert(X_ENVOY_EXTERNAL_ADDRESS, envoy_external_addr);
-        }
+    if should_set_envoy_external
+        && let Ok(envoy_external_addr) = HeaderValue::from_str(&trusted_client_address.to_string())
+    {
+        headers.insert(X_ENVOY_EXTERNAL_ADDRESS, envoy_external_addr);
     }
     if should_set_envoy_internal {
         headers.insert(X_ENVOY_INTERNAL, HeaderValue::from_static("true"));

@@ -115,14 +115,10 @@ impl TcpChannelConnector {
                         configure_tls(tls_configurator, base_stream).await?
                     },
                     UpstreamTransportSocketConfigurator::ProxyProtocol(proxy_configurator) => {
-                        if !is_internal {
-                            if let Some(metadata) = &connection_metadata {
-                                proxy_configurator.write_proxy_header(&mut base_stream, metadata).await.map_err(
-                                    |e| -> crate::Error {
-                                        format!("Failed to write proxy protocol header: {e}").into()
-                                    },
-                                )?;
-                            }
+                        if !is_internal && let Some(metadata) = &connection_metadata {
+                            proxy_configurator.write_proxy_header(&mut base_stream, metadata).await.map_err(
+                                |e| -> crate::Error { format!("Failed to write proxy protocol header: {e}").into() },
+                            )?;
                         }
                         if let Some(inner_tls) = &proxy_configurator.inner_tls_configurator {
                             configure_tls(inner_tls, base_stream).await?
@@ -137,10 +133,11 @@ impl TcpChannelConnector {
             }
             .await;
 
-            if res.is_err() && incremented_cb {
-                if let Some(cluster_name) = cluster_name_for_cb {
-                    crate::clusters::decrement_connections(&cluster_name, crate::clusters::RoutingPriority::Default);
-                }
+            if res.is_err()
+                && incremented_cb
+                && let Some(cluster_name) = cluster_name_for_cb
+            {
+                crate::clusters::decrement_connections(&cluster_name, crate::clusters::RoutingPriority::Default);
             }
 
             res

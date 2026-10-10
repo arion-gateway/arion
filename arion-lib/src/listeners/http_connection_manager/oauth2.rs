@@ -1140,11 +1140,11 @@ fn format_cookie(
         buf.push_str("; Secure");
     }
 
-    if let Some(d) = domain {
-        if !d.is_empty() {
-            buf.push_str("; Domain=");
-            buf.push_str(d);
-        }
+    if let Some(d) = domain
+        && !d.is_empty()
+    {
+        buf.push_str("; Domain=");
+        buf.push_str(d);
     }
 
     if let Some(age) = max_age {
@@ -1471,9 +1471,9 @@ mod tests {
 
         let tag = hmac::sign(&key, b"gateway.example.com:8443\n1234567890\naccess-token\nid-token\nrefresh-token");
         let mut legacy_hex = [0_u8; 64];
-        for (byte, hex) in tag.as_ref().iter().zip(legacy_hex.chunks_exact_mut(2)) {
-            hex[0] = HEX_LOWER[(byte >> 4) as usize];
-            hex[1] = HEX_LOWER[(byte & 0x0f) as usize];
+        for (byte, [hi, lo]) in tag.as_ref().iter().zip(legacy_hex.as_chunks_mut::<2>().0) {
+            *hi = *HEX_LOWER.get((byte >> 4) as usize).expect("high nibble is always < 16");
+            *lo = *HEX_LOWER.get((byte & 0x0f) as usize).expect("low nibble is always < 16");
         }
         let legacy = BASE64_STANDARD.encode(legacy_hex);
         assert!(verify_session_hmac(

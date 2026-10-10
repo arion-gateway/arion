@@ -36,10 +36,10 @@ const DEFAULT_FORMAT: &str = r#"[%START_TIME%] "%REQ(:METHOD)% %REQ(X-ENVOY-ORIG
 async fn read_log_file(path: &std::path::Path, timeout: Duration) -> String {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            if !content.trim().is_empty() {
-                return content;
-            }
+        if let Ok(content) = std::fs::read_to_string(path)
+            && !content.trim().is_empty()
+        {
+            return content;
         }
         if tokio::time::Instant::now() >= deadline {
             break;

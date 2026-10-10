@@ -69,20 +69,20 @@ pub fn build_tokio_runtime(
     // when this runtime has multiple Tokio workers, and then it is the worker id.
     let thread_name = thread_name.to_owned();
 
-    if let Some(affinity) = affinity_info {
-        if let Some(runtime_id) = runtime_id {
-            match affinity.run_strategy(runtime_id, num_threads) {
-                Ok(aff) => {
-                    if let Err(err) = core_affinity::set_cores_for_current(&aff) {
-                        warn!("{thread_name}: Couldn't pin thread to core {aff:?}: {err}");
-                    } else {
-                        info!("{thread_name}: runtime[{runtime_id}] pinned to core {aff:?}");
-                    }
-                },
-                Err(e) => {
-                    warn!("{thread_name}: Strategy: {e}");
-                },
-            }
+    if let Some(affinity) = affinity_info
+        && let Some(runtime_id) = runtime_id
+    {
+        match affinity.run_strategy(runtime_id, num_threads) {
+            Ok(aff) => {
+                if let Err(err) = core_affinity::set_cores_for_current(&aff) {
+                    warn!("{thread_name}: Couldn't pin thread to core {aff:?}: {err}");
+                } else {
+                    info!("{thread_name}: runtime[{runtime_id}] pinned to core {aff:?}");
+                }
+            },
+            Err(e) => {
+                warn!("{thread_name}: Strategy: {e}");
+            },
         }
     }
 

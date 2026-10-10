@@ -385,11 +385,11 @@ impl XdsConfigurationHandler {
 
     async fn handle_extension_update(&self, type_url: &str, resource_id: &str, payload: &[u8]) -> Result<()> {
         for handler in &self.extension_handlers {
-            if handler.type_urls().contains(&type_url) {
-                if let Err(e) = handler.handle_update(type_url, resource_id, payload).await {
-                    warn!("Extension handler error for {type_url}: {e}");
-                    return Err(e.into());
-                }
+            if handler.type_urls().contains(&type_url)
+                && let Err(e) = handler.handle_update(type_url, resource_id, payload).await
+            {
+                warn!("Extension handler error for {type_url}: {e}");
+                return Err(e.into());
             }
         }
         Ok(())
@@ -397,11 +397,11 @@ impl XdsConfigurationHandler {
 
     async fn handle_extension_remove(&self, type_url: &str, resource_id: &str) -> Result<()> {
         for handler in &self.extension_handlers {
-            if handler.type_urls().contains(&type_url) {
-                if let Err(e) = handler.handle_remove(type_url, resource_id).await {
-                    warn!("Extension handler error for {type_url} removal: {e}");
-                    return Err(e.into());
-                }
+            if handler.type_urls().contains(&type_url)
+                && let Err(e) = handler.handle_remove(type_url, resource_id).await
+            {
+                warn!("Extension handler error for {type_url} removal: {e}");
+                return Err(e.into());
             }
         }
         Ok(())

@@ -647,14 +647,12 @@ async fn test_routing_actions_when_configured_over_xds() {
     // Wait until Arion applies the updated route config (RDS propagation)
     pingora::time::timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(response) = client.get("/test").await {
-                if response.status == StatusCode::OK {
-                    if let Some(body) = response.body_str() {
-                        if body == "Direct from Arion" {
-                            break;
-                        }
-                    }
-                }
+            if let Ok(response) = client.get("/test").await
+                && response.status == StatusCode::OK
+                && let Some(body) = response.body_str()
+                && body == "Direct from Arion"
+            {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

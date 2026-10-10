@@ -252,10 +252,10 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
                     )
                     .await;
                 // Failover answers already carry the endpoint of the attempt that produced them.
-                if acquired.overrides_host() {
-                    if let (HttpChannels::Single(channel), Ok(response)) = (svc_channel, &mut resp) {
-                        response.extensions_mut().insert(ServedEndpoint(channel.upstream_authority.clone()));
-                    }
+                if acquired.overrides_host()
+                    && let (HttpChannels::Single(channel), Ok(response)) = (svc_channel, &mut resp)
+                {
+                    response.extensions_mut().insert(ServedEndpoint(channel.upstream_authority.clone()));
                 }
                 // Match the existing route accounting lifetime: release the
                 // request permit once response headers (or an error) arrive.

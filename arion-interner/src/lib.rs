@@ -161,7 +161,7 @@ impl fmt::Display for InternedStr {
 impl Borrow<str> for InternedStr {
     #[inline]
     fn borrow(&self) -> &str {
-        &self[..]
+        self
     }
 }
 
@@ -247,17 +247,14 @@ mod tests {
 
     #[test]
     fn static_str_to_static_str_does_not_intern() {
-        fn as_static<T: StringInterner>(t: T) -> &'static str {
-            t.to_static_str()
-        }
-        let s = as_static("not-interned-yet");
+        let s = <&'static str as StringInterner>::to_static_str(&"not-interned-yet");
         assert_eq!(s, "not-interned-yet");
         assert_eq!(InternedStr::lookup("not-interned-yet"), None);
     }
 
     #[test]
     fn static_str_to_interned_str_interns() {
-        let to_intern: &'static str = "now-interned";
+        let to_intern = "now-interned";
         let interned = to_intern.to_interned_str();
         assert_eq!(interned.as_str(), "now-interned");
         assert_eq!(InternedStr::lookup("now-interned"), Some(interned));

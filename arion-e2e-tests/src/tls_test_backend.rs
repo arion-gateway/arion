@@ -102,19 +102,13 @@ impl TlsBackendConfig {
         _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
         let client_auth = match (&self.client_ca, self.require_client_cert) {
-            (Some(ca_store), true) => {
-                let verifier = WebPkiClientVerifier::builder(Arc::new(ca_store.clone()))
-                    .build()
-                    .map_err(|e| Error::Config(format!("Failed to build client verifier: {e}")))?;
-                verifier
-            },
-            (Some(ca_store), false) => {
-                let verifier = WebPkiClientVerifier::builder(Arc::new(ca_store.clone()))
-                    .allow_unauthenticated()
-                    .build()
-                    .map_err(|e| Error::Config(format!("Failed to build client verifier: {e}")))?;
-                verifier
-            },
+            (Some(ca_store), true) => WebPkiClientVerifier::builder(Arc::new(ca_store.clone()))
+                .build()
+                .map_err(|e| Error::Config(format!("Failed to build client verifier: {e}")))?,
+            (Some(ca_store), false) => WebPkiClientVerifier::builder(Arc::new(ca_store.clone()))
+                .allow_unauthenticated()
+                .build()
+                .map_err(|e| Error::Config(format!("Failed to build client verifier: {e}")))?,
             (None, _) => WebPkiClientVerifier::no_client_auth(),
         };
 

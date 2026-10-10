@@ -603,11 +603,11 @@ async fn test_wasm_access_log_operator_filter() {
 
     let mut content = String::new();
     for _ in 0..20 {
-        if let Ok(c) = std::fs::read_to_string(&log_path) {
-            if !c.trim().is_empty() {
-                content = c;
-                break;
-            }
+        if let Ok(c) = std::fs::read_to_string(&log_path)
+            && !c.trim().is_empty()
+        {
+            content = c;
+            break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }

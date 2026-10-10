@@ -85,10 +85,10 @@ pub fn parse_metric_value(prometheus_output: &str, metric_name: &str) -> Option<
         }
         if line.starts_with(metric_name) {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if let Some(val_str) = parts.last() {
-                if let Ok(val) = val_str.parse::<u64>() {
-                    return Some(val);
-                }
+            if let Some(val_str) = parts.last()
+                && let Ok(val) = val_str.parse::<u64>()
+            {
+                return Some(val);
             }
         }
     }

@@ -98,16 +98,16 @@ where
                 let current_pos = *read_pos;
 
                 // Safely check if we have data left in the replay buffer
-                if let Some(remaining_buffer) = replay_buffer.get(current_pos..) {
-                    if !remaining_buffer.is_empty() {
-                        let to_copy = std::cmp::min(remaining_buffer.len(), buf.remaining());
+                if let Some(remaining_buffer) = replay_buffer.get(current_pos..)
+                    && !remaining_buffer.is_empty()
+                {
+                    let to_copy = std::cmp::min(remaining_buffer.len(), buf.remaining());
 
-                        // Further: ensure we only slice what we actually need
-                        if let Some(data_to_put) = remaining_buffer.get(..to_copy) {
-                            buf.put_slice(data_to_put);
-                            *read_pos += to_copy;
-                            return Poll::Ready(Ok(()));
-                        }
+                    // Further: ensure we only slice what we actually need
+                    if let Some(data_to_put) = remaining_buffer.get(..to_copy) {
+                        buf.put_slice(data_to_put);
+                        *read_pos += to_copy;
+                        return Poll::Ready(Ok(()));
                     }
                 }
 

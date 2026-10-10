@@ -572,15 +572,15 @@ impl std::ops::Deref for PooledTxnCtx {
 impl Drop for PooledTxnCtx {
     #[inline]
     fn drop(&mut self) {
-        if let Some(arc) = self.0.take() {
-            if let Ok(unique) = Arc::try_unique(arc) {
-                TX_CONTEXT_POOL.with(|pool| {
-                    let mut pool = pool.borrow_mut();
-                    if pool.len() < 1024 {
-                        pool.push(unique);
-                    }
-                });
-            }
+        if let Some(arc) = self.0.take()
+            && let Ok(unique) = Arc::try_unique(arc)
+        {
+            TX_CONTEXT_POOL.with(|pool| {
+                let mut pool = pool.borrow_mut();
+                if pool.len() < 1024 {
+                    pool.push(unique);
+                }
+            });
         }
     }
 }
@@ -1066,10 +1066,10 @@ impl HttpPipelineSvc {
                         }
 
                         #[cfg(feature = "tracing")]
-                        if trans_ctx.trans_phase.is_complete() {
-                            if let Some(span) = trans_ctx.span_state.as_ref() {
-                                span.end();
-                            }
+                        if trans_ctx.trans_phase.is_complete()
+                            && let Some(span) = trans_ctx.span_state.as_ref()
+                        {
+                            span.end();
                         }
                     },
                 )
@@ -1259,12 +1259,11 @@ impl RequestHandler<Request<ArionRequestBody>, &HttpConnectionManager> for &Rout
                         let mut attrs = SmallVec::<[KeyValue; 2]>::new();
                         if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
                             for key in custom_keys {
-                                if let Some(source) = key.source() {
-                                    if let Some(id) =
+                                if let Some(source) = key.source()
+                                    && let Some(id) =
                                         metrics::extract_custom_partition_key(response.headers(), Some(source))
-                                    {
-                                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
-                                    }
+                                {
+                                    attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
                                 }
                             }
                         }
@@ -1554,7 +1553,7 @@ impl TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
         let response = self.inner.call(manager, http_req).await;
 
         trans_ctx.trace_status_code(&response, listener_name);
-        let response = if let Err(err) = response {
+        if let Err(err) = response {
             error!("Error during handling HTTP transaction: {}", err);
             let msg = err.to_string();
             let event_error = err.as_upstream_error().cloned().unwrap_or_else(|| UpstreamError::Other(msg.clone()));
@@ -1567,8 +1566,7 @@ impl TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
             Ok(response.map(|body| InstrumentedBody::new(BodyKind::Response, body, None, |_, _, _, _| {})))
         } else {
             response
-        };
-        response
+        }
     }
 }
 
@@ -1614,10 +1612,10 @@ impl TransactionSvc<HttpPipelineSvc> {
             let mut attrs = SmallVec::<[KeyValue; 2]>::new();
             if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
                 for key in custom_keys {
-                    if let Some(source) = key.source() {
-                        if let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source)) {
-                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
-                        }
+                    if let Some(source) = key.source()
+                        && let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source))
+                    {
+                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
                     }
                 }
             }
@@ -1717,10 +1715,10 @@ impl TransactionSvc<HttpPipelineSvc> {
                     }
 
                     #[cfg(feature = "tracing")]
-                    if trans_ctx.trans_phase.is_complete() {
-                        if let Some(span) = trans_ctx.span_state.as_ref() {
-                            span.end();
-                        }
+                    if trans_ctx.trans_phase.is_complete()
+                        && let Some(span) = trans_ctx.span_state.as_ref()
+                    {
+                        span.end();
                     }
                 },
             )
@@ -1731,20 +1729,20 @@ impl TransactionSvc<HttpPipelineSvc> {
         let response = self.inner.call(manager, RoutedHttpRequest { http, routing_state }).await;
 
         #[cfg(feature = "metrics")]
-        if let Ok(response) = &response {
-            if let Some(custom_metrics) = CUSTOM_METRICS.get() {
-                let mut attrs = SmallVec::<[KeyValue; 2]>::new();
-                if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
-                    for key in custom_keys {
-                        if let Some(source) = key.source() {
-                            if let Some(id) = metrics::extract_custom_partition_key(response.headers(), Some(source)) {
-                                attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
-                            }
-                        }
+        if let Ok(response) = &response
+            && let Some(custom_metrics) = CUSTOM_METRICS.get()
+        {
+            let mut attrs = SmallVec::<[KeyValue; 2]>::new();
+            if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
+                for key in custom_keys {
+                    if let Some(source) = key.source()
+                        && let Some(id) = metrics::extract_custom_partition_key(response.headers(), Some(source))
+                    {
+                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
                     }
                 }
-                custom_metrics.with_headers(MetricsHook::DownstreamResponse, response.headers(), attrs.as_slice());
             }
+            custom_metrics.with_headers(MetricsHook::DownstreamResponse, response.headers(), attrs.as_slice());
         }
 
         #[cfg(feature = "access-log")]
@@ -1998,15 +1996,12 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
     }
 
     #[cfg(feature = "access-log")]
-    if let Some(loggers) = loggers {
-        if !loggers.is_empty() {
-            with_access_log!(&mut *loggers, WireContext { wire_bytes_received, wire_bytes_sent });
-            let messages = loggers.iter_mut().map(|l| l.clone().into_message()).collect::<Vec<_>>();
-            _ = blocking_log_access(
-                Target::ListenerFilterChain(params.listener_name.into(), params.filterchain_id),
-                messages,
-            );
-        }
+    if let Some(loggers) = loggers
+        && !loggers.is_empty()
+    {
+        with_access_log!(&mut *loggers, WireContext { wire_bytes_received, wire_bytes_sent });
+        let messages = loggers.iter_mut().map(|l| l.clone().into_message()).collect::<Vec<_>>();
+        _ = blocking_log_access(Target::ListenerFilterChain(params.listener_name, params.filterchain_id), messages);
     }
 }
 
@@ -2033,10 +2028,10 @@ fn instrument_early_failure_response(
     );
 
     #[cfg(feature = "tracing")]
-    if let Some(state) = trans_ctx.span_state.as_ref() {
-        if let Some(ref mut span) = *state.server_span.lock() {
-            span.set_attribute(KeyValue::new(HTTP_RESPONSE_STATUS_CODE, 400));
-        }
+    if let Some(state) = trans_ctx.span_state.as_ref()
+        && let Some(ref mut span) = *state.server_span.lock()
+    {
+        span.set_attribute(KeyValue::new(HTTP_RESPONSE_STATUS_CODE, 400));
     }
 
     #[cfg(feature = "access-log")]
@@ -2106,10 +2101,10 @@ fn instrument_early_failure_response(
                 }
 
                 #[cfg(feature = "tracing")]
-                if trans_ctx.trans_phase.is_complete() {
-                    if let Some(span) = trans_ctx.span_state.as_ref() {
-                        span.end();
-                    }
+                if trans_ctx.trans_phase.is_complete()
+                    && let Some(span) = trans_ctx.span_state.as_ref()
+                {
+                    span.end();
                 }
             },
         )

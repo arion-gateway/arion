@@ -133,49 +133,48 @@ pub fn apply_request_header_mutations<B>(
         if pseudo_headers.scheme.is_some() || pseudo_headers.authority.is_some() || pseudo_headers.path.is_some() {
             let mut parts = req.uri().clone().into_parts();
 
-            if let Some(scheme_opt) = pseudo_headers.scheme {
-                if mutation_rules.map(|r| r.is_modification_permitted(super::pseudo_header::SCHEME)).unwrap_or(true) {
-                    match extract_header_value_as_str(&scheme_opt) {
-                        Some(scheme) => {
-                            if let Ok(scheme) = Scheme::try_from(scheme.as_ref()) {
-                                parts.scheme = Some(scheme);
-                            } else {
-                                warn!(target: "ext_proc", "Invalid scheme in request mutation: {}", scheme);
-                            }
-                        },
-                        None => {},
-                    }
+            if let Some(scheme_opt) = pseudo_headers.scheme
+                && mutation_rules.map(|r| r.is_modification_permitted(super::pseudo_header::SCHEME)).unwrap_or(true)
+            {
+                match extract_header_value_as_str(&scheme_opt) {
+                    Some(scheme) => {
+                        if let Ok(scheme) = Scheme::try_from(scheme.as_ref()) {
+                            parts.scheme = Some(scheme);
+                        } else {
+                            warn!(target: "ext_proc", "Invalid scheme in request mutation: {}", scheme);
+                        }
+                    },
+                    None => {},
                 }
             }
 
-            if let Some(authority_opt) = pseudo_headers.authority {
-                if mutation_rules.map(|r| r.is_modification_permitted(super::pseudo_header::AUTHORITY)).unwrap_or(true)
-                {
-                    match extract_header_value_as_str(&authority_opt) {
-                        Some(authority) => {
-                            if let Ok(authority) = Authority::try_from(authority.as_ref()) {
-                                parts.authority = Some(authority);
-                            } else {
-                                warn!(target: "ext_proc", "Invalid authority in request mutation: {}", authority);
-                            }
-                        },
-                        None => {},
-                    }
+            if let Some(authority_opt) = pseudo_headers.authority
+                && mutation_rules.map(|r| r.is_modification_permitted(super::pseudo_header::AUTHORITY)).unwrap_or(true)
+            {
+                match extract_header_value_as_str(&authority_opt) {
+                    Some(authority) => {
+                        if let Ok(authority) = Authority::try_from(authority.as_ref()) {
+                            parts.authority = Some(authority);
+                        } else {
+                            warn!(target: "ext_proc", "Invalid authority in request mutation: {}", authority);
+                        }
+                    },
+                    None => {},
                 }
             }
 
-            if let Some(path_opt) = pseudo_headers.path {
-                if mutation_rules.map(|r| r.is_modification_permitted(super::pseudo_header::PATH)).unwrap_or(true) {
-                    match extract_header_value_as_str(&path_opt) {
-                        Some(path) => {
-                            if let Ok(path_and_query) = PathAndQuery::try_from(path.as_ref()) {
-                                parts.path_and_query = Some(path_and_query);
-                            } else {
-                                warn!(target: "ext_proc", "Invalid path in request mutation: {}", path);
-                            }
-                        },
-                        None => {},
-                    }
+            if let Some(path_opt) = pseudo_headers.path
+                && mutation_rules.map(|r| r.is_modification_permitted(super::pseudo_header::PATH)).unwrap_or(true)
+            {
+                match extract_header_value_as_str(&path_opt) {
+                    Some(path) => {
+                        if let Ok(path_and_query) = PathAndQuery::try_from(path.as_ref()) {
+                            parts.path_and_query = Some(path_and_query);
+                        } else {
+                            warn!(target: "ext_proc", "Invalid path in request mutation: {}", path);
+                        }
+                    },
+                    None => {},
                 }
             }
 
@@ -198,22 +197,22 @@ pub fn apply_response_header_mutations<B>(
     let pseudo_headers = extract_pseudo_headers(&mut mutation);
 
     // Handle :status pseudo-header
-    if let Some(status_opt) = pseudo_headers.status {
-        if mutation_rules.map(|r| r.is_modification_permitted(super::pseudo_header::STATUS)).unwrap_or(true) {
-            match extract_header_value_as_str(&status_opt) {
-                Some(status_str) => {
-                    if let Ok(status_code) = status_str.parse::<u16>() {
-                        if let Ok(new_code) = http::StatusCode::from_u16(status_code) {
-                            *resp.status_mut() = new_code;
-                        } else {
-                            warn!(target: "ext_proc", "Invalid status code in response mutation: {}", status_code);
-                        }
+    if let Some(status_opt) = pseudo_headers.status
+        && mutation_rules.map(|r| r.is_modification_permitted(super::pseudo_header::STATUS)).unwrap_or(true)
+    {
+        match extract_header_value_as_str(&status_opt) {
+            Some(status_str) => {
+                if let Ok(status_code) = status_str.parse::<u16>() {
+                    if let Ok(new_code) = http::StatusCode::from_u16(status_code) {
+                        *resp.status_mut() = new_code;
                     } else {
-                        warn!(target: "ext_proc", "Failed to parse status code: {}", status_str);
+                        warn!(target: "ext_proc", "Invalid status code in response mutation: {}", status_code);
                     }
-                },
-                None => {},
-            }
+                } else {
+                    warn!(target: "ext_proc", "Failed to parse status code: {}", status_str);
+                }
+            },
+            None => {},
         }
     }
 
@@ -236,15 +235,13 @@ pub fn apply_header_mutations(
     mutation_rules: Option<&HeaderMutationRules>,
 ) -> Result<(), Error> {
     for header_to_remove in mutation.remove_headers {
-        if let Some(rules) = mutation_rules {
-            if !rules.is_modification_permitted(&header_to_remove) {
-                if rules.disallow_is_error {
-                    return Err(Error::from(format!(
-                        "Header removal not permitted by configuration: {header_to_remove}"
-                    )));
-                }
-                continue;
+        if let Some(rules) = mutation_rules
+            && !rules.is_modification_permitted(&header_to_remove)
+        {
+            if rules.disallow_is_error {
+                return Err(Error::from(format!("Header removal not permitted by configuration: {header_to_remove}")));
             }
+            continue;
         }
         if let Ok(header_name) = http::HeaderName::from_bytes(header_to_remove.as_bytes()) {
             headers.remove(&header_name);
@@ -252,16 +249,13 @@ pub fn apply_header_mutations(
     }
     for mut header_to_set in mutation.set_headers {
         let Some(header) = header_to_set.header.take() else { continue };
-        if let Some(rules) = mutation_rules {
-            if !rules.is_modification_permitted(&header.key) {
-                if rules.disallow_is_error {
-                    return Err(Error::from(format!(
-                        "Header modification not permitted by configuration: {}",
-                        header.key
-                    )));
-                }
-                continue;
+        if let Some(rules) = mutation_rules
+            && !rules.is_modification_permitted(&header.key)
+        {
+            if rules.disallow_is_error {
+                return Err(Error::from(format!("Header modification not permitted by configuration: {}", header.key)));
             }
+            continue;
         }
         let Ok(header_name) = http::HeaderName::from_bytes(header.key.as_bytes()) else { continue };
         let header_value = if header.raw_value.is_empty() {

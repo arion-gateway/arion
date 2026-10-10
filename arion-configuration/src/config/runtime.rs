@@ -352,6 +352,7 @@ mod tests {
     #[test]
     fn test_runtime_env_override() {
         // FIXME: Audit that the environment access only happens in single-threaded code.
+        // SAFETY: This test is single-threaded, and we are setting an environment variable for testing purposes.
         unsafe { std::env::set_var("ARION_GATEWAY_CORES", "4") };
 
         let runtime = Runtime::default();
@@ -374,6 +375,7 @@ mod tests {
 
         assert_eq!(updated_runtime.num_cpus(), 4);
         // FIXME: Audit that the environment access only happens in single-threaded code.
+        // SAFETY: This test is single-threaded, and we are cleaning up the environment variable after the test.
         unsafe { std::env::remove_var("ARION_GATEWAY_CORES") };
     }
 

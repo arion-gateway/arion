@@ -44,10 +44,10 @@ fn parse_custom_metric_value(prometheus_output: &str, metric_name: &str, labels:
             }
             if matches {
                 let parts: Vec<&str> = line.split_whitespace().collect();
-                if let Some(val_str) = parts.last() {
-                    if let Ok(val) = val_str.parse::<f64>() {
-                        return Some(val);
-                    }
+                if let Some(val_str) = parts.last()
+                    && let Ok(val) = val_str.parse::<f64>()
+                {
+                    return Some(val);
                 }
             }
         }

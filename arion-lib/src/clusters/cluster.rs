@@ -72,7 +72,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
                     .map(|tls_configurator| ServerName::try_from(tls_configurator.sni().to_owned()))
                     .transpose()?;
 
-                let cluster_name = cla.cluster_name.clone();
+                let cluster_name = cla.cluster_name;
                 let pcla = PartialClusterLoadAssignment::try_from(cla)
                     .map_err(|e| Error::from(format!("Unable to create cluster load assignment {cluster_name} {e}")))?;
 

@@ -274,8 +274,8 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
             SubscriptionEvent::Subscribe(type_url, resource_id) => {
                 debug!(type_url = type_url.to_string(), resource_id, "processing new subscription");
                 let is_new = state.subscriptions.entry(type_url.clone()).or_default().insert(resource_id.clone());
-                if is_new {
-                    if let Err(err) = discovery_requests_tx
+                if is_new
+                    && let Err(err) = discovery_requests_tx
                         .send(
                             DeltaDiscoveryRequestBuilder::for_resource(type_url)
                                 .with_node_id(self.node.clone())
@@ -283,17 +283,16 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
                                 .build(),
                         )
                         .await
-                    {
-                        warn!("problems updating subscription: {:?}", err);
-                    }
+                {
+                    warn!("problems updating subscription: {:?}", err);
                 }
             },
             SubscriptionEvent::Unsubscribe(type_url, resource_id) => {
                 debug!(type_url = type_url.to_string(), resource_id, "processing unsubscribe");
                 let was_subscribed =
                     state.subscriptions.entry(type_url.clone()).or_default().remove(resource_id.as_str());
-                if was_subscribed {
-                    if let Err(err) = discovery_requests_tx
+                if was_subscribed
+                    && let Err(err) = discovery_requests_tx
                         .send(
                             DeltaDiscoveryRequestBuilder::for_resource(type_url)
                                 .with_node_id(self.node.clone())
@@ -301,9 +300,8 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
                                 .build(),
                         )
                         .await
-                    {
-                        warn!("problems updating subscription: {:?}", err);
-                    }
+                {
+                    warn!("problems updating subscription: {:?}", err);
                 }
             },
         }
@@ -364,7 +362,7 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
                                     .build();
                                 if let Err(err) = acknowledgments_tx.send(upstream_response).await {
                                     warn!("error in send xDS ack/nack upstream {:?}", err);
-                                };
+                                }
                             },
                             Err(err) => {
                                 warn!("error in reading internal ack/nack {:?}", err);

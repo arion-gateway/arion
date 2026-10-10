@@ -429,19 +429,19 @@ impl ProxyProtocolConfigurator {
                 .write_tlv(tlv_type, &tlv_entry.value)
                 .map_err(|e| ProxyProtocolError::BuildHeader(format!("Failed to add configured TLV: {e}")))?;
         }
-        if let DownstreamConnectionMetadata::FromProxyProtocol { tlv_data, .. } = connection_metadata {
-            if let Some(pass_through_config) = &self.pass_through_tlvs {
-                for (tlv_type, value) in tlv_data {
-                    let should_pass_through = match pass_through_config.match_type {
-                        PassTlvMatchType::IncludeAll => true,
-                        PassTlvMatchType::Include => pass_through_config.tlv_types.contains(tlv_type),
-                    };
-                    if should_pass_through {
-                        let tlv_type: u8 = tlv_type.clone().into();
-                        builder = builder.write_tlv(tlv_type, value).map_err(|e| {
-                            ProxyProtocolError::BuildHeader(format!("Failed to add pass-through TLV: {e}"))
-                        })?;
-                    }
+        if let DownstreamConnectionMetadata::FromProxyProtocol { tlv_data, .. } = connection_metadata
+            && let Some(pass_through_config) = &self.pass_through_tlvs
+        {
+            for (tlv_type, value) in tlv_data {
+                let should_pass_through = match pass_through_config.match_type {
+                    PassTlvMatchType::IncludeAll => true,
+                    PassTlvMatchType::Include => pass_through_config.tlv_types.contains(tlv_type),
+                };
+                if should_pass_through {
+                    let tlv_type: u8 = tlv_type.clone().into();
+                    builder = builder
+                        .write_tlv(tlv_type, value)
+                        .map_err(|e| ProxyProtocolError::BuildHeader(format!("Failed to add pass-through TLV: {e}")))?;
                 }
             }
         }

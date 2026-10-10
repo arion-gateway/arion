@@ -34,10 +34,10 @@ impl<T> DeferredInit<T> {
     }
 
     pub fn get_mut(&mut self) -> &mut T {
-        if self.cell.get().is_none() {
-            if let Some(init) = self.init_fn.take() {
-                _ = self.cell.set(init());
-            }
+        if self.cell.get().is_none()
+            && let Some(init) = self.init_fn.take()
+        {
+            _ = self.cell.set(init());
         }
 
         match self.cell.get_mut() {

@@ -104,11 +104,11 @@ impl ProviderContext {
                 Asset::Expiring((keys, expiration)) => {
                     if Instant::now() > *expiration {
                         // refresh keys if necessary...
-                        if let JwksSourceSpecifier::RemoteJwks(remote) = &provider_config.jwks_source_specifier {
-                            if let Ok(new_keys) = fetch_remote_jwks(remote, provider_name, provider_config).await {
-                                let deadline = Instant::now() + remote.cache_duration;
-                                self.key_map.store(StdArc::new(Asset::Expiring((new_keys, deadline))));
-                            }
+                        if let JwksSourceSpecifier::RemoteJwks(remote) = &provider_config.jwks_source_specifier
+                            && let Ok(new_keys) = fetch_remote_jwks(remote, provider_name, provider_config).await
+                        {
+                            let deadline = Instant::now() + remote.cache_duration;
+                            self.key_map.store(StdArc::new(Asset::Expiring((new_keys, deadline))));
                         }
                     }
 
@@ -120,13 +120,13 @@ impl ProviderContext {
                 },
                 Asset::Pending => {
                     // force remote key fetching...
-                    if let JwksSourceSpecifier::RemoteJwks(remote) = &provider_config.jwks_source_specifier {
-                        if let Ok(new_keys) = fetch_remote_jwks(remote, provider_name, provider_config).await {
-                            let deadline = Instant::now() + remote.cache_duration;
-                            let res = new_keys.get(kid).cloned().map(|x| Asset::Expiring((x, deadline)));
-                            self.key_map.store(StdArc::new(Asset::Expiring((new_keys, deadline))));
-                            return res;
-                        }
+                    if let JwksSourceSpecifier::RemoteJwks(remote) = &provider_config.jwks_source_specifier
+                        && let Ok(new_keys) = fetch_remote_jwks(remote, provider_name, provider_config).await
+                    {
+                        let deadline = Instant::now() + remote.cache_duration;
+                        let res = new_keys.get(kid).cloned().map(|x| Asset::Expiring((x, deadline)));
+                        self.key_map.store(StdArc::new(Asset::Expiring((new_keys, deadline))));
+                        return res;
                     }
 
                     Some(Asset::Pending)
@@ -268,15 +268,15 @@ impl JwtAuthentication {
 
         // Try to extract token from headers
         for hdr in &provider.from_headers {
-            if let Some(header_value) = req.headers().get(&hdr.name) {
-                if let Ok(header_str) = header_value.to_str() {
-                    // Check if the header value starts with the expected prefix
-                    if let Some(token) = header_str.strip_prefix(&hdr.value_prefix) {
-                        let token = token.trim();
-                        if !token.is_empty() {
-                            debug!(target: "jwt", "token extracted from header '{}' with prefix '{}'", hdr.name, hdr.value_prefix);
-                            return Some(JwtExtract::Header(&hdr.name, Cow::Borrowed(token)));
-                        }
+            if let Some(header_value) = req.headers().get(&hdr.name)
+                && let Ok(header_str) = header_value.to_str()
+            {
+                // Check if the header value starts with the expected prefix
+                if let Some(token) = header_str.strip_prefix(&hdr.value_prefix) {
+                    let token = token.trim();
+                    if !token.is_empty() {
+                        debug!(target: "jwt", "token extracted from header '{}' with prefix '{}'", hdr.name, hdr.value_prefix);
+                        return Some(JwtExtract::Header(&hdr.name, Cow::Borrowed(token)));
                     }
                 }
             }
@@ -295,17 +295,18 @@ impl JwtAuthentication {
         }
 
         // Try to extract token from cookies
-        if let Some(cookie_header) = req.headers().get(http::header::COOKIE) {
-            if let Ok(cookie_str) = cookie_header.to_str() {
-                for cookie_name in &provider.from_cookies {
-                    for cookie in cookie_str.split(';') {
-                        let cookie = cookie.trim();
-                        if let Some((name, value)) = cookie.split_once('=') {
-                            if name == cookie_name.as_str() && !value.is_empty() {
-                                debug!(target: "jwt", "token extracted from cookie '{}'", cookie_name);
-                                return Some(JwtExtract::Cookie(Cow::Borrowed(value)));
-                            }
-                        }
+        if let Some(cookie_header) = req.headers().get(http::header::COOKIE)
+            && let Ok(cookie_str) = cookie_header.to_str()
+        {
+            for cookie_name in &provider.from_cookies {
+                for cookie in cookie_str.split(';') {
+                    let cookie = cookie.trim();
+                    if let Some((name, value)) = cookie.split_once('=')
+                        && name == cookie_name.as_str()
+                        && !value.is_empty()
+                    {
+                        debug!(target: "jwt", "token extracted from cookie '{}'", cookie_name);
+                        return Some(JwtExtract::Cookie(Cow::Borrowed(value)));
                     }
                 }
             }

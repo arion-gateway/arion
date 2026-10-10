@@ -560,10 +560,10 @@ impl From<&(dyn std::error::Error + 'static)> for DownstreamError {
             if let Some(downstream) = e.downcast_ref::<DownstreamError>() {
                 return downstream.clone();
             }
-            if let Some(crate_err) = e.downcast_ref::<crate::Error>() {
-                if let Some(downstream) = crate_err.as_downstream_error() {
-                    return downstream.clone();
-                }
+            if let Some(crate_err) = e.downcast_ref::<crate::Error>()
+                && let Some(downstream) = crate_err.as_downstream_error()
+            {
+                return downstream.clone();
             }
 
             if let Some(io) = e.downcast_ref::<io::Error>() {
@@ -595,19 +595,18 @@ impl From<&(dyn std::error::Error + 'static)> for DownstreamError {
                 {
                     reset = true;
                 }
-                if protocol.is_none() {
-                    if let Some(reason) = reason {
-                        if matches!(
-                            reason,
-                            h2::Reason::PROTOCOL_ERROR
-                                | h2::Reason::FRAME_SIZE_ERROR
-                                | h2::Reason::FLOW_CONTROL_ERROR
-                                | h2::Reason::SETTINGS_TIMEOUT
-                                | h2::Reason::COMPRESSION_ERROR
-                        ) {
-                            protocol = Some(ProtocolErr::H2(reason));
-                        }
-                    }
+                if protocol.is_none()
+                    && let Some(reason) = reason
+                    && matches!(
+                        reason,
+                        h2::Reason::PROTOCOL_ERROR
+                            | h2::Reason::FRAME_SIZE_ERROR
+                            | h2::Reason::FLOW_CONTROL_ERROR
+                            | h2::Reason::SETTINGS_TIMEOUT
+                            | h2::Reason::COMPRESSION_ERROR
+                    )
+                {
+                    protocol = Some(ProtocolErr::H2(reason));
                 }
             } else if e.is::<Elapsed>() {
                 return DownstreamError::Timeout;
@@ -619,10 +618,10 @@ impl From<&(dyn std::error::Error + 'static)> for DownstreamError {
                 if matches!(t, TimeoutBodyError::TimedOut) {
                     return DownstreamError::Timeout;
                 }
-            } else if let Some(p) = e.downcast_ref::<PolyBodyError>() {
-                if matches!(p, PolyBodyError::TimedOut) {
-                    return DownstreamError::Timeout;
-                }
+            } else if let Some(p) = e.downcast_ref::<PolyBodyError>()
+                && matches!(p, PolyBodyError::TimedOut)
+            {
+                return DownstreamError::Timeout;
             }
 
             curr = e.source();
@@ -850,10 +849,10 @@ impl From<&(dyn std::error::Error + 'static)> for UpstreamError {
             if let Some(upstream) = e.downcast_ref::<UpstreamError>() {
                 return upstream.clone();
             }
-            if let Some(crate_err) = e.downcast_ref::<crate::Error>() {
-                if let Some(upstream) = crate_err.as_upstream_error() {
-                    return upstream.clone();
-                }
+            if let Some(crate_err) = e.downcast_ref::<crate::Error>()
+                && let Some(upstream) = crate_err.as_upstream_error()
+            {
+                return upstream.clone();
             }
             if let Some(conn) = e.downcast_ref::<ConnectError>() {
                 return UpstreamError::Connect(Box::new(conn.clone()));
@@ -892,19 +891,18 @@ impl From<&(dyn std::error::Error + 'static)> for UpstreamError {
                 if matches!(reason, Some(h2::Reason::CANCEL | h2::Reason::NO_ERROR) | None) {
                     reset = true;
                 }
-                if protocol.is_none() {
-                    if let Some(reason) = reason {
-                        if matches!(
-                            reason,
-                            h2::Reason::PROTOCOL_ERROR
-                                | h2::Reason::FRAME_SIZE_ERROR
-                                | h2::Reason::FLOW_CONTROL_ERROR
-                                | h2::Reason::SETTINGS_TIMEOUT
-                                | h2::Reason::COMPRESSION_ERROR
-                        ) {
-                            protocol = Some(ProtocolErr::H2(reason));
-                        }
-                    }
+                if protocol.is_none()
+                    && let Some(reason) = reason
+                    && matches!(
+                        reason,
+                        h2::Reason::PROTOCOL_ERROR
+                            | h2::Reason::FRAME_SIZE_ERROR
+                            | h2::Reason::FLOW_CONTROL_ERROR
+                            | h2::Reason::SETTINGS_TIMEOUT
+                            | h2::Reason::COMPRESSION_ERROR
+                    )
+                {
+                    protocol = Some(ProtocolErr::H2(reason));
                 }
                 if fallback_io.is_none() && reason == Some(h2::Reason::CONNECT_ERROR) {
                     fallback_io = Some(FallbackIo::H2Connect);
@@ -919,10 +917,10 @@ impl From<&(dyn std::error::Error + 'static)> for UpstreamError {
                 if matches!(t, TimeoutBodyError::TimedOut) {
                     return UpstreamError::PerTryTimeout;
                 }
-            } else if let Some(p) = e.downcast_ref::<PolyBodyError>() {
-                if matches!(p, PolyBodyError::TimedOut) {
-                    return UpstreamError::PerTryTimeout;
-                }
+            } else if let Some(p) = e.downcast_ref::<PolyBodyError>()
+                && matches!(p, PolyBodyError::TimedOut)
+            {
+                return UpstreamError::PerTryTimeout;
             }
 
             curr = e.source();

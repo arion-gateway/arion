@@ -42,35 +42,35 @@ fn parse_user_metric_value(prometheus_output: &str, metric_name: &str, expected_
         if line.starts_with('#') {
             continue;
         }
-        if line.starts_with(&prefix) {
-            if let Some(brace_end) = line.find('}') {
-                let attrs_str = &line[prefix.len()..brace_end];
-                let mut actual_attrs = HashMap::new();
-                for attr_pair in attrs_str.split(',') {
-                    let parts: Vec<&str> = attr_pair.splitn(2, '=').collect();
-                    if parts.len() == 2 {
-                        let key = parts[0].trim();
-                        let val = parts[1].trim().trim_matches('"');
-                        actual_attrs.insert(key, val);
+        if line.starts_with(&prefix)
+            && let Some(brace_end) = line.find('}')
+        {
+            let attrs_str = &line[prefix.len()..brace_end];
+            let mut actual_attrs = HashMap::new();
+            for attr_pair in attrs_str.split(',') {
+                let parts: Vec<&str> = attr_pair.splitn(2, '=').collect();
+                if parts.len() == 2 {
+                    let key = parts[0].trim();
+                    let val = parts[1].trim().trim_matches('"');
+                    actual_attrs.insert(key, val);
+                }
+            }
+
+            if actual_attrs.len() == expected_attrs.len() {
+                let mut all_match = true;
+                for &(k, v) in expected_attrs {
+                    if actual_attrs.get(k) != Some(&v) {
+                        all_match = false;
+                        break;
                     }
                 }
-
-                if actual_attrs.len() == expected_attrs.len() {
-                    let mut all_match = true;
-                    for &(k, v) in expected_attrs {
-                        if actual_attrs.get(k) != Some(&v) {
-                            all_match = false;
-                            break;
-                        }
-                    }
-                    if all_match {
-                        let after_brace = &line[brace_end + 1..];
-                        let parts: Vec<&str> = after_brace.split_whitespace().collect();
-                        if let Some(val_str) = parts.last() {
-                            if let Ok(val) = val_str.parse::<u64>() {
-                                return Some(val);
-                            }
-                        }
+                if all_match {
+                    let after_brace = &line[brace_end + 1..];
+                    let parts: Vec<&str> = after_brace.split_whitespace().collect();
+                    if let Some(val_str) = parts.last()
+                        && let Ok(val) = val_str.parse::<u64>()
+                    {
+                        return Some(val);
                     }
                 }
             }

@@ -146,50 +146,38 @@ impl InstanceHooks {
     /// Resolve every present export into a typed handle. Called once per instance lifetime.
     fn resolve(instance: &Instance, store: &mut Store<hostcalls::WasmState>, flags: HookFlags) -> Self {
         Self {
-            on_plugin_start: resolve_hook(instance, store, flags, HookFlags::ON_PLUGIN_START, "on_plugin_start".into()),
-            on_plugin_destroy: resolve_hook(
-                instance,
-                store,
-                flags,
-                HookFlags::ON_PLUGIN_DESTROY,
-                "on_plugin_destroy".into(),
-            ),
+            on_plugin_start: resolve_hook(instance, store, flags, HookFlags::ON_PLUGIN_START, "on_plugin_start"),
+            on_plugin_destroy: resolve_hook(instance, store, flags, HookFlags::ON_PLUGIN_DESTROY, "on_plugin_destroy"),
             on_transaction_start: resolve_hook(
                 instance,
                 store,
                 flags,
                 HookFlags::ON_TRANSACTION_START,
-                "on_transaction_start".into(),
+                "on_transaction_start",
             ),
             on_transaction_complete: resolve_hook(
                 instance,
                 store,
                 flags,
                 HookFlags::ON_TRANSACTION_COMPLETE,
-                "on_transaction_complete".into(),
+                "on_transaction_complete",
             ),
             on_request_headers: resolve_hook(
                 instance,
                 store,
                 flags,
                 HookFlags::ON_REQUEST_HEADERS,
-                "on_request_headers".into(),
+                "on_request_headers",
             ),
-            on_request_body: resolve_hook(instance, store, flags, HookFlags::ON_REQUEST_BODY, "on_request_body".into()),
+            on_request_body: resolve_hook(instance, store, flags, HookFlags::ON_REQUEST_BODY, "on_request_body"),
             on_response_headers: resolve_hook(
                 instance,
                 store,
                 flags,
                 HookFlags::ON_RESPONSE_HEADERS,
-                "on_response_headers".into(),
+                "on_response_headers",
             ),
-            on_response_body: resolve_hook(
-                instance,
-                store,
-                flags,
-                HookFlags::ON_RESPONSE_BODY,
-                "on_response_body".into(),
-            ),
+            on_response_body: resolve_hook(instance, store, flags, HookFlags::ON_RESPONSE_BODY, "on_response_body"),
         }
     }
 }
@@ -212,12 +200,12 @@ impl Drop for WasmFilterState {
         // We use ManuallyDrop::take to safely move the Store out of `self` into the spawned task
         // or drop it immediately on the current thread if we can't spawn.
         let mut store = unsafe { std::mem::ManuallyDrop::take(&mut self.store) };
-        if let Some(on_destroy) = self.hooks.on_plugin_destroy.clone() {
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(async move {
-                    _ = on_destroy.call_async(&mut store, ()).await;
-                });
-            }
+        if let Some(on_destroy) = self.hooks.on_plugin_destroy.clone()
+            && let Ok(handle) = tokio::runtime::Handle::try_current()
+        {
+            handle.spawn(async move {
+                _ = on_destroy.call_async(&mut store, ()).await;
+            });
         }
     }
 }
@@ -389,10 +377,10 @@ impl WasmFilter {
         }
 
         // Ensure state exists once (no-op if on_transaction_start already created it).
-        if self.state.get_mut().is_none() {
-            if let Err(e) = self.get_state().await {
-                return FilterDecision::internal_server_error(&e.to_string(), req.version());
-            }
+        if self.state.get_mut().is_none()
+            && let Err(e) = self.get_state().await
+        {
+            return FilterDecision::internal_server_error(&e.to_string(), req.version());
         }
 
         let req_handle = std::ptr::from_mut::<Request<ArionRequestBody>>(req) as u64;
@@ -589,10 +577,10 @@ impl WasmFilter {
         }
 
         // Ensure state exists once (typically already created during apply_request).
-        if self.state.get_mut().is_none() {
-            if let Err(e) = self.get_state().await {
-                return FilterDecision::internal_server_error(&e.to_string(), response.version());
-            }
+        if self.state.get_mut().is_none()
+            && let Err(e) = self.get_state().await
+        {
+            return FilterDecision::internal_server_error(&e.to_string(), response.version());
         }
 
         let resp_handle = std::ptr::from_mut::<Response<ArionResponseBody>>(response) as u64;
@@ -762,16 +750,16 @@ impl WasmFilter {
 impl Drop for WasmFilter {
     fn drop(&mut self) {
         if let Some(mut state) = self.state.get_mut().take() {
-            if let Some(on_tx_comp) = state.hooks.on_transaction_complete.clone() {
-                if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                    let pool = Arc::clone(&self.inner.instance_pool);
-                    handle.spawn(async move {
-                        _ = on_tx_comp.call_async(&mut *state.store, ()).await;
-                        state.store.data_mut().reset_ephemeral();
-                        _ = pool.push(state);
-                    });
-                    return;
-                }
+            if let Some(on_tx_comp) = state.hooks.on_transaction_complete.clone()
+                && let Ok(handle) = tokio::runtime::Handle::try_current()
+            {
+                let pool = Arc::clone(&self.inner.instance_pool);
+                handle.spawn(async move {
+                    _ = on_tx_comp.call_async(&mut *state.store, ()).await;
+                    state.store.data_mut().reset_ephemeral();
+                    _ = pool.push(state);
+                });
+                return;
             }
             state.store.data_mut().reset_ephemeral();
             _ = self.inner.instance_pool.push(state);

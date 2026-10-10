@@ -563,11 +563,11 @@ impl rustls::server::ResolvesServerCert for RelaxedResolvesServerCertUsingSni {
             }
 
             // 2. Wildcard lookup with zero allocations
-            if let Some((_, base_domain)) = sni.split_once('.') {
-                if let Some(cert) = self.by_wildcard.get(base_domain).cloned() {
-                    debug!("Matched with wildcard certificate: {cert:?}");
-                    return Some(cert);
-                }
+            if let Some((_, base_domain)) = sni.split_once('.')
+                && let Some(cert) = self.by_wildcard.get(base_domain).cloned()
+            {
+                debug!("Matched with wildcard certificate: {cert:?}");
+                return Some(cert);
             }
         }
 

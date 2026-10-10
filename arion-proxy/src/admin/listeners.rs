@@ -23,15 +23,15 @@ use crate::admin::{AdminState, query_listener_configuration};
 
 async fn build_listeners_output(admin_state: AdminState) -> String {
     let mut out = String::new();
-    if let Some(config_dump) = query_listener_configuration(&admin_state.configuration_senders).await {
-        if let Some(listeners) = config_dump.listeners {
-            for listener in &listeners {
-                let address = match &listener.listener_type {
-                    ListenerType::Socket { address, .. } => address.to_string(),
-                    ListenerType::Internal { .. } => String::new(),
-                };
-                _ = writeln!(out, "{}::{address}", listener.name);
-            }
+    if let Some(config_dump) = query_listener_configuration(&admin_state.configuration_senders).await
+        && let Some(listeners) = config_dump.listeners
+    {
+        for listener in &listeners {
+            let address = match &listener.listener_type {
+                ListenerType::Socket { address, .. } => address.to_string(),
+                ListenerType::Internal { .. } => String::new(),
+            };
+            _ = writeln!(out, "{}::{address}", listener.name);
         }
     }
     out

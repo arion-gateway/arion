@@ -288,18 +288,18 @@ impl CustomMetrics {
         }
 
         for histogram in &counters.histograms {
-            if let Some(val_str) = get_value(&histogram.header_name) {
-                if let Ok(num_val) = val_str.parse::<u64>() {
-                    histogram.metric.value.record(num_val, shard_id, extra_attributes);
-                }
+            if let Some(val_str) = get_value(&histogram.header_name)
+                && let Ok(num_val) = val_str.parse::<u64>()
+            {
+                histogram.metric.value.record(num_val, shard_id, extra_attributes);
             }
         }
 
         for gauge in &counters.gauges {
-            if let Some(val_str) = get_value(&gauge.header_name) {
-                if let Ok(num_val) = val_str.parse::<u64>() {
-                    gauge.metric.value.record(num_val, extra_attributes);
-                }
+            if let Some(val_str) = get_value(&gauge.header_name)
+                && let Ok(num_val) = val_str.parse::<u64>()
+            {
+                gauge.metric.value.record(num_val, extra_attributes);
             }
         }
     }

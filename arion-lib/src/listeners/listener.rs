@@ -260,8 +260,8 @@ pub struct Listener {
 
 impl Listener {
     #[cfg(test)]
-    pub(crate) fn test_listener(
-        name: impl StringInterner,
+    pub(crate) fn test_listener<T: StringInterner + ?Sized>(
+        name: &T,
         route_rx: broadcast::Receiver<RouteConfigurationChange>,
         secret_rx: broadcast::Receiver<TlsContextChange>,
     ) -> Self {
@@ -441,7 +441,7 @@ impl Listener {
 
                                                    if !conn_formatters.is_empty() {
                                                        let messages = conn_formatters.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-                                                       _ = blocking_log_access(Target::Listener(listener_name.into()), messages);
+                                                       _ = blocking_log_access(Target::Listener(listener_name), messages);
                                                    }
                                                }
                                             })
@@ -588,10 +588,10 @@ impl Listener {
 
             // Now trim all the results that failed to match, or were less specific than the best match
             for (i, result) in scratchpad.iter().enumerate() {
-                if *result != best_match || *result == MatchResult::FailedMatch {
-                    if let Some(is_possible) = possible_filters.get_mut(i) {
-                        *is_possible = false;
-                    }
+                if (*result != best_match || *result == MatchResult::FailedMatch)
+                    && let Some(is_possible) = possible_filters.get_mut(i)
+                {
+                    *is_possible = false;
                 }
             }
         }
@@ -840,28 +840,23 @@ impl Listener {
                         }
                     }
                 }
-                if applied {
-                    if let Some(notify) = notify {
-                        notify.notify_one();
-                    }
+                if applied && let Some(notify) = notify {
+                    notify.notify_one();
                 }
             },
             RouteConfigurationChange::Removed(id, notify) => {
                 let mut applied = false;
                 for chain in filter_chains.values() {
-                    if let ConnectionHandler::Http(http_manager) = &chain.handler {
-                        if let Some(route_id) = http_manager.get_route_id() {
-                            if route_id == &id {
-                                http_manager.remove_route();
-                                applied = true;
-                            }
-                        }
+                    if let ConnectionHandler::Http(http_manager) = &chain.handler
+                        && let Some(route_id) = http_manager.get_route_id()
+                        && route_id == &id
+                    {
+                        http_manager.remove_route();
+                        applied = true;
                     }
                 }
-                if applied {
-                    if let Some(notify) = notify {
-                        notify.notify_one();
-                    }
+                if applied && let Some(notify) = notify {
+                    notify.notify_one();
                 }
             },
         }

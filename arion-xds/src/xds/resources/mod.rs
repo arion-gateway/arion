@@ -117,12 +117,12 @@ pub fn create_addresses(addr: SocketAddr, count: u32) -> Vec<Address> {
     (0..count)
         .map(|i| {
             let mut socket = socket.clone();
-            if let arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::address::Address::SocketAddress(ref mut socket) =
-                socket
+            if let arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::address::Address::SocketAddress(
+                ref mut socket,
+            ) = socket
+                && let Some(PortSpecifier::PortValue(port)) = socket.port_specifier
             {
-                if let Some(PortSpecifier::PortValue(port)) = socket.port_specifier {
-                    socket.port_specifier = Some(PortSpecifier::PortValue(i + port));
-                }
+                socket.port_specifier = Some(PortSpecifier::PortValue(i + port));
             }
             Address { address: Some(socket) }
         })

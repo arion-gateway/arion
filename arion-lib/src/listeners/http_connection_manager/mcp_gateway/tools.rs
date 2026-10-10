@@ -288,10 +288,10 @@ impl ToolEntry {
         validator: Option<&jsonschema::Validator>,
         arguments: &Value,
     ) -> Result<(), CallToolError> {
-        if let Some(validator) = validator {
-            if let Some(err) = validator.iter_errors(arguments).next() {
-                return Err(CallToolError::ValidationError(err.to_string().into()));
-            }
+        if let Some(validator) = validator
+            && let Some(err) = validator.iter_errors(arguments).next()
+        {
+            return Err(CallToolError::ValidationError(err.to_string().into()));
         }
         Ok(())
     }
@@ -406,10 +406,10 @@ impl ToolsRegistry {
         {
             let pinned = self.tools.pin();
             for (_, entry) in &pinned {
-                if let Some(allowed) = restrict_to {
-                    if !allowed.contains(&entry.conf.name) {
-                        continue;
-                    }
+                if let Some(allowed) = restrict_to
+                    && !allowed.contains(&entry.conf.name)
+                {
+                    continue;
                 }
                 if entry.embedding.load_full().is_some() {
                     continue;
@@ -463,17 +463,17 @@ impl ToolsRegistry {
     #[allow(clippy::unused_async)]
     pub fn add_tool(&self, tool: McpTool) -> Result<(), ToolBuilderError> {
         let name = tool.name.clone();
-        if let Some(existing) = self.tools.pin().get(&name).map(StdArc::clone) {
-            if !matches!(existing.source, ToolSource::Provided) {
-                return Err(ToolBuilderError::DuplicateTool(name));
-            }
+        if let Some(existing) = self.tools.pin().get(&name).map(StdArc::clone)
+            && !matches!(existing.source, ToolSource::Provided)
+        {
+            return Err(ToolBuilderError::DuplicateTool(name));
         }
         self.validate_supplied_embedding(&tool)?;
         let entry = build_tool_entry(tool, ToolSource::Provided)?;
-        if let Some(existing) = self.tools.pin().get(&name).map(StdArc::clone) {
-            if !matches!(existing.source, ToolSource::Provided) {
-                return Err(ToolBuilderError::DuplicateTool(name));
-            }
+        if let Some(existing) = self.tools.pin().get(&name).map(StdArc::clone)
+            && !matches!(existing.source, ToolSource::Provided)
+        {
+            return Err(ToolBuilderError::DuplicateTool(name));
         }
         self.tools.pin().insert(name, StdArc::new(entry));
         Ok(())
@@ -889,10 +889,10 @@ impl ToolsRegistry {
             .filter(|_| !filter_by_active || session.active_tools.pin().contains(name))
             .ok_or_else(|| CallToolError::ToolNotFound(name.into()))?;
 
-        if let Some(rbac) = &entry.rbac {
-            if !rbac.is_permitted(req_ext) {
-                return Err(CallToolError::RbacDenied(name.into()));
-            }
+        if let Some(rbac) = &entry.rbac
+            && !rbac.is_permitted(req_ext)
+        {
+            return Err(CallToolError::RbacDenied(name.into()));
         }
         if entry.input_schema_validator.is_some() {
             match rpc.request.params.get("arguments") {

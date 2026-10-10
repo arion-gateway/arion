@@ -157,15 +157,13 @@ impl<const TABLE_SIZE: usize> TableBuilder<TABLE_SIZE> {
     }
 
     fn build(&mut self) -> Vec<usize> {
-        let table = self
-            .table
+        self.table
             .iter()
             .map(|entry| {
                 debug_assert!(entry.is_some(), "Incomplete Maglev lookup table");
                 entry.unwrap_or_default()
             })
-            .collect();
-        table
+            .collect()
     }
 }
 

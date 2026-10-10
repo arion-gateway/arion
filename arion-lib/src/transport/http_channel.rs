@@ -76,8 +76,8 @@ struct RetryCircuitBreakerPermit {
 }
 
 impl RetryCircuitBreakerPermit {
-    fn try_acquire(
-        cluster_name: impl StringInterner,
+    fn try_acquire<T: StringInterner + ?Sized>(
+        cluster_name: &T,
         priority: RoutingPriority,
     ) -> std::result::Result<Self, CircuitBreakerDenial> {
         let name = cluster_name.to_interned_str();
@@ -339,6 +339,7 @@ pub struct Retries {
 }
 
 impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &HttpChannel {
+    #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
         #[allow(unused_variables)] ctx: &RequestCtx,
@@ -375,10 +376,10 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
             let mut attrs = SmallVec::<[KeyValue; 2]>::new();
             if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
                 for key in custom_keys {
-                    if let Some(source) = key.source() {
-                        if let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source)) {
-                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
-                        }
+                    if let Some(source) = key.source()
+                        && let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source))
+                    {
+                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
                     }
                 }
             }
@@ -450,16 +451,16 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
             );
         }
 
-        if let Err(ref err) = result {
-            if let Some(UpstreamError::RouteTimeout) = err.as_upstream_error() {
-                with_metric!(
-                    clusters::UPSTREAM_RQ_TIMEOUT,
-                    add,
-                    1,
-                    shard_id,
-                    &[KeyValue::new("cluster", self.cluster_name.as_str())]
-                );
-            }
+        if let Err(ref err) = result
+            && let Some(UpstreamError::RouteTimeout) = err.as_upstream_error()
+        {
+            with_metric!(
+                clusters::UPSTREAM_RQ_TIMEOUT,
+                add,
+                1,
+                shard_id,
+                &[KeyValue::new("cluster", self.cluster_name.as_str())]
+            );
         }
 
         HttpChannel::map_upstream_result(result, start_time.elapsed(), route_timeout, version)
@@ -685,11 +686,9 @@ impl HttpChannel {
                 return result;
             };
 
-            if is_per_try_timeout {
-                if let Some(retries) = output.as_deref_mut() {
-                    // Increment the timeout counter
-                    retries.timeouts += 1;
-                }
+            if is_per_try_timeout && let Some(retries) = output.as_deref_mut() {
+                // Increment the timeout counter
+                retries.timeouts += 1;
             }
 
             // check for a possible retry...
@@ -835,10 +834,10 @@ fn prepare_http1_request(request: &mut Request<ArionRequestBody>) -> Result<()> 
     if request.version() == Version::HTTP_11 {
         let uri = request.uri();
         if uri.scheme().is_none() && uri.authority().is_none() {
-            if let Some(host) = request.headers().get(http::header::HOST) {
-                if host.as_bytes().is_empty() {
-                    return Err("Empty Host header".into());
-                }
+            if let Some(host) = request.headers().get(http::header::HOST)
+                && host.as_bytes().is_empty()
+            {
+                return Err("Empty Host header".into());
             }
             return Ok(());
         }
@@ -851,10 +850,10 @@ fn prepare_http1_request(request: &mut Request<ArionRequestBody>) -> Result<()> 
                 .map_err(|e| format!("Invalid authority for Host header: {e}"))?;
             request.headers_mut().insert(http::header::HOST, val);
         }
-    } else if let Some(host) = request.headers().get(http::header::HOST) {
-        if host.as_bytes().is_empty() {
-            return Err("Empty Host header".into());
-        }
+    } else if let Some(host) = request.headers().get(http::header::HOST)
+        && host.as_bytes().is_empty()
+    {
+        return Err("Empty Host header".into());
     }
 
     if request.version() == Version::HTTP_2 {

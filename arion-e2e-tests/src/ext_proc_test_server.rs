@@ -163,10 +163,10 @@ impl ExternalProcessor for ExtProcServiceImpl {
                 }
 
                 let response = responses.lock().await.pop_front();
-                if let Some(resp) = response {
-                    if tx.send(Ok(resp)).await.is_err() {
-                        break;
-                    }
+                if let Some(resp) = response
+                    && tx.send(Ok(resp)).await.is_err()
+                {
+                    break;
                 }
             }
         });

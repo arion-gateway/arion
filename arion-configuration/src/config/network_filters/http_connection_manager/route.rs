@@ -418,10 +418,10 @@ impl RouteMatchResult {
     }
 
     pub fn matched_range(&self) -> Option<Range<usize>> {
-        if self.headers_matched {
-            if let Some(pmr) = &self.path_match {
-                return pmr.matched_range();
-            }
+        if self.headers_matched
+            && let Some(pmr) = &self.path_match
+        {
+            return pmr.matched_range();
         }
         None
     }
@@ -499,10 +499,10 @@ impl PathMatcher {
             PathSpecifier::PathSeparatedPrefix(psp) => {
                 // Use strip_suffix to safely get the prefix without the trailing slash
                 // it returns None if the suffix is not present, avoiding manual len() - 1
-                if let Some(without_slash) = psp.strip_suffix('/') {
-                    if case_matcher.equals(without_slash) {
-                        return PathMatcherResult { inner: Some(without_slash.len()) };
-                    }
+                if let Some(without_slash) = psp.strip_suffix('/')
+                    && case_matcher.equals(without_slash)
+                {
+                    return PathMatcherResult { inner: Some(without_slash.len()) };
                 }
 
                 case_matcher.starts_with(psp).then(|| psp.len())

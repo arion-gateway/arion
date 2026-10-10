@@ -422,17 +422,17 @@ fn context_from_trace_info(trace_info: &TraceInfo, tracestate: Option<&HeaderVal
 
 pub fn get_host_from_request<B>(request: &Request<B>) -> Option<&str> {
     // 1. Prefer the ':authority' header, common in HTTP/2.
-    if let Some(authority) = request.headers().get(":authority") {
-        if let Ok(host) = authority.to_str() {
-            return Some(host);
-        }
+    if let Some(authority) = request.headers().get(":authority")
+        && let Ok(host) = authority.to_str()
+    {
+        return Some(host);
     }
 
     // 2. Fallback to the 'Host' header, standard for HTTP/1.1.
-    if let Some(host_header) = request.headers().get(HOST) {
-        if let Ok(host) = host_header.to_str() {
-            return Some(host);
-        }
+    if let Some(host_header) = request.headers().get(HOST)
+        && let Ok(host) = host_header.to_str()
+    {
+        return Some(host);
     }
 
     // 3. As a last resort, try to get the host from the URI.

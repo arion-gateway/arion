@@ -70,13 +70,13 @@ impl AckTracker {
 
     pub fn complete(&self, nonce: &str, result: PushResult) -> bool {
         let pinned = self.pending.pin();
-        if let Some(entry) = pinned.remove(nonce) {
-            if let Some(tx) = entry.take() {
-                if tx.send(result).is_err() {
-                    debug!("ack receiver dropped before result could be delivered for nonce {nonce}");
-                }
-                return true;
+        if let Some(entry) = pinned.remove(nonce)
+            && let Some(tx) = entry.take()
+        {
+            if tx.send(result).is_err() {
+                debug!("ack receiver dropped before result could be delivered for nonce {nonce}");
             }
+            return true;
         }
         false
     }

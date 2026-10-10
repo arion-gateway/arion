@@ -97,10 +97,10 @@ impl AccessLogger {
                     AccessLogMessage::Message(target, fmt) => {
                         if let Some(loggers) = self.map.get_mut(&target) {
                             for (log, fmt) in loggers.iter_mut().zip(fmt.iter()) {
-                                if let Some(logger) = log.get_mut() {
-                                    if let Err(e) = fmt.write_to(logger) {
-                                        error!("AccessLogger: Failed to write log for target '{target}'. Reason: {e}");
-                                    }
+                                if let Some(logger) = log.get_mut()
+                                    && let Err(e) = fmt.write_to(logger)
+                                {
+                                    error!("AccessLogger: Failed to write log for target '{target}'. Reason: {e}");
                                 }
                             }
                         } else {

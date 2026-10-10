@@ -98,7 +98,7 @@ where
 pub static USER_KEY: PartitionKey<SourceHeaderNameOrSni> = PartitionKey::new();
 pub static CUSTOM_KEYS: OnceLock<Vec<PartitionKey<SourceHeaderName>>> = std::sync::OnceLock::new();
 
-/// Maximum allowed length for partition keys extracted from request headers or SNI (protects against metric DoS).
+/// Maximum allowed length for partition keys extracted from request headers or SNI (protects against metric `DoS`).
 pub const MAX_PARTITION_KEY_LENGTH: usize = 256;
 
 #[inline]
@@ -122,7 +122,7 @@ pub const MAX_CUSTOM_KEY_LENGTH: usize = 256;
 
 #[inline]
 /// Return the custom partition key from headers
-pub fn extract_custom_partition_key<'a>(headers: &'a HeaderMap, source: Option<&SourceHeaderName>) -> Option<String> {
+pub fn extract_custom_partition_key(headers: &HeaderMap, source: Option<&SourceHeaderName>) -> Option<String> {
     // Extracts the custom partition key from headers based on the provided source name.
     let SourceHeaderName::HeaderName(keym) = source?;
     headers.get(keym)?.to_str().ok().filter(|s| !s.is_empty() && s.len() <= MAX_CUSTOM_KEY_LENGTH).map(Into::into)
@@ -131,7 +131,7 @@ pub fn extract_custom_partition_key<'a>(headers: &'a HeaderMap, source: Option<&
 #[cfg(test)]
 mod tests {
     use super::*;
-    use http::{HeaderMap, HeaderValue};
+    use http::HeaderValue;
 
     #[test]
     fn test_extract_user_partition_key_length_validation() {

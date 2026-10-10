@@ -85,7 +85,7 @@ impl Listener {
     //
     pub fn all_access_log_configs(&self) -> Vec<(AccessLogTarget, Vec<AccessLogSink>)> {
         let listener_logs: Vec<(AccessLogTarget, Vec<AccessLogSink>)> = vec![(
-            AccessLogTarget::Listener(self.name.clone()),
+            AccessLogTarget::Listener(self.name),
             self.access_log.iter().map(|al| al.get_sink().clone()).collect::<Vec<_>>(),
         )];
 
@@ -94,11 +94,11 @@ impl Listener {
             .values()
             .map(|filter_chain| match &filter_chain.terminal_filter {
                 MainFilter::Http(http_connection_manager) => (
-                    AccessLogTarget::ListenerFilterChain(self.name.clone(), filter_chain.id),
+                    AccessLogTarget::ListenerFilterChain(self.name, filter_chain.id),
                     http_connection_manager.access_log.iter().map(AccessLog::get_sink).cloned().collect::<Vec<_>>(),
                 ),
                 MainFilter::Tcp(tcp_proxy) => (
-                    AccessLogTarget::ListenerFilterChain(self.name.clone(), filter_chain.id),
+                    AccessLogTarget::ListenerFilterChain(self.name, filter_chain.id),
                     tcp_proxy.access_log.iter().map(AccessLog::get_sink).cloned().collect::<Vec<_>>(),
                 ),
             })
@@ -548,12 +548,12 @@ mod envoy_conversions {
                 }
                 if !with_tls_inspector {
                     for chain in filter_chains.values() {
-                        if let Some(rl) = &chain.network_global_rate_limit {
-                            if rl.domain.is_none() {
-                                return Err(GenericError::from_msg(
-                                    "network global rate limit: domain is required for listeners without a TLS inspector",
-                                ));
-                            }
+                        if let Some(rl) = &chain.network_global_rate_limit
+                            && rl.domain.is_none()
+                        {
+                            return Err(GenericError::from_msg(
+                                "network global rate limit: domain is required for listeners without a TLS inspector",
+                            ));
                         }
                     }
                 }
