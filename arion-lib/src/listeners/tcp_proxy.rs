@@ -329,9 +329,9 @@ impl TcpProxy {
                 bytes_received: bytes_received_down,
                 bytes_sent: bytes_sent_down,
                 response_flags,
-                upstream_transport_failure_reason: maybe_upstream_transport_failure_reason.as_ref().map(|x| x.0),
-                response_code_details: maybe_response_code_details.as_ref().map(|x| x.0),
-                connection_termination_details: maybe_connection_termination_details.as_ref().map(|x| x.0),
+                upstream_transport_failure_reason: maybe_upstream_transport_failure_reason.as_ref().map(|x| x.0.clone()),
+                response_code_details: maybe_response_code_details.as_ref().map(|x| x.0.clone()),
+                connection_termination_details: maybe_connection_termination_details.as_ref().map(|x| x.0.clone()),
             }
         );
 

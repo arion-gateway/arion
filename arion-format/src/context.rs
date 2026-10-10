@@ -285,9 +285,9 @@ pub struct FinishContext {
     pub bytes_received: u64,
     pub bytes_sent: u64,
     pub response_flags: ResponseFlags,
-    pub upstream_transport_failure_reason: Option<&'static str>,
-    pub response_code_details: Option<&'static str>,
-    pub connection_termination_details: Option<&'static str>,
+    pub upstream_transport_failure_reason: Option<SmolStr>,
+    pub response_code_details: Option<SmolStr>,
+    pub connection_termination_details: Option<SmolStr>,
 }
 
 impl Context for FinishContext {
@@ -308,13 +308,13 @@ impl Context for FinishContext {
                 StringType::Smol(SmolStr::new(buffer.format(self.bytes_sent)))
             },
             Operator::UpstreamTransportFailureReason => self
-                .upstream_transport_failure_reason
-                .map_or(StringType::None, |msg| StringType::Smol(SmolStr::new_static(msg))),
+                .upstream_transport_failure_reason.as_ref()
+                .map_or(StringType::None, |msg| StringType::Smol(msg.clone())),
             Operator::ConnectionTerminationDetails => self
-                .connection_termination_details
-                .map_or(StringType::None, |msg| StringType::Smol(SmolStr::new_static(msg))),
+                .connection_termination_details.as_ref()
+                .map_or(StringType::None, |msg| StringType::Smol(msg.clone())),
             Operator::ResponseCodeDetails => {
-                self.response_code_details.map_or(StringType::None, |msg| StringType::Smol(SmolStr::new_static(msg)))
+                self.response_code_details.as_ref().map_or(StringType::None, |msg| StringType::Smol(msg.clone()))
             },
             _ => StringType::None,
         }
@@ -369,7 +369,7 @@ impl Context for ConnectionContext<'_> {
                 StringType::Smol(SmolStr::new(buffer.format(self.duration.as_millis())))
             },
             Operator::ConnectionTerminationDetails => {
-                self.connection_termination_details.map_or(StringType::None, |msg| StringType::Smol(SmolStr::new(msg)))
+                self.connection_termination_details.as_ref().as_ref().map_or(StringType::None, |msg| StringType::Smol(SmolStr::new(msg)))
             },
             _ => StringType::None,
         }
