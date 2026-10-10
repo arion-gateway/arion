@@ -537,7 +537,7 @@ impl ExternalProcessor {
         #[cfg(feature = "access-log")]
         {
             use crate::access_log;
-            req_ctx.tx.with_loggers(|loggers| {
+            req_ctx.txn.with_loggers(|loggers| {
                 if let Err(err) = access_log::evaluate_base64_access_log_hook(
                     access_log::AccessLogHook::ExtProcRequest,
                     headers,
@@ -782,7 +782,7 @@ impl ExternalProcessor {
         #[cfg(feature = "access-log")]
         {
             use crate::access_log;
-            req_ctx.tx.with_loggers(|loggers| {
+            req_ctx.txn.with_loggers(|loggers| {
                 if let Err(err) = access_log::evaluate_base64_access_log_hook(
                     access_log::AccessLogHook::ExtProcResponse,
                     headers,

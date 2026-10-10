@@ -79,7 +79,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
         request: Request<ArionRequestBody>,
         (route_context, connection_manager): (RouteContext<'a>, &HttpConnectionManager),
     ) -> Result<Response<ArionResponseBody>> {
-        instrument_function!(ctx.tx.clock, |nanos| {
+        instrument_function!(ctx.txn.clock, |nanos| {
             #[allow(clippy::cast_possible_truncation)]
             crate::instrumentation::metrics::TOTAL_ROUTE_ACTION.observe(nanos as usize)
         });
@@ -90,12 +90,12 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
 
         #[cfg(feature = "metrics")]
         {
-            let mut state = ctx.tx.trans_state.lock();
+            let mut state = ctx.txn.trans_state.lock();
             state.upstream_start_instant = Some(Instant::now())
         };
 
         let acquire_result = instrument_block!(
-            ctx.tx.clock,
+            ctx.txn.clock,
             |nanos| {
                 #[allow(clippy::cast_possible_truncation)]
                 crate::instrumentation::metrics::ACQUIRE_HTTP_STREAM.observe(nanos as usize);
@@ -116,14 +116,14 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
             Ok(upstream) => Some(upstream.cluster_name()),
             Err(error) => error.cluster_id(),
         } {
-            ctx.tx.trans_state.lock().upstream_cluster_name = Some(cluster_id);
+            ctx.txn.trans_state.lock().upstream_cluster_name = Some(cluster_id);
         }
 
         match acquire_result {
             Ok(acquired) => {
                 let svc_channel = acquired.channels();
                 #[cfg(feature = "access-log")]
-                ctx.tx.with_loggers(|loggers| {
+                ctx.txn.with_loggers(|loggers| {
                     with_access_log!(
                         loggers,
                         UpstreamContext {
@@ -159,7 +159,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
 
                 #[cfg(feature = "tracing")]
                 let mut client_span = connection_manager.http_tracer.try_create_span(
-                    ctx.tx.trace_ctx.as_ref(),
+                    ctx.txn.trace_ctx.as_ref(),
                     &connection_manager.get_tracing_key(),
                     SpanKind::Client,
                     SpanName::Str::<()>(svc_channel.upstream_authority().as_str()),
@@ -179,12 +179,12 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
 
                 // ... store the span in the span_state
                 #[cfg(feature = "tracing")]
-                if let Some(ref span_state) = ctx.tx.span_state {
+                if let Some(ref span_state) = ctx.txn.span_state {
                     *span_state.client_span.lock() = client_span;
                 }
 
                 #[cfg(feature = "access-log")]
-                ctx.tx.with_loggers(|loggers| {
+                ctx.txn.with_loggers(|loggers| {
                     with_access_log!(loggers, UpstreamRequestContext(&upstream_request));
                 });
 
@@ -231,7 +231,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
                         http_metrics::DOWNSTREAM_RQ_WS_ON_NON_WS_ROUTE,
                         add,
                         1,
-                        ctx.tx.shard_id(),
+                        ctx.txn.shard_id(),
                         &[KeyValue::new("listener", connection_manager.listener_name.as_str())]
                     );
                     return Ok(SyntheticHttpResponse::bad_request(EventFailure::UpgradeFailed.into())

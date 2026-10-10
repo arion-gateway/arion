@@ -108,7 +108,7 @@ pub async fn handle_websocket_upgrade(
     match version {
         Version::HTTP_11 => {
             #[cfg(feature = "metrics")]
-            let user_partition_key = req_ctx.tx.user_partition_key.clone();
+            let user_partition_key = req_ctx.txn.user_partition_key.clone();
 
             let request_upgrade = hyper::upgrade::on(&mut request);
             match svc_channel.to_response(req_ctx, request, UpstreamCallOpts::default()).await {

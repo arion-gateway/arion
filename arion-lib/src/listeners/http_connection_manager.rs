@@ -499,9 +499,9 @@ thread_local! {
 }
 
 #[derive(Debug)]
-pub struct PooledTxCtx(Option<Arc<TransactionContext>>);
+pub struct PooledTxnCtx(Option<Arc<TransactionContext>>);
 
-impl PooledTxCtx {
+impl PooledTxnCtx {
     #[allow(clippy::too_many_arguments)]
     pub fn acquire(
         request_id: Option<RequestId>,
@@ -547,20 +547,20 @@ impl PooledTxCtx {
     }
 }
 
-impl Clone for PooledTxCtx {
+impl Clone for PooledTxnCtx {
     #[inline]
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-impl Default for PooledTxCtx {
+impl Default for PooledTxnCtx {
     fn default() -> Self {
         Self(Some(Arc::new(TransactionContext::default())))
     }
 }
 
-impl std::ops::Deref for PooledTxCtx {
+impl std::ops::Deref for PooledTxnCtx {
     type Target = TransactionContext;
 
     #[inline]
@@ -569,7 +569,7 @@ impl std::ops::Deref for PooledTxCtx {
     }
 }
 
-impl Drop for PooledTxCtx {
+impl Drop for PooledTxnCtx {
     #[inline]
     fn drop(&mut self) {
         if let Some(arc) = self.0.take() {
@@ -921,20 +921,20 @@ impl HttpPipelineSvc {
 
         if ctx.conn.stream_metrics.inc_requests() == 0 {
             #[cfg(feature = "metrics")]
-            if let Some(user_partition_key) = ctx.tx.user_partition_key.as_ref() {
+            if let Some(user_partition_key) = ctx.txn.user_partition_key.as_ref() {
                 let user_attr_name = metrics::USER_KEY.attribute_name().unwrap_or("user");
                 with_metric!(
                     user::CONNECTIONS,
                     add,
                     1,
-                    ctx.tx.shard_id,
+                    ctx.txn.shard_id,
                     &[KeyValue::new(user_attr_name, user_partition_key.to_string())]
                 );
                 with_metric!(
                     user::CONNECTIONS_ACTIVE,
                     add,
                     1,
-                    ctx.tx.shard_id,
+                    ctx.txn.shard_id,
                     &[KeyValue::new(user_attr_name, user_partition_key.to_string())]
                 );
 
@@ -964,7 +964,7 @@ impl HttpPipelineSvc {
             // set the request id on the response...
             manager
                 .request_id_handler
-                .apply_to(&mut response, ctx.tx.request_id.as_ref().and_then(|x| x.propagate_ref()));
+                .apply_to(&mut response, ctx.txn.request_id.as_ref().and_then(|x| x.propagate_ref()));
 
             #[cfg(feature = "access-log")]
             let (initial_flags, initial_event) = {
@@ -976,7 +976,7 @@ impl HttpPipelineSvc {
             {
                 use crate::with_access_log;
 
-                ctx.tx.with_loggers(|loggers| {
+                ctx.txn.with_loggers(|loggers| {
                     with_access_log!(
                         loggers,
                         DownstreamResponseContext {
@@ -988,7 +988,7 @@ impl HttpPipelineSvc {
             };
 
             #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
-            let trans_ctx = ctx.tx;
+            let trans_ctx = ctx.txn;
             let stream_metrics = ctx.conn.stream_metrics;
 
             response.map(move |body| {
@@ -1276,7 +1276,7 @@ impl RequestHandler<Request<ArionRequestBody>, &HttpConnectionManager> for &Rout
                     }
 
                     #[cfg(feature = "access-log")]
-                    ctx.tx.with_loggers(|loggers| {
+                    ctx.txn.with_loggers(|loggers| {
                         if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
                             crate::access_log::AccessLogHook::IncomingResponse,
                             response.headers(),
@@ -1396,23 +1396,23 @@ fn apply_mutations_on_response<B>(
 #[derive(Clone, Debug, Default)]
 pub struct RequestCtx {
     pub conn: ConnMeta,
-    pub tx: PooledTxCtx,
+    pub txn: PooledTxnCtx,
 }
 
 impl RequestCtx {
     #[inline]
-    pub fn new(conn: ConnMeta, tx: PooledTxCtx) -> Self {
-        Self { conn, tx }
+    pub fn new(conn: ConnMeta, txn: PooledTxnCtx) -> Self {
+        Self { conn, txn }
     }
 
     #[inline]
     pub(crate) fn propagated_request_id(&self) -> Option<&HeaderValue> {
-        self.tx.propagated_request_id()
+        self.txn.propagated_request_id()
     }
 
     #[inline]
     pub(crate) fn begin_upstream_span(&self, span_name: &str) -> ScopedClientSpan {
-        self.tx.begin_upstream_span(span_name)
+        self.txn.begin_upstream_span(span_name)
     }
 }
 
@@ -1529,7 +1529,7 @@ impl TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
         #[allow(clippy::let_unit_value)]
         let shard_id = get_shard_id!();
 
-        let trans_ctx = PooledTxCtx::acquire(
+        let trans_ctx = PooledTxnCtx::acquire(
             request_id,
             user_partition_key,
             shard_id,
@@ -1598,14 +1598,14 @@ impl TransactionSvc<HttpPipelineSvc> {
             http::DOWNSTREAM_RQ_TOTAL,
             add,
             1,
-            ctx.tx.shard_id(),
+            ctx.txn.shard_id(),
             &[KeyValue::new("listener", listener_name.as_str())]
         );
         with_metric!(
             http::DOWNSTREAM_RQ_ACTIVE,
             add,
             1,
-            ctx.tx.shard_id(),
+            ctx.txn.shard_id(),
             &[KeyValue::new("listener", listener_name.as_str())]
         );
 
@@ -1625,7 +1625,7 @@ impl TransactionSvc<HttpPipelineSvc> {
         }
 
         #[cfg(feature = "access-log")]
-        ctx.tx.with_loggers(|loggers| {
+        ctx.txn.with_loggers(|loggers| {
             if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
                 crate::access_log::AccessLogHook::IncomingRequest,
                 request.headers(),
@@ -1636,7 +1636,7 @@ impl TransactionSvc<HttpPipelineSvc> {
         });
 
         #[allow(unused_variables)]
-        let shard_id = ctx.tx.shard_id();
+        let shard_id = ctx.txn.shard_id();
         scopeguard::defer! {
             with_metric!(http::DOWNSTREAM_RQ_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name.as_str())]);
         }
@@ -1644,25 +1644,25 @@ impl TransactionSvc<HttpPipelineSvc> {
         let req_timeout = manager.request_timeout;
         let filterchain_id = manager.filterchain_id;
 
-        eval_http_init_context(&request, &ctx.tx, Some(ctx.conn.downstream.as_ref()));
+        eval_http_init_context(&request, &ctx.txn, Some(ctx.conn.downstream.as_ref()));
 
         let Some(routing_state) = routing_state_guard.as_deref() else {
             return Ok(handle_route_conf_not_found(
                 request.version(),
-                &ctx.tx,
+                &ctx.txn,
                 Some(&ctx.conn.stream_metrics),
                 listener_name,
-                ctx.tx.user_partition_key.as_ref(),
+                ctx.txn.user_partition_key.as_ref(),
                 filterchain_id,
             ));
         };
 
         if let Some(response_error) = reject_request_if_invalid(
             &request,
-            &ctx.tx,
+            &ctx.txn,
             Some(&ctx.conn.stream_metrics),
             listener_name,
-            ctx.tx.user_partition_key.as_ref(),
+            ctx.txn.user_partition_key.as_ref(),
             filterchain_id,
         ) {
             return Ok(response_error);
@@ -1670,7 +1670,7 @@ impl TransactionSvc<HttpPipelineSvc> {
 
         let stream_metrics = Arc::clone(&ctx.conn.stream_metrics);
         #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
-        let trans_ctx = ctx.tx.clone();
+        let trans_ctx = ctx.txn.clone();
         let http = HttpRequest { request, ctx }.map_body(|body| {
             let body = TimeoutBody::new(req_timeout, PolyBody::from(body));
             InstrumentedBody::new(
@@ -1727,7 +1727,7 @@ impl TransactionSvc<HttpPipelineSvc> {
         });
 
         #[cfg(feature = "access-log")]
-        let trans_ctx_clone = http.ctx.tx.clone();
+        let trans_ctx_clone = http.ctx.txn.clone();
         let response = self.inner.call(manager, RoutedHttpRequest { http, routing_state }).await;
 
         #[cfg(feature = "metrics")]
@@ -1819,7 +1819,7 @@ struct MetricsFinishContext {
 
 #[cfg(any(feature = "access-log", feature = "metrics"))]
 pub(crate) struct HttpTxnFlush {
-    trans_ctx: PooledTxCtx,
+    trans_ctx: PooledTxnCtx,
     listener_name: InternedStr,
     filterchain_id: u64,
     body_bytes: u64,
@@ -2015,7 +2015,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
 #[allow(unused_variables)]
 fn instrument_early_failure_response(
     response: Response<crate::ArionResponseBody>,
-    trans_ctx: &PooledTxCtx,
+    trans_ctx: &PooledTxnCtx,
     stream_metrics: Option<&Arc<StreamMetrics>>,
     listener_name: InternedStr,
     user_partition_key: Option<&SmolStr>,
@@ -2125,7 +2125,7 @@ const MAX_URI_LENGTH: usize = 2048;
 #[allow(clippy::too_many_arguments)]
 fn reject_request_if_invalid(
     request: &Request<Incoming>,
-    trans_ctx: &PooledTxCtx,
+    trans_ctx: &PooledTxnCtx,
     stream_metrics: Option<&Arc<StreamMetrics>>,
     listener_name: InternedStr,
     user_partition_key: Option<&SmolStr>,
@@ -2201,7 +2201,7 @@ fn reject_request_if_invalid(
 #[allow(clippy::too_many_arguments)]
 fn handle_route_conf_not_found(
     version: ::http::Version,
-    trans_ctx: &PooledTxCtx,
+    trans_ctx: &PooledTxnCtx,
     stream_metrics: Option<&Arc<StreamMetrics>>,
     listener_name: InternedStr,
     user_partition_key: Option<&SmolStr>,

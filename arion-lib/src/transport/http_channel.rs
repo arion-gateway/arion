@@ -345,7 +345,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
         request: Request<ArionRequestBody>,
         arg: UpstreamCallOpts<'a>,
     ) -> Result<Response<ArionResponseBody>> {
-        instrument_function!(ctx.tx.clock, |nanos| {
+        instrument_function!(ctx.txn.clock, |nanos| {
             #[allow(clippy::cast_possible_truncation)]
             crate::instrumentation::metrics::REQUEST_TO_RESPONSE_TIME.observe(nanos as usize)
         });
@@ -386,7 +386,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
         }
 
         #[cfg(feature = "access-log")]
-        ctx.tx.with_loggers(|loggers| {
+        ctx.txn.with_loggers(|loggers| {
             if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
                 crate::access_log::AccessLogHook::UpstreamRequest,
                 request.headers(),
@@ -401,7 +401,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
         let mut retries = Retries::default();
         let start_time = std::time::Instant::now();
         let result = instrument_block!(
-            ctx.tx.clock,
+            ctx.txn.clock,
             |nanos| {
                 #[allow(clippy::cast_possible_truncation)]
                 crate::instrumentation::metrics::SEND_REQUEST_WAIT_RESPONSE.observe(nanos as usize);
@@ -414,7 +414,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
                     priority,
                     Some(&mut retries),
                     #[cfg(feature = "instrumentation")]
-                    &ctx.tx.clock,
+                    &ctx.txn.clock,
                 )
                 .await
             }

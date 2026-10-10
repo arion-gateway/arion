@@ -60,7 +60,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (&'a RouteMatchResult, &'a st
     ) -> impl Future<Output = Result<Response<ArionResponseBody>>> {
         let res = (|| -> Result<Response<ArionResponseBody>> {
             #[cfg(feature = "access-log")]
-            ctx.tx.with_loggers(|loggers| {
+            ctx.txn.with_loggers(|loggers| {
                 with_access_log!(loggers, UpstreamContext { authority: None, cluster_name: None, route_name });
             });
 

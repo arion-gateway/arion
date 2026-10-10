@@ -108,16 +108,12 @@ pub fn extract_user_partition_key(
     source: Option<&SourceHeaderNameOrSni>,
 ) -> Option<SmolStr> {
     source.and_then(|source| match source {
-        SourceHeaderNameOrSni::HeaderName(keym) => {
-            headers
-                .get(keym)
-                .and_then(|value| value.to_str().ok())
-                .filter(|s| !s.is_empty() && s.len() <= MAX_PARTITION_KEY_LENGTH)
-                .map(ToSmolStr::to_smolstr)
-        },
-        SourceHeaderNameOrSni::Sni => {
-            sni.filter(|s| !s.is_empty() && s.len() <= MAX_PARTITION_KEY_LENGTH).cloned()
-        },
+        SourceHeaderNameOrSni::HeaderName(keym) => headers
+            .get(keym)
+            .and_then(|value| value.to_str().ok())
+            .filter(|s| !s.is_empty() && s.len() <= MAX_PARTITION_KEY_LENGTH)
+            .map(ToSmolStr::to_smolstr),
+        SourceHeaderNameOrSni::Sni => sni.filter(|s| !s.is_empty() && s.len() <= MAX_PARTITION_KEY_LENGTH).cloned(),
     })
 }
 
@@ -129,12 +125,7 @@ pub const MAX_CUSTOM_KEY_LENGTH: usize = 256;
 pub fn extract_custom_partition_key<'a>(headers: &'a HeaderMap, source: Option<&SourceHeaderName>) -> Option<String> {
     // Extracts the custom partition key from headers based on the provided source name.
     let SourceHeaderName::HeaderName(keym) = source?;
-    headers
-        .get(keym)?
-        .to_str()
-        .ok()
-        .filter(|s| !s.is_empty() && s.len() <= MAX_CUSTOM_KEY_LENGTH)
-        .map(Into::into)
+    headers.get(keym)?.to_str().ok().filter(|s| !s.is_empty() && s.len() <= MAX_CUSTOM_KEY_LENGTH).map(Into::into)
 }
 
 #[cfg(test)]

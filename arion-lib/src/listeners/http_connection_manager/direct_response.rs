@@ -40,7 +40,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, &'a str> for &DirectResponseA
         #[cfg(feature = "access-log")]
         let route_name = arg;
         #[cfg(feature = "access-log")]
-        ctx.tx.with_loggers(|loggers| {
+        ctx.txn.with_loggers(|loggers| {
             with_access_log!(loggers, UpstreamContext { authority: None, cluster_name: None, route_name });
         });
 

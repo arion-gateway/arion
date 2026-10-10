@@ -565,7 +565,7 @@ impl WasmFilter {
                     for (k, v) in &ops {
                         kv.insert(k.as_str(), v.as_str());
                     }
-                    req_ctx.tx.with_loggers(|loggers| {
+                    req_ctx.txn.with_loggers(|loggers| {
                         _ = crate::access_log::evaluate_plain_access_log_hook(
                             crate::access_log::AccessLogHook::Wasm,
                             &kv,
