@@ -18,6 +18,7 @@
 //
 //
 
+use arion_interner::InternedStr;
 use std::time::Duration;
 use triomphe::Arc;
 
@@ -50,7 +51,7 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct LbEndpoint {
-    pub name: &'static str,
+    pub name: InternedStr,
     pub connect_using: ConnectUsing,
     pub weight: u32,
     pub health_status: HealthStatus,
@@ -150,7 +151,7 @@ impl EndpointWithLoad for LbEndpoint {
 #[derive(Debug, Clone, TypedBuilder)]
 #[builder(build_method(vis="", name=prepare), field_defaults(setter(prefix = "with_")))]
 struct LbEndpointBuilder {
-    cluster_name: &'static str,
+    cluster_name: InternedStr,
     endpoint: PartialLbEndpoint,
     http_protocol_options: HttpProtocolOptions,
     transport_socket: UpstreamTransportSocketConfigurator,
@@ -192,7 +193,7 @@ impl TryFrom<LbEndpointConfig> for PartialLbEndpoint {
 
 #[derive(Debug, Clone, Default)]
 pub struct LocalityLbEndpoints {
-    pub name: &'static str,
+    pub name: InternedStr,
     pub endpoints: Vec<Arc<LbEndpoint>>,
     pub priority: u32,
     pub healthy_endpoints: u32,
@@ -230,7 +231,7 @@ pub struct PartialLocalityLbEndpoints {
 #[derive(Debug, Clone, Default, TypedBuilder)]
 #[builder(build_method(vis="", name=prepare), field_defaults(setter(prefix = "with_")))]
 pub struct LocalityLbEndpointsBuilder {
-    cluster_name: &'static str,
+    cluster_name: InternedStr,
     bind_device: Option<BindDevice>,
     endpoints: PartialLocalityLbEndpoints,
     http_protocol_options: HttpProtocolOptions,
@@ -354,7 +355,7 @@ impl BalancerType {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct ClusterLoadAssignment {
-    cluster_name: &'static str,
+    cluster_name: InternedStr,
     pub transport_socket: UpstreamTransportSocketConfigurator,
     protocol_options: HttpProtocolOptions,
     balancer: BalancerType,
@@ -465,7 +466,7 @@ impl ClusterLoadAssignment {
 #[derive(Debug, Clone, TypedBuilder)]
 #[builder(build_method(vis="pub(crate)", name=prepare), field_defaults(setter(prefix = "with_")))]
 pub struct ClusterLoadAssignmentBuilder {
-    cluster_name: &'static str,
+    cluster_name: InternedStr,
     cla: PartialClusterLoadAssignment,
     bind_device: Option<BindDevice>,
     #[builder(default)]
@@ -558,6 +559,7 @@ impl TryFrom<ClusterLoadAssignmentConfig> for PartialClusterLoadAssignment {
 
 #[cfg(test)]
 mod test {
+    use arion_interner::InternedStr;
     use http::uri::Authority;
 
     use super::LbEndpoint;
@@ -573,7 +575,7 @@ mod test {
         /// This function is used by unit tests in other modules
         pub fn new(
             authority: Authority,
-            cluster_name: &'static str,
+            cluster_name: InternedStr,
             bind_device: Option<BindDevice>,
             weight: u32,
             health_status: HealthStatus,
@@ -584,11 +586,11 @@ mod test {
                 HttpChannelBuilder::new(connect_using.clone()).with_cluster_name(cluster_name).build().unwrap();
             let tcp_channel = TcpChannelConnector::new(
                 &connect_using,
-                "test_cluster",
+                "test_cluster".into(),
                 UpstreamTransportSocketConfigurator::default(),
             );
 
-            Self { name: "Cluster", connect_using, weight, health_status, http_channel, tcp_channel }
+            Self { name: "Cluster".into(), connect_using, weight, health_status, http_channel, tcp_channel }
         }
     }
 }

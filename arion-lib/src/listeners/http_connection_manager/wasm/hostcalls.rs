@@ -20,6 +20,8 @@
 #![allow(clippy::manual_let_else)]
 #![allow(clippy::too_many_lines)]
 
+use arion_interner::InternedStr;
+use arion_interner::StringInterner;
 use std::sync::LazyLock;
 use triomphe::Arc;
 
@@ -39,7 +41,7 @@ use arion_wasm_types::{
     ArionWasmError, CalloutRequest, CalloutResponse, GrpcCalloutRequest, GrpcCalloutResponse, HeaderMutation, LogLevel,
 };
 pub struct WasmState {
-    pub name: &'static str,
+    pub name: InternedStr,
     pub plugin_config: Option<String>,
     pub direct_response: Option<Response<ArionResponseBody>>,
     pub buffered_request_body: Option<bytes::Bytes>,
@@ -998,7 +1000,7 @@ fn arion_dispatch_http_call(
     (req_ptr, req_len, resp_ptr_ptr, resp_len_ptr): (u32, u32, u32, u32),
 ) -> Box<dyn std::future::Future<Output = i32> + Send + '_> {
     Box::new(async move {
-        let mut callout_req: CalloutRequest = {
+        let callout_req: CalloutRequest = {
             let Some(memory) = guest_memory(&mut caller) else {
                 return ArionWasmError::InvalidMemoryAccess.into();
             };
@@ -1019,13 +1021,13 @@ fn arion_dispatch_http_call(
         };
 
         // 2. Resolve cluster and acquire connection
-        let cluster_spec = ClusterSpecifier::Cluster(std::mem::take(&mut callout_req.cluster_name));
+        let cluster_spec = ClusterSpecifier::Cluster(callout_req.cluster_name.to_interned_str());
         let cluster_id = match clusters_manager::resolve_cluster(&cluster_spec, None) {
             Some(id) => id,
             None => return ArionWasmError::NotFound.into(),
         };
 
-        let http_service = match clusters_manager::get_http_connection(cluster_id, RoutingContext::None) {
+        let http_service = match clusters_manager::get_http_connection(&cluster_id, RoutingContext::None) {
             Ok(svc) => svc,
             Err(e) => {
                 tracing::error!("Callout failed to get HTTP connection: {:?}", e);
@@ -1240,7 +1242,7 @@ fn arion_dispatch_grpc_call(
     (req_ptr, req_len, resp_ptr_ptr, resp_len_ptr): (u32, u32, u32, u32),
 ) -> Box<dyn std::future::Future<Output = i32> + Send + '_> {
     Box::new(async move {
-        let mut callout_req: GrpcCalloutRequest = {
+        let callout_req: GrpcCalloutRequest = {
             let Some(memory) = guest_memory(&mut caller) else {
                 return ArionWasmError::InvalidMemoryAccess.into();
             };
@@ -1260,13 +1262,13 @@ fn arion_dispatch_grpc_call(
             }
         };
 
-        let cluster_spec = ClusterSpecifier::Cluster(std::mem::take(&mut callout_req.cluster_name));
+        let cluster_spec = ClusterSpecifier::Cluster(callout_req.cluster_name.to_interned_str());
         let cluster_id = match clusters_manager::resolve_cluster(&cluster_spec, None) {
             Some(id) => id,
             None => return ArionWasmError::NotFound.into(),
         };
 
-        let grpc_service = match clusters_manager::get_grpc_connection(cluster_id, RoutingContext::None) {
+        let grpc_service = match clusters_manager::get_grpc_connection(&cluster_id, RoutingContext::None) {
             Ok(svc) => svc,
             Err(e) => {
                 tracing::error!("gRPC Callout failed to get connection: {:?}", e);
@@ -1599,7 +1601,7 @@ fn arion_get_downstream_metadata(
         let guest_meta = SerDownstreamMetadata {
             connection: mapped_connection,
             sni: host_meta.sni.as_deref(),
-            listener_name: host_meta.listener_name,
+            listener_name: host_meta.listener_name.as_str(),
         };
 
         let encoded = match bincode_next::serde::encode_to_vec(&guest_meta, bincode_next::config::standard()) {

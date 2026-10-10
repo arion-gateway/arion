@@ -67,24 +67,23 @@ fn insert_slow(s: &str) -> &'static str {
     let leaked: &'static str = Box::leak(Box::from(s));
     let map = INTERNER.pin();
 
-    match map.try_insert(leaked, ()) {
-        Ok(()) => leaked,
-        Err(_) => {
-            // Lost the race: another thread published the same string first.
-            // Keys are never removed nor replaced, so the winner is guaranteed to be there.
-            let winner = map.get_key_value(s).map_or(leaked, |(&interned, ())| interned);
+    if let Ok(()) = map.try_insert(leaked, ()) {
+        leaked
+    } else {
+        // Lost the race: another thread published the same string first.
+        // Keys are never removed nor replaced, so the winner is guaranteed to be there.
+        let winner = map.get_key_value(s).map_or(leaked, |(&interned, ())| interned);
 
-            // If we did not return our newly allocated string, we must free it to avoid
-            // a memory leak on races.
-            if !std::ptr::eq(winner, leaked) {
-                // SAFETY: `leaked` was just allocated by us via `Box::leak(Box::from(s))`.
-                // It was rejected by the map (Err), so no other thread has a reference to it.
-                // Reconstructing the Box and dropping it is safe and frees the memory.
-                drop(unsafe { Box::from_raw(leaked.as_ptr() as *mut u8) });
-            }
-
-            winner
+        // If we did not return our newly allocated string, we must free it to avoid
+        // a memory leak on races.
+        if !std::ptr::eq(winner, leaked) {
+            // SAFETY: `leaked` was just allocated by us via `Box::leak(Box::from(s))`.
+            // It was rejected by the map (Err), so no other thread has a reference to it.
+            // Reconstructing the Box and dropping it is safe and frees the memory.
+            drop(unsafe { Box::from_raw(leaked.as_ptr().cast_mut()) });
         }
+
+        winner
     }
 }
 
@@ -125,9 +124,11 @@ mod tests {
                 .collect();
             handles.into_iter().map(|h| h.join().unwrap()).collect()
         });
-        for other in ptrs.iter().skip(1) {
-            for (a, b) in ptrs[0].iter().zip(other) {
-                assert!(std::ptr::eq(*a, *b), "non-canonical slice for {a}");
+        if let Some(first) = ptrs.first() {
+            for other in ptrs.iter().skip(1) {
+                for (a, b) in first.iter().zip(other) {
+                    assert!(std::ptr::eq(*a, *b), "non-canonical slice for {a}");
+                }
             }
         }
     }

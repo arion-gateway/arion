@@ -248,7 +248,7 @@ mod config_dump_tests {
             time::Duration,
         };
         let listener = Listener {
-            name: SmolStr::new_static("listener1"),
+            name: "listener1".into(),
             listener_type: ListenerType::Socket {
                 address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080),
                 bind_device: None,
@@ -348,11 +348,10 @@ mod config_dump_tests {
             },
             core::Address,
         };
-        use smol_str::SmolStr;
         use std::{num::NonZeroU32, time::Duration};
         let endpoint_addr = Address::Socket("127.0.0.1".to_owned(), 9000);
         let cluster = Cluster {
-            name: SmolStr::new_static("cluster1"),
+            name: "cluster1".into(),
             discovery_settings: ClusterDiscoveryType::Static(ClusterLoadAssignment {
                 cluster_name: "cluster1".into(),
                 endpoints: vec![LocalityLbEndpoints {
@@ -404,11 +403,10 @@ mod config_dump_tests {
             },
             core::Address,
         };
-        use smol_str::SmolStr;
         use std::{num::NonZeroU32, time::Duration};
         let endpoint_addr = Address::Socket("127.0.0.1".to_owned(), 9000);
         let cluster = Cluster {
-            name: SmolStr::new_static("cluster1"),
+            name: "cluster1".into(),
             discovery_settings: ClusterDiscoveryType::Static(ClusterLoadAssignment {
                 cluster_name: "cluster1".into(),
                 endpoints: vec![LocalityLbEndpoints {

@@ -21,6 +21,7 @@
 use abort_on_drop::ChildTask;
 use anyhow::Result;
 use arion_configuration::config::{Listener, bootstrap::Node, cluster::ClusterSpecifier};
+use arion_interner::StringInterner;
 use arion_lib::{
     ConfigurationSenders, ConversionContext, EndpointHealthUpdate, HealthCheckManager, ListenerConfigurationChange,
     ListenerFactory, PartialClusterLoadAssignment, PartialClusterType, RouteConfigurationChange, SecretManager,
@@ -102,10 +103,10 @@ impl XdsConfigurationHandler {
         DeltaDiscoveryClient,
         DeltaDiscoverySubscriptionManager,
     )> {
-        let selector = ClusterSpecifier::Cluster(cluster_name.into());
+        let selector = ClusterSpecifier::Cluster(cluster_name.to_interned_str());
         let cluster_id = arion_lib::clusters::resolve_cluster(&selector, None)
             .ok_or_else(|| anyhow::anyhow!("Failed to resolve cluster {cluster_name} from specifier"))?;
-        let grpc_connections = match arion_lib::clusters::all_grpc_connections(cluster_id) {
+        let grpc_connections = match arion_lib::clusters::all_grpc_connections(cluster_id.as_str()) {
             Ok(connections) => connections,
             Err(err) => {
                 let msg = anyhow::anyhow!("Failed to get gRPC connections from cluster ({cluster_name}): {err}");
@@ -371,7 +372,7 @@ impl XdsConfigurationHandler {
     }
 
     async fn access_log_listener_remove(&mut self, id: &str) {
-        if let Err(err) = update_configuration(Target::Listener(id.into()), vec![]).await {
+        if let Err(err) = update_configuration(Target::Listener(id.to_interned_str()), vec![]).await {
             warn!("Failed to remove access log configuration for listener {id}: {err}");
         }
     }

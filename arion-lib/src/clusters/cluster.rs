@@ -44,7 +44,7 @@ use crate::{
     transport::{GrpcService, HttpChannel, HttpChannels, TcpChannelConnector, UpstreamTransportSocketConfigurator},
 };
 
-use arion_interner::StringInterner;
+use arion_interner::InternedStr;
 use dynamic::{DynamicCluster, DynamicClusterBuilder};
 use original_dst::{OriginalDstCluster, OriginalDstClusterBuilder};
 use r#static::{StaticCluster, StaticClusterBuilder};
@@ -64,8 +64,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
         let circuit_breaker = cluster.circuit_breakers.as_ref().map(|cb| Arc::new(ClusterCircuitBreaker::from(cb)));
 
         let health_check = cluster.health_check;
-        let static_cluster_name = cluster.name.to_static_str();
-        debug!("Cluster {static_cluster_name} type {:?} ", cluster.discovery_settings);
+        debug!("Cluster {} type {:?} ", cluster.name, cluster.discovery_settings);
         match cluster.discovery_settings {
             ClusterDiscoveryType::Static(cla) => {
                 let server_name = transport_socket
@@ -79,7 +78,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
 
                 let cla = ClusterLoadAssignmentBuilder::builder()
                     .with_cla(pcla)
-                    .with_cluster_name(static_cluster_name)
+                    .with_cluster_name(cluster.name)
                     .with_bind_device(bind_device)
                     .with_lb_policy(load_balancing_policy)
                     .with_connection_timeout(cluster.connect_timeout)
@@ -90,7 +89,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
                     .prepare();
 
                 Ok(PartialClusterType::Static(Box::new(StaticClusterBuilder {
-                    name: static_cluster_name,
+                    name: cluster.name,
                     load_assignment: cla,
                     transport_socket,
                     health_check,
@@ -108,7 +107,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
 
                 let cla = ClusterLoadAssignmentBuilder::builder()
                     .with_cla(PartialClusterLoadAssignment::try_from(cla)?)
-                    .with_cluster_name(static_cluster_name)
+                    .with_cluster_name(cluster.name)
                     .with_bind_device(bind_device)
                     .with_lb_policy(load_balancing_policy)
                     .with_connection_timeout(cluster.connect_timeout)
@@ -119,7 +118,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
                     .prepare();
 
                 Ok(PartialClusterType::Static(Box::new(StaticClusterBuilder {
-                    name: static_cluster_name,
+                    name: cluster.name,
                     load_assignment: cla,
                     transport_socket,
                     health_check,
@@ -129,7 +128,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
             },
 
             ClusterDiscoveryType::Eds(None) => Ok(PartialClusterType::Dynamic(Box::new(DynamicClusterBuilder {
-                name: static_cluster_name,
+                name: cluster.name,
                 bind_device,
                 transport_socket,
                 health_check,
@@ -148,7 +147,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
                     .transpose()?;
 
                 Ok(PartialClusterType::OnDemand(Box::new(OriginalDstClusterBuilder {
-                    name: static_cluster_name,
+                    name: cluster.name,
                     bind_device,
                     transport_socket,
                     connect_timeout: cluster.connect_timeout,
@@ -163,7 +162,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
 
 #[enum_dispatch]
 pub trait ClusterOps {
-    fn get_name(&self) -> &'static str;
+    fn get_name(&self) -> InternedStr;
     fn into_health_check(self) -> Option<HealthCheck>;
     fn all_http_channels(&mut self) -> Vec<(Authority, HttpChannel)>;
     fn all_tcp_channels(&mut self) -> Vec<(Authority, TcpChannelConnector)>;
@@ -242,7 +241,7 @@ impl PartialClusterType {
         }
     }
 
-    pub fn get_name(&self) -> &'static str {
+    pub fn get_name(&self) -> InternedStr {
         match &self {
             PartialClusterType::Static(cluster) => cluster.name,
             PartialClusterType::Dynamic(cluster) => cluster.name,

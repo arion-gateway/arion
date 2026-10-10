@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use arion_interner::InternedStr;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
@@ -19,7 +20,7 @@ use crate::config::core::DataSource;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WasmConfig {
-    pub name: SmolStr,
+    pub name: InternedStr,
     pub root_id: SmolStr,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vm_id: Option<SmolStr>,

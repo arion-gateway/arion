@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::RemoteEmbeddings;
-use arion_interner::StringInterner;
+use arion_interner::{InternedStr, StringInterner};
 use bytes::Bytes;
 use http::{Method, Request, header};
 use http_body_util::{BodyExt, Full};
@@ -40,7 +40,7 @@ const DEFAULT_EMBEDDINGS_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 pub struct EmbeddingsClient {
-    cluster_id: &'static str,
+    cluster_id: InternedStr,
     cluster_label: SmolStr,
     model_id: SmolStr,
     path: SmolStr,
@@ -65,7 +65,7 @@ impl EmbeddingsClient {
     ) -> Self {
         let description = format!("remote://{cluster}{path} ({model_id})");
         let dimensions = AtomicUsize::new(dimensions);
-        let cluster_id = cluster.as_str().to_static_str();
+        let cluster_id = cluster.as_str().to_interned_str();
         Self {
             cluster_id,
             cluster_label: cluster,
@@ -87,7 +87,7 @@ impl EmbeddingsClient {
         let payload = EmbeddingsRequest { model: self.model_id.as_str(), input: inputs };
         let body_bytes = serde_json::to_vec(&payload).map_err(|e| EmbeddingError::Service(format!("encode: {e}")))?;
 
-        let channels = clusters_manager::get_http_connection(self.cluster_id, RoutingContext::None)
+        let channels = clusters_manager::get_http_connection(&self.cluster_id, RoutingContext::None)
             .map_err(|e| EmbeddingError::Service(format!("cluster '{}' lookup failed: {e}", self.cluster_label)))?;
         let upstream_authority = channels.upstream_authority().as_str();
 
@@ -213,7 +213,7 @@ impl EmbeddingsClient {
         use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::REMOTE_EMBEDDINGS_PATH;
 
         Self {
-            cluster_id: "",
+            cluster_id: "".into(),
             cluster_label: "test".into(),
             model_id: "test-model".into(),
             path: SmolStr::new_inline(REMOTE_EMBEDDINGS_PATH),

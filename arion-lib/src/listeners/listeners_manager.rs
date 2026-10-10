@@ -20,6 +20,7 @@
 
 use std::collections::BTreeMap;
 
+use arion_interner::InternedStr;
 use smol_str::SmolStr;
 use tokio::sync::{Notify, broadcast, mpsc};
 use tracing::{info, warn};
@@ -71,7 +72,7 @@ impl ListenerInfo {
 pub struct ListenersManager {
     configuration_channel: mpsc::Receiver<ListenerConfigurationChange>,
     route_configuration_channel: mpsc::Receiver<RouteConfigurationChange>,
-    listener_handles: BTreeMap<&'static str, ListenerInfo>,
+    listener_handles: BTreeMap<InternedStr, ListenerInfo>,
 }
 
 impl ListenersManager {

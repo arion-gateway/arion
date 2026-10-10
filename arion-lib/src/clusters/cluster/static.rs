@@ -31,13 +31,14 @@ use crate::{
     transport::{HttpChannel, HttpChannels, TcpChannelConnector, UpstreamTransportSocketConfigurator},
 };
 use arion_configuration::config::cluster::{HealthCheck, HealthStatus};
+use arion_interner::InternedStr;
 use http::uri::Authority;
 use tracing::debug;
 use triomphe::Arc;
 
 #[derive(Debug, Clone)]
 pub struct StaticClusterBuilder {
-    pub name: &'static str,
+    pub name: InternedStr,
     pub load_assignment: ClusterLoadAssignmentBuilder,
     pub transport_socket: UpstreamTransportSocketConfigurator,
     pub health_check: Option<HealthCheck>,
@@ -69,7 +70,7 @@ impl StaticClusterBuilder {
 
 #[derive(Debug, Clone)]
 pub struct GlobalStaticCluster {
-    pub name: &'static str,
+    pub name: InternedStr,
     pub health_check: Option<HealthCheck>,
     pub config: Box<arion_configuration::config::cluster::Cluster>,
     pub circuit_breaker: Option<Arc<ClusterCircuitBreaker>>,
@@ -83,7 +84,7 @@ pub struct StaticCluster {
 }
 
 impl ClusterOps for StaticCluster {
-    fn get_name(&self) -> &'static str {
+    fn get_name(&self) -> InternedStr {
         self.global.name
     }
 

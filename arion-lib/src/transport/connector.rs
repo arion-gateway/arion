@@ -29,7 +29,7 @@ use triomphe::Arc;
 
 use arion_configuration::config::core::Address;
 use arion_format::types::ResponseFlags;
-use arion_interner::StringInterner;
+use arion_interner::{InternedStr, StringInterner};
 use http::uri::Authority;
 use hyper::Uri;
 use hyper_util::rt::TokioIo;
@@ -63,7 +63,7 @@ pub enum ConnectUsing {
         idle_timeout: Option<Duration>,
     },
     InternalListener {
-        listener_name: &'static str,
+        listener_name: InternedStr,
         synthetic_authority: Authority,
     },
 }
@@ -115,7 +115,7 @@ impl ConnectUsing {
                 Ok(ConnectUsing::Socket { authority, bind_device, connect_timeout, idle_timeout })
             },
             Address::Internal(internal) => {
-                let static_listener_name = internal.server_listener_name.to_static_str();
+                let static_listener_name = internal.server_listener_name.to_interned_str();
                 let synthetic_authority = Authority::try_from(format!("{static_listener_name}.listener.internal:80"))?;
                 Ok(ConnectUsing::InternalListener { listener_name: static_listener_name, synthetic_authority })
             },
@@ -130,7 +130,7 @@ impl ConnectUsing {
 pub struct TcpErrorContext {
     pub upstream_addr: Option<SocketAddr>,
     pub response_flags: ResponseFlags,
-    pub cluster_name: &'static str,
+    pub cluster_name: InternedStr,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -203,7 +203,7 @@ impl ConnectError {
 }
 
 struct ContextBuilder {
-    cluster_name: &'static str,
+    cluster_name: InternedStr,
 }
 
 impl ContextBuilder {
@@ -219,7 +219,7 @@ impl ContextBuilder {
 #[derive(Clone, Debug)]
 pub struct LocalConnectorWithDNSResolver {
     pub addr: Authority,
-    pub cluster_name: &'static str,
+    pub cluster_name: InternedStr,
     pub bind_device: Option<BindDevice>,
     pub connect_timeout: Option<Duration>,
     pub idle_timeout: Option<Duration>,
@@ -227,7 +227,7 @@ pub struct LocalConnectorWithDNSResolver {
 
 impl LocalConnectorWithDNSResolver {
     #[allow(clippy::too_many_lines)]
-    pub fn connect(&self) -> impl Future<Output = crate::Result<(TcpStream, &'static str)>> + 'static {
+    pub fn connect(&self) -> impl Future<Output = crate::Result<(TcpStream, InternedStr)>> + 'static {
         let addr = self.addr.clone();
         let device = self.bind_device.clone();
         let cluster_name = self.cluster_name;
@@ -324,8 +324,8 @@ impl Service<Uri> for LocalConnectorWithDNSResolver {
 
 #[derive(Debug, Clone)]
 pub struct InternalConnector {
-    pub listener_name: &'static str,
-    pub cluster_name: &'static str,
+    pub listener_name: InternedStr,
+    pub cluster_name: InternedStr,
     pub is_http2: bool,
 }
 
@@ -333,20 +333,21 @@ impl InternalConnector {
     pub async fn connect(
         &self,
         downstream_metadata: Option<Arc<DownstreamConnectionMetadata>>,
-    ) -> crate::Result<(AsyncInstrumentedStream, &'static str)> {
+    ) -> crate::Result<(AsyncInstrumentedStream, InternedStr)> {
         debug!("Connecting to internal listener '{}' from cluster '{}'", self.listener_name, self.cluster_name);
 
         let ctx = ContextBuilder { cluster_name: self.cluster_name };
-        let sender = internal_registry::get_connection_sender_for_listener(self.listener_name).ok_or_else(|| {
-            ctx.error(
-                None,
-                ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
-                ConnectErrorKind::InternalListener(format!(
-                    "Internal listener '{}' not found or not ready",
-                    self.listener_name
-                )),
-            )
-        })?;
+        let sender =
+            internal_registry::get_connection_sender_for_listener(self.listener_name.as_str()).ok_or_else(|| {
+                ctx.error(
+                    None,
+                    ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
+                    ConnectErrorKind::InternalListener(format!(
+                        "Internal listener '{}' not found or not ready",
+                        self.listener_name
+                    )),
+                )
+            })?;
         let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
         let downstream_metadata = downstream_metadata.unwrap_or_else(|| {
             Arc::new(DownstreamConnectionMetadata::FromSocket {
@@ -381,8 +382,8 @@ pub enum UnifiedConnector {
     Internal(InternalConnector),
 }
 
-impl From<(&ConnectUsing, &'static str, bool)> for UnifiedConnector {
-    fn from((target, cluster_name, is_http2): (&ConnectUsing, &'static str, bool)) -> Self {
+impl From<(&ConnectUsing, InternedStr, bool)> for UnifiedConnector {
+    fn from((target, cluster_name, is_http2): (&ConnectUsing, InternedStr, bool)) -> Self {
         match target {
             ConnectUsing::Socket { authority, bind_device, connect_timeout, idle_timeout } => {
                 UnifiedConnector::Socket(LocalConnectorWithDNSResolver {
@@ -395,14 +396,14 @@ impl From<(&ConnectUsing, &'static str, bool)> for UnifiedConnector {
             },
             ConnectUsing::InternalListener { listener_name, .. } => {
                 debug!("Creating InternalConnector for listener '{}' with is_http2={})", listener_name, is_http2,);
-                UnifiedConnector::Internal(InternalConnector { listener_name, cluster_name, is_http2 })
+                UnifiedConnector::Internal(InternalConnector { listener_name: *listener_name, cluster_name, is_http2 })
             },
         }
     }
 }
 
-impl From<(&ConnectUsing, &'static str)> for UnifiedConnector {
-    fn from((target, cluster_name): (&ConnectUsing, &'static str)) -> Self {
+impl From<(&ConnectUsing, InternedStr)> for UnifiedConnector {
+    fn from((target, cluster_name): (&ConnectUsing, InternedStr)) -> Self {
         Self::from((target, cluster_name, false))
     }
 }
@@ -425,18 +426,19 @@ impl Service<Uri> for UnifiedConnector {
         match self {
             UnifiedConnector::Socket(c) => {
                 #[allow(unused_variables)]
-                let cluster_name = c.cluster_name;
+                let static_cluster_name = c.cluster_name.as_str();
 
                 // Check and increment circuit breaker connections
-                if let Err(_denial) =
-                    crate::clusters::try_increment_connections(cluster_name, crate::clusters::RoutingPriority::Default)
-                {
+                if let Err(_denial) = crate::clusters::try_increment_connections(
+                    static_cluster_name,
+                    crate::clusters::RoutingPriority::Default,
+                ) {
                     return Box::pin(async move {
                         Err(crate::Error::upstream(UpstreamError::Connect(Box::new(ConnectError {
                             context: TcpErrorContext {
                                 upstream_addr: None,
                                 response_flags: ResponseFlags::UPSTREAM_OVERFLOW,
-                                cluster_name,
+                                cluster_name: static_cluster_name.into(),
                             },
                             kind: ConnectErrorKind::CircuitBreaker,
                         }))))
@@ -452,7 +454,10 @@ impl Service<Uri> for UnifiedConnector {
                     let stream = fut.await;
                     let stream = stream.inspect_err(|e| {
                         // Decrement circuit breaker connections since connection failed
-                        crate::clusters::decrement_connections(cluster_name, crate::clusters::RoutingPriority::Default);
+                        crate::clusters::decrement_connections(
+                            static_cluster_name,
+                            crate::clusters::RoutingPriority::Default,
+                        );
 
                         let is_timeout = e
                             .find_source::<UpstreamError>()
@@ -464,7 +469,7 @@ impl Service<Uri> for UnifiedConnector {
                                 add,
                                 1,
                                 shard_id,
-                                &[KeyValue::new("cluster", cluster_name)]
+                                &[KeyValue::new("cluster", static_cluster_name)]
                             );
                         } else {
                             // Record generic connection failure metric
@@ -473,7 +478,7 @@ impl Service<Uri> for UnifiedConnector {
                                 add,
                                 1,
                                 shard_id,
-                                &[KeyValue::new("cluster", cluster_name)]
+                                &[KeyValue::new("cluster", static_cluster_name)]
                             );
                         }
                     })?;
@@ -490,20 +495,20 @@ impl Service<Uri> for UnifiedConnector {
                             add,
                             1,
                             shard_id,
-                            &[KeyValue::new("cluster", cluster_name)]
+                            &[KeyValue::new("cluster", static_cluster_name)]
                         );
                         with_metric!(
                             clusters::UPSTREAM_CX_ACTIVE,
                             add,
                             1,
                             shard_id,
-                            &[KeyValue::new("cluster", cluster_name)]
+                            &[KeyValue::new("cluster", static_cluster_name)]
                         );
 
                         instrumented.metrics().with_drop_fn(Box::new(move |metrics, idle| {
                             // Decrement circuit breaker connections on connection drop
                             crate::clusters::decrement_connections(
-                                cluster_name,
+                                static_cluster_name,
                                 crate::clusters::RoutingPriority::Default,
                             );
 
@@ -512,14 +517,14 @@ impl Service<Uri> for UnifiedConnector {
                                 add,
                                 metrics.bytes_read(),
                                 shard_id,
-                                &[KeyValue::new("cluster", cluster_name)]
+                                &[KeyValue::new("cluster", static_cluster_name)]
                             );
                             with_metric!(
                                 clusters::UPSTREAM_CX_TX_BYTES_TOTAL,
                                 add,
                                 metrics.bytes_written(),
                                 shard_id,
-                                &[KeyValue::new("cluster", cluster_name)]
+                                &[KeyValue::new("cluster", static_cluster_name)]
                             );
 
                             with_metric!(
@@ -527,14 +532,14 @@ impl Service<Uri> for UnifiedConnector {
                                 add,
                                 1,
                                 shard_id,
-                                &[KeyValue::new("cluster", cluster_name)]
+                                &[KeyValue::new("cluster", static_cluster_name)]
                             );
                             with_metric!(
                                 clusters::UPSTREAM_CX_ACTIVE,
                                 sub,
                                 1,
                                 shard_id,
-                                &[KeyValue::new("cluster", cluster_name)]
+                                &[KeyValue::new("cluster", static_cluster_name)]
                             );
 
                             if idle > idle_timeout {
@@ -543,7 +548,7 @@ impl Service<Uri> for UnifiedConnector {
                                     add,
                                     1,
                                     shard_id,
-                                    &[KeyValue::new("cluster", cluster_name)]
+                                    &[KeyValue::new("cluster", static_cluster_name)]
                                 );
                             }
                         }))
@@ -553,7 +558,7 @@ impl Service<Uri> for UnifiedConnector {
                         instrumented.metrics().with_drop_fn(Box::new(move |_metrics, _idle| {
                             // Decrement circuit breaker connections on connection drop even if metrics are disabled
                             crate::clusters::decrement_connections(
-                                cluster_name,
+                                static_cluster_name,
                                 crate::clusters::RoutingPriority::Default,
                             );
                         }))

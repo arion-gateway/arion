@@ -127,33 +127,55 @@ impl EventKind {
                 UpstreamError::Connect(conn_err) => match &conn_err.kind {
                     ConnectErrorKind::Timeout(_) => Some(ResponseCodeDetails(SmolStr::new_static("connect_timeout"))),
                     ConnectErrorKind::Dns(_) => Some(ResponseCodeDetails(SmolStr::new_static("dns_resolution_failed"))),
-                    ConnectErrorKind::CircuitBreaker => Some(ResponseCodeDetails(SmolStr::new_static("circuit_breaker_overflow"))),
+                    ConnectErrorKind::CircuitBreaker => {
+                        Some(ResponseCodeDetails(SmolStr::new_static("circuit_breaker_overflow")))
+                    },
                     ConnectErrorKind::Io(err) => Some(ResponseCodeDetails::from(err)),
                     _ => Some(ResponseCodeDetails(SmolStr::new_static("upstream_connect_failure"))),
                 },
                 UpstreamError::Io(err) => Some(ResponseCodeDetails::from(err)),
-                UpstreamError::PerTryTimeout => Some(ResponseCodeDetails(SmolStr::new_static("upstream_per_try_timeout"))),
-                UpstreamError::RouteTimeout => Some(ResponseCodeDetails(SmolStr::new_static("upstream_response_timeout"))),
-                UpstreamError::Reset => Some(ResponseCodeDetails(SmolStr::new_static("upstream_reset_after_response_started{TCP_RESET}"))),
+                UpstreamError::PerTryTimeout => {
+                    Some(ResponseCodeDetails(SmolStr::new_static("upstream_per_try_timeout")))
+                },
+                UpstreamError::RouteTimeout => {
+                    Some(ResponseCodeDetails(SmolStr::new_static("upstream_response_timeout")))
+                },
+                UpstreamError::Reset => {
+                    Some(ResponseCodeDetails(SmolStr::new_static("upstream_reset_after_response_started{TCP_RESET}")))
+                },
                 UpstreamError::RefusedStream => Some(ResponseCodeDetails(SmolStr::new_static("http2.remote_refuse"))),
-                UpstreamError::Http3PostConnectFailure => Some(ResponseCodeDetails(SmolStr::new_static("http3.remote_reset"))),
+                UpstreamError::Http3PostConnectFailure => {
+                    Some(ResponseCodeDetails(SmolStr::new_static("http3.remote_reset")))
+                },
                 UpstreamError::Protocol(_) => Some(ResponseCodeDetails(SmolStr::new_static("upstream_protocol_error"))),
                 UpstreamError::Other(_) => Some(ResponseCodeDetails(SmolStr::new_static("internal_error"))),
             },
             EventKind::Downstream(err) => match err {
                 DownstreamError::Io(err) => Some(ResponseCodeDetails::from(err)),
                 DownstreamError::Reset => Some(ResponseCodeDetails(SmolStr::new_static("downstream_connection_reset"))),
-                DownstreamError::Protocol(_) => Some(ResponseCodeDetails(SmolStr::new_static("downstream_protocol_error"))),
-                DownstreamError::Timeout => Some(ResponseCodeDetails(SmolStr::new_static("downstream_request_timeout"))),
-                DownstreamError::Other(_) => Some(ResponseCodeDetails(SmolStr::new_static("downstream_internal_error"))),
+                DownstreamError::Protocol(_) => {
+                    Some(ResponseCodeDetails(SmolStr::new_static("downstream_protocol_error")))
+                },
+                DownstreamError::Timeout => {
+                    Some(ResponseCodeDetails(SmolStr::new_static("downstream_request_timeout")))
+                },
+                DownstreamError::Other(_) => {
+                    Some(ResponseCodeDetails(SmolStr::new_static("downstream_internal_error")))
+                },
             },
             EventKind::Failure(fail) => match fail {
-                EventFailure::AdminFilterResponse => Some(ResponseCodeDetails(SmolStr::new_static("admin_filter_response"))),
+                EventFailure::AdminFilterResponse => {
+                    Some(ResponseCodeDetails(SmolStr::new_static("admin_filter_response")))
+                },
                 EventFailure::ClusterNotFound => Some(ResponseCodeDetails(SmolStr::new_static("cluster_not_found"))),
                 EventFailure::DirectResponse => Some(ResponseCodeDetails(SmolStr::new_static("direct_response"))),
-                EventFailure::FilterChainNotFound => Some(ResponseCodeDetails(SmolStr::new_static("filter_chain_not_found"))),
+                EventFailure::FilterChainNotFound => {
+                    Some(ResponseCodeDetails(SmolStr::new_static("filter_chain_not_found")))
+                },
                 EventFailure::InternalRedirect => Some(ResponseCodeDetails(SmolStr::new_static("internal_redirect"))),
-                EventFailure::NoHealthyUpstream => Some(ResponseCodeDetails(SmolStr::new_static("no_healthy_upstream"))),
+                EventFailure::NoHealthyUpstream => {
+                    Some(ResponseCodeDetails(SmolStr::new_static("no_healthy_upstream")))
+                },
                 EventFailure::RouteNotFound => Some(ResponseCodeDetails(SmolStr::new_static("route_not_found"))),
                 EventFailure::UpgradeFailed => Some(ResponseCodeDetails(SmolStr::new_static("upgrade_failed"))),
                 EventFailure::RbacAccessDenied(id) => {
@@ -174,10 +196,18 @@ impl EventKind {
         match self {
             EventKind::Downstream(err) => match err {
                 DownstreamError::Io(err) => Some(ConnectionTerminationDetails::from(err)),
-                DownstreamError::Reset => Some(ConnectionTerminationDetails(SmolStr::new_static("downstream_connection_reset"))),
-                DownstreamError::Protocol(_) => Some(ConnectionTerminationDetails(SmolStr::new_static("downstream_protocol_error"))),
-                DownstreamError::Timeout => Some(ConnectionTerminationDetails(SmolStr::new_static("downstream_timeout"))),
-                DownstreamError::Other(_) => Some(ConnectionTerminationDetails(SmolStr::new_static("downstream_error"))),
+                DownstreamError::Reset => {
+                    Some(ConnectionTerminationDetails(SmolStr::new_static("downstream_connection_reset")))
+                },
+                DownstreamError::Protocol(_) => {
+                    Some(ConnectionTerminationDetails(SmolStr::new_static("downstream_protocol_error")))
+                },
+                DownstreamError::Timeout => {
+                    Some(ConnectionTerminationDetails(SmolStr::new_static("downstream_timeout")))
+                },
+                DownstreamError::Other(_) => {
+                    Some(ConnectionTerminationDetails(SmolStr::new_static("downstream_error")))
+                },
             },
             EventKind::Upstream(_) | EventKind::Failure(_) => None,
         }
@@ -209,17 +239,29 @@ impl From<&io::Error> for UpstreamTransportEventError {
 impl From<&io::Error> for ResponseCodeDetails {
     fn from(err: &io::Error) -> Self {
         ResponseCodeDetails(match err.kind() {
-            io::ErrorKind::ConnectionRefused => SmolStr::new_static("upstream_reset_before_response_started{CONNECTION_REFUSED}"),
+            io::ErrorKind::ConnectionRefused => {
+                SmolStr::new_static("upstream_reset_before_response_started{CONNECTION_REFUSED}")
+            },
             io::ErrorKind::NotConnected => SmolStr::new_static("upstream_reset_after_response_started{NOT_CONNECTED}"),
             io::ErrorKind::AddrInUse => SmolStr::new_static("upstream_reset_before_response_started{ADDR_IN_USE}"),
-            io::ErrorKind::AddrNotAvailable => SmolStr::new_static("upstream_reset_before_response_started{ADDR_NOT_AVAILABLE}"),
-            io::ErrorKind::NetworkUnreachable => SmolStr::new_static("upstream_reset_before_response_started{NETWORK_UNREACHABLE}"),
-            io::ErrorKind::PermissionDenied => SmolStr::new_static("upstream_reset_before_response_started{PERMISSION_DENIED}"),
-            io::ErrorKind::ConnectionAborted => SmolStr::new_static("upstream_reset_after_response_started{CONNECTION_ABORTED}"),
+            io::ErrorKind::AddrNotAvailable => {
+                SmolStr::new_static("upstream_reset_before_response_started{ADDR_NOT_AVAILABLE}")
+            },
+            io::ErrorKind::NetworkUnreachable => {
+                SmolStr::new_static("upstream_reset_before_response_started{NETWORK_UNREACHABLE}")
+            },
+            io::ErrorKind::PermissionDenied => {
+                SmolStr::new_static("upstream_reset_before_response_started{PERMISSION_DENIED}")
+            },
+            io::ErrorKind::ConnectionAborted => {
+                SmolStr::new_static("upstream_reset_after_response_started{CONNECTION_ABORTED}")
+            },
             io::ErrorKind::ConnectionReset => SmolStr::new_static("upstream_reset_after_response_started{TCP_RESET}"),
             io::ErrorKind::TimedOut => SmolStr::new_static("upstream_streaming_timeout{TIMEOUT}"),
             io::ErrorKind::BrokenPipe => SmolStr::new_static("upstream_reset_after_response_started{BROKEN_PIPE}"),
-            io::ErrorKind::UnexpectedEof => SmolStr::new_static("upstream_reset_after_response_started{UNEXPECTED_EOF}"),
+            io::ErrorKind::UnexpectedEof => {
+                SmolStr::new_static("upstream_reset_after_response_started{UNEXPECTED_EOF}")
+            },
             _ => SmolStr::new_static("connection_reset"),
         })
     }
@@ -245,8 +287,12 @@ impl TryFrom<&UpstreamError> for UpstreamTransportEventError {
     fn try_from(value: &UpstreamError) -> Result<Self, Self::Error> {
         match value {
             UpstreamError::Connect(conn_err) => match &conn_err.kind {
-                ConnectErrorKind::Timeout(_) => Ok(UpstreamTransportEventError(SmolStr::new_static("upstream_connect_timeout"))),
-                ConnectErrorKind::Dns(_) => Ok(UpstreamTransportEventError(SmolStr::new_static("dns_resolution_failed"))),
+                ConnectErrorKind::Timeout(_) => {
+                    Ok(UpstreamTransportEventError(SmolStr::new_static("upstream_connect_timeout")))
+                },
+                ConnectErrorKind::Dns(_) => {
+                    Ok(UpstreamTransportEventError(SmolStr::new_static("dns_resolution_failed")))
+                },
                 ConnectErrorKind::Io(io_err) => Ok(UpstreamTransportEventError::from(io_err)),
                 _ => Ok(UpstreamTransportEventError(SmolStr::new_static("upstream_connect_failure"))),
             },
@@ -254,21 +300,31 @@ impl TryFrom<&UpstreamError> for UpstreamTransportEventError {
             UpstreamError::Io(io_err) => Ok(UpstreamTransportEventError::from(io_err)),
 
             // Timeout for a single retry attempt
-            UpstreamError::PerTryTimeout => Ok(UpstreamTransportEventError(SmolStr::new_static("upstream_per_try_timeout"))),
+            UpstreamError::PerTryTimeout => {
+                Ok(UpstreamTransportEventError(SmolStr::new_static("upstream_per_try_timeout")))
+            },
 
             // Overall route/request timeout
-            UpstreamError::RouteTimeout => Ok(UpstreamTransportEventError(SmolStr::new_static("upstream_response_timeout"))),
+            UpstreamError::RouteTimeout => {
+                Ok(UpstreamTransportEventError(SmolStr::new_static("upstream_response_timeout")))
+            },
 
             // Generic connection reset
             UpstreamError::Reset => Ok(UpstreamTransportEventError(SmolStr::new_static("upstream_reset"))),
 
             // HTTP/2 or HTTP/3 refused stream
-            UpstreamError::RefusedStream => Ok(UpstreamTransportEventError(SmolStr::new_static("upstream_refused_stream"))),
+            UpstreamError::RefusedStream => {
+                Ok(UpstreamTransportEventError(SmolStr::new_static("upstream_refused_stream")))
+            },
 
             // HTTP/3 specific post-connect failure
-            UpstreamError::Http3PostConnectFailure => Ok(UpstreamTransportEventError(SmolStr::new_static("http3_post_connect_failure"))),
+            UpstreamError::Http3PostConnectFailure => {
+                Ok(UpstreamTransportEventError(SmolStr::new_static("http3_post_connect_failure")))
+            },
 
-            UpstreamError::Protocol(_) => Ok(UpstreamTransportEventError(SmolStr::new_static("upstream_protocol_error"))),
+            UpstreamError::Protocol(_) => {
+                Ok(UpstreamTransportEventError(SmolStr::new_static("upstream_protocol_error")))
+            },
 
             UpstreamError::Other(_) => Err(()),
         }
@@ -998,7 +1054,7 @@ mod tests {
             context: TcpErrorContext {
                 upstream_addr: Some(std::net::SocketAddr::from(([10, 0, 0, 1], 9000))),
                 response_flags: FmtFlags::UPSTREAM_CONNECTION_FAILURE,
-                cluster_name: "backend_cluster",
+                cluster_name: "backend_cluster".into(),
             },
             kind: ConnectErrorKind::Io(io_err),
         };
@@ -1012,7 +1068,7 @@ mod tests {
 
         let err = Error::upstream(upstream_err);
         let ctx = err.upstream_context().expect("Should extract context from UpstreamError::Connect");
-        assert_eq!(ctx.cluster_name, "backend_cluster");
+        assert_eq!(ctx.cluster_name.as_str(), "backend_cluster");
         assert_eq!(ctx.upstream_addr, Some(std::net::SocketAddr::from(([10, 0, 0, 1], 9000))));
 
         assert!(err.find_source::<io::Error>().is_some(), "Should find inner io::Error");
@@ -1021,7 +1077,7 @@ mod tests {
             context: TcpErrorContext {
                 upstream_addr: Some(std::net::SocketAddr::from(([10, 0, 0, 1], 9000))),
                 response_flags: FmtFlags::UPSTREAM_CONNECTION_FAILURE,
-                cluster_name: "backend_cluster",
+                cluster_name: "backend_cluster".into(),
             },
             kind: ConnectErrorKind::Timeout(elapsed()),
         };
@@ -1042,7 +1098,7 @@ mod tests {
             context: TcpErrorContext {
                 upstream_addr: Some(std::net::SocketAddr::from(([127, 0, 0, 1], 8080))),
                 response_flags: arion_format::types::ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
-                cluster_name: "test_cluster",
+                cluster_name: "test_cluster".into(),
             },
             kind: ConnectErrorKind::Io(io::Error::new(io::ErrorKind::ConnectionRefused, "Connection refused")),
         };
@@ -1052,7 +1108,7 @@ mod tests {
         assert!(found.is_some(), "Should find std::io::Error in chain!");
 
         let ctx = err.upstream_context().expect("Should find TcpErrorContext in chain!");
-        assert_eq!(ctx.cluster_name, "test_cluster");
+        assert_eq!(ctx.cluster_name.as_str(), "test_cluster");
     }
 
     #[test]
@@ -1063,7 +1119,7 @@ mod tests {
 
         let conn_err = ConnectError {
             context: TcpErrorContext {
-                cluster_name: "test_cluster",
+                cluster_name: "test_cluster".into(),
                 upstream_addr: Some(std::net::SocketAddr::from(([127, 0, 0, 1], 8080))),
                 response_flags: arion_format::types::ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
             },

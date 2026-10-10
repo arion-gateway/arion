@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use arion_interner::InternedStr;
 use serde::{Deserialize, Serialize};
-use smol_str::SmolStr;
 use std::time::Duration;
 
 use crate::config::core::{StringMatcher, StringMatcherPattern};
@@ -99,7 +99,7 @@ pub enum GrpcServiceSpecifier {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClusterGrpc {
-    pub cluster_name: SmolStr,
+    pub cluster_name: InternedStr,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub max_receive_message_length: Option<u32>,
 }

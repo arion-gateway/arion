@@ -186,7 +186,7 @@ async fn dispatch_rest_tool(
     } else {
         request.headers_mut().remove(X_REQUEST_ID);
     }
-    let cluster_specifier = ClusterSpecifier::Cluster(cluster.clone());
+    let cluster_specifier = ClusterSpecifier::Cluster(cluster.clone().into());
     let acquired = match acquire_http_upstream(
         &cluster_specifier,
         &request,

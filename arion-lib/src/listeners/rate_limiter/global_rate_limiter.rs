@@ -86,7 +86,7 @@ impl TryFrom<NetworkGlobalRateLimitConfig> for NetworkGlobalRateLimit {
                     .connect_lazy();
                 RlsClient::GoogleGrpc(RateLimitServiceClient::new(channel))
             },
-            GrpcServiceSpecifier::Cluster(c) => RlsClient::Cluster(c.cluster_name),
+            GrpcServiceSpecifier::Cluster(c) => RlsClient::Cluster(c.cluster_name.as_str().into()),
         };
 
         let descriptors = config
@@ -209,10 +209,10 @@ impl NetworkGlobalRateLimit {
 
         let resp = match &self.rls_client {
             RlsClient::Cluster(cluster_name) => {
-                let spec = ClusterSpecifier::Cluster(cluster_name.clone());
+                let spec = ClusterSpecifier::Cluster(cluster_name.clone().into());
                 let cluster_id = clusters_manager::resolve_cluster(&spec, None)
                     .ok_or_else(|| crate::Error::from(format!("RLS cluster '{cluster_name}' not found")))?;
-                let svc = clusters_manager::get_grpc_connection(cluster_id, RoutingContext::None)?;
+                let svc = clusters_manager::get_grpc_connection(&cluster_id, RoutingContext::None)?;
                 RateLimitServiceClient::new(svc)
                     .should_rate_limit(rls_request)
                     .await

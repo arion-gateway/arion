@@ -72,7 +72,10 @@ impl LocalRateLimit {
                     add,
                     1,
                     get_shard_id!(),
-                    &[KeyValue::new("filter", self.inner.stat_prefix.0), KeyValue::new("result", filters::EVENT_OK)]
+                    &[
+                        KeyValue::new("filter", self.inner.stat_prefix.as_str()),
+                        KeyValue::new("result", filters::EVENT_OK)
+                    ]
                 );
                 return FilterDecision::Continue;
             }
@@ -84,7 +87,7 @@ impl LocalRateLimit {
                 1,
                 get_shard_id!(),
                 &[
-                    KeyValue::new("filter", self.inner.stat_prefix.0),
+                    KeyValue::new("filter", self.inner.stat_prefix.as_str()),
                     KeyValue::new("result", filters::EVENT_RATE_LIMITED)
                 ]
             );
@@ -105,7 +108,7 @@ impl LocalRateLimit {
             1,
             get_shard_id!(),
             &[
-                KeyValue::new("filter", self.inner.stat_prefix.0),
+                KeyValue::new("filter", self.inner.stat_prefix.as_str()),
                 KeyValue::new("result", filters::EVENT_NOT_APPLICABLE)
             ]
         );

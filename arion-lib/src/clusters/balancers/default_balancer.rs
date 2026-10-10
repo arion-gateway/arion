@@ -176,11 +176,11 @@ mod test {
                     healthy += 1;
                 }
                 //let address = Address::Socket(auth.host().to_string(), auth.port_u16().unwrap_or(8000));
-                lb_endpoints.push(Arc::new(LbEndpoint::new(auth, "test_cluster", None, weight, health_status)));
+                lb_endpoints.push(Arc::new(LbEndpoint::new(auth, "test_cluster".into(), None, weight, health_status)));
             }
 
             loc_lb_endpoints.push(LocalityLbEndpoints {
-                name: "Cluster1",
+                name: "Cluster1".into(),
                 endpoints: lb_endpoints,
                 priority,
                 healthy_endpoints: healthy,

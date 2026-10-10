@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use arion_configuration::config::metrics::{PartitionKeySource, SourceHeaderName, SourceHeaderNameOrSni};
-use arion_interner::StringInterner;
+use arion_interner::{InternedStr, StringInterner};
 use atomicoption::AtomicOption;
 use http::HeaderMap;
 use smol_str::SmolStr;
@@ -104,19 +104,19 @@ pub static CUSTOM_KEYS: OnceLock<Vec<PartitionKey<SourceHeaderName>>> = std::syn
 pub fn extract_user_partition_key(
     (headers, sni): (&HeaderMap, Option<&SmolStr>),
     source: Option<&SourceHeaderNameOrSni>,
-) -> Option<&'static str> {
+) -> Option<InternedStr> {
     source.and_then(|source| match source {
         SourceHeaderNameOrSni::HeaderName(keym) => {
-            headers.get(keym).map(|value| value.to_str()).transpose().ok().flatten().map(|s| s.to_static_str())
+            headers.get(keym).map(|value| value.to_str()).transpose().ok().flatten().map(|s| s.to_interned_str())
         },
-        SourceHeaderNameOrSni::Sni => sni.map(arion_interner::StringInterner::to_static_str),
+        SourceHeaderNameOrSni::Sni => sni.map(arion_interner::StringInterner::to_interned_str),
     })
 }
 
 #[inline]
 /// Return the custom partition key from headers
-pub fn extract_custom_partition_key(headers: &HeaderMap, source: Option<&SourceHeaderName>) -> Option<&'static str> {
+pub fn extract_custom_partition_key(headers: &HeaderMap, source: Option<&SourceHeaderName>) -> Option<InternedStr> {
     // Extracts the custom partition key from headers based on the provided source name.
     let SourceHeaderName::HeaderName(keym) = source?;
-    headers.get(keym)?.to_str().ok()?.to_static_str().into()
+    headers.get(keym)?.to_str().ok()?.to_interned_str().into()
 }

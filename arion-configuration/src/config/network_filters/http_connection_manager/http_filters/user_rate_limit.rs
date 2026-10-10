@@ -55,7 +55,7 @@ mod envoy_conversions {
     use crate::config::{GenericError, required};
     use super::{UserRateLimiter, Limit, SimpleRateLimit};
     use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::user_rate_limit::v3::user_rate_limit::Limit as ArionLimit;
-    use arion_interner::{StringInterner, InternedStr};
+    use arion_interner::StringInterner;
 
     impl TryFrom<ArionSimpleRateLimit> for SimpleRateLimit {
         type Error = GenericError;
@@ -82,7 +82,7 @@ mod envoy_conversions {
                 mapped_limits.insert(user_id.map(Into::into), limit);
             }
 
-            let stat_prefix = InternedStr(stat_prefix.to_static_str());
+            let stat_prefix = stat_prefix.to_interned_str();
             let status = status
                 .map(RustType::<StatusCode>::try_from)
                 .transpose()

@@ -515,6 +515,7 @@ dependencies = [
  "arion-configuration",
  "arion-data-plane-api",
  "arion-format",
+ "arion-interner",
  "arion-lib",
  "arion-metrics",
  "arion-stats",

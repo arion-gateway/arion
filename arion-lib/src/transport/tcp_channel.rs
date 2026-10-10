@@ -18,6 +18,7 @@
 //
 //
 
+use arion_interner::InternedStr;
 use std::{net::SocketAddr, sync::Arc as StdArc};
 use triomphe::Arc;
 
@@ -43,7 +44,7 @@ pub struct TcpChannelConnector {
 
 pub struct TcpChannel {
     pub stream: AsyncInstrumentedStream,
-    pub cluster_name: &'static str,
+    pub cluster_name: InternedStr,
     pub upstream_local_addr: Option<SocketAddr>,
     pub upstream_peer_addr: Option<SocketAddr>,
 }
@@ -51,7 +52,7 @@ pub struct TcpChannel {
 impl TcpChannelConnector {
     pub fn new(
         target: &ConnectUsing,
-        cluster_name: &'static str,
+        cluster_name: InternedStr,
         transport_socket: UpstreamTransportSocketConfigurator,
     ) -> Self {
         let connector = UnifiedConnector::from((target, cluster_name));
@@ -71,7 +72,7 @@ impl TcpChannelConnector {
             let mut incremented_cb = false;
             let cluster_name_for_cb = if let UnifiedConnector::Socket(ref socket_connector) = connector {
                 let cluster_name = socket_connector.cluster_name;
-                crate::clusters::try_increment_connections(cluster_name, crate::clusters::RoutingPriority::Default)
+                crate::clusters::try_increment_connections(&cluster_name, crate::clusters::RoutingPriority::Default)
                     .map_err(|e| -> crate::Error {
                         format!("Circuit breaker max_connections exceeded: {e:?}").into()
                     })?;
@@ -92,7 +93,7 @@ impl TcpChannelConnector {
 
                         instrumented.metrics().with_drop_fn(Box::new(move |_metrics, _idle| {
                             crate::clusters::decrement_connections(
-                                cluster_name,
+                                &cluster_name,
                                 crate::clusters::RoutingPriority::Default,
                             );
                         }));
@@ -138,7 +139,7 @@ impl TcpChannelConnector {
 
             if res.is_err() && incremented_cb {
                 if let Some(cluster_name) = cluster_name_for_cb {
-                    crate::clusters::decrement_connections(cluster_name, crate::clusters::RoutingPriority::Default);
+                    crate::clusters::decrement_connections(&cluster_name, crate::clusters::RoutingPriority::Default);
                 }
             }
 

@@ -128,7 +128,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
                         loggers,
                         UpstreamContext {
                             authority: Some(svc_channel.upstream_authority()),
-                            cluster_name: Some(svc_channel.cluster_name()),
+                            cluster_name: Some(svc_channel.cluster_name().as_str()),
                             route_name,
                         }
                     );
@@ -172,7 +172,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
 
                     // set additional attributes for client span...
                     client_span.set_attributes([
-                        KeyValue::new(UPSTREAM_CLUSTER_NAME, svc_channel.cluster_name()),
+                        KeyValue::new(UPSTREAM_CLUSTER_NAME, svc_channel.cluster_name().as_str()),
                         KeyValue::new(UPSTREAM_ADDRESS, svc_channel.upstream_authority().to_string()),
                     ]);
                 }
@@ -232,7 +232,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
                         add,
                         1,
                         ctx.tx.shard_id(),
-                        &[KeyValue::new("listener", connection_manager.listener_name)]
+                        &[KeyValue::new("listener", connection_manager.listener_name.as_str())]
                     );
                     return Ok(SyntheticHttpResponse::bad_request(EventFailure::UpgradeFailed.into())
                         .with_close_connection(true)

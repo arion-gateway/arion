@@ -23,7 +23,6 @@ use crate::{
 use arion_configuration::config::{
     core::DataSource, network_filters::http_connection_manager::http_filters::wasm::WasmConfig,
 };
-use arion_interner::StringInterner;
 use arion_wasm_types::FilterAction;
 use bitflags::bitflags;
 use bytes::Bytes;
@@ -134,7 +133,7 @@ fn resolve_hook<Params, Results>(
     store: &mut Store<hostcalls::WasmState>,
     flags: HookFlags,
     flag: HookFlags,
-    name: &'static str,
+    name: &str,
 ) -> Option<TypedFunc<Params, Results>>
 where
     Params: wasmtime::WasmParams,
@@ -147,38 +146,50 @@ impl InstanceHooks {
     /// Resolve every present export into a typed handle. Called once per instance lifetime.
     fn resolve(instance: &Instance, store: &mut Store<hostcalls::WasmState>, flags: HookFlags) -> Self {
         Self {
-            on_plugin_start: resolve_hook(instance, store, flags, HookFlags::ON_PLUGIN_START, "on_plugin_start"),
-            on_plugin_destroy: resolve_hook(instance, store, flags, HookFlags::ON_PLUGIN_DESTROY, "on_plugin_destroy"),
+            on_plugin_start: resolve_hook(instance, store, flags, HookFlags::ON_PLUGIN_START, "on_plugin_start".into()),
+            on_plugin_destroy: resolve_hook(
+                instance,
+                store,
+                flags,
+                HookFlags::ON_PLUGIN_DESTROY,
+                "on_plugin_destroy".into(),
+            ),
             on_transaction_start: resolve_hook(
                 instance,
                 store,
                 flags,
                 HookFlags::ON_TRANSACTION_START,
-                "on_transaction_start",
+                "on_transaction_start".into(),
             ),
             on_transaction_complete: resolve_hook(
                 instance,
                 store,
                 flags,
                 HookFlags::ON_TRANSACTION_COMPLETE,
-                "on_transaction_complete",
+                "on_transaction_complete".into(),
             ),
             on_request_headers: resolve_hook(
                 instance,
                 store,
                 flags,
                 HookFlags::ON_REQUEST_HEADERS,
-                "on_request_headers",
+                "on_request_headers".into(),
             ),
-            on_request_body: resolve_hook(instance, store, flags, HookFlags::ON_REQUEST_BODY, "on_request_body"),
+            on_request_body: resolve_hook(instance, store, flags, HookFlags::ON_REQUEST_BODY, "on_request_body".into()),
             on_response_headers: resolve_hook(
                 instance,
                 store,
                 flags,
                 HookFlags::ON_RESPONSE_HEADERS,
-                "on_response_headers",
+                "on_response_headers".into(),
             ),
-            on_response_body: resolve_hook(instance, store, flags, HookFlags::ON_RESPONSE_BODY, "on_response_body"),
+            on_response_body: resolve_hook(
+                instance,
+                store,
+                flags,
+                HookFlags::ON_RESPONSE_BODY,
+                "on_response_body".into(),
+            ),
         }
     }
 }
@@ -309,7 +320,7 @@ impl WasmFilter {
                 let mut store = Store::new(
                     engine,
                     hostcalls::WasmState {
-                        name: self.inner.config.name.to_static_str(),
+                        name: self.inner.config.name,
                         plugin_config,
                         direct_response: None,
                         buffered_request_body: None,

@@ -68,7 +68,7 @@ pub async fn fetch_remote_jwks(
         JwkError::ClusterResolutionFailed(cluster_spec.name().into())
     ).inspect_err(|err| error!(target: "jwt", "{provider_name}: failed to resolve cluster {} for jwks: {}", remote.http_uri.cluster, err))?;
 
-    let http_service = clusters_manager::get_http_connection(cluster_id, RoutingContext::None).
+    let http_service = clusters_manager::get_http_connection(&cluster_id, RoutingContext::None).
                             inspect_err(|err| error!(target: "jwt", "{provider_name}: failed to get http connection for cluster {}: {}", remote.http_uri.cluster, err))?;
 
     // prepare the request to send...

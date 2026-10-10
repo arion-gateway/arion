@@ -51,7 +51,7 @@ impl HealthCheckManager {
 
     pub async fn restart_cluster(&mut self, cluster_config: ClusterType) {
         let cluster_name = cluster_config.get_name();
-        self.stop_cluster(cluster_name).await;
+        self.stop_cluster(cluster_name.as_str()).await;
         if let Some(health_check_config) = cluster_config.into_health_check() {
             let HealthCheck { cluster: cluster_config, protocol } = health_check_config;
 
@@ -59,7 +59,7 @@ impl HealthCheckManager {
 
             match protocol {
                 HealthCheckProtocol::Http(http_config) => {
-                    let Ok(endpoints) = clusters_manager::all_http_connections(cluster_name) else {
+                    let Ok(endpoints) = clusters_manager::all_http_connections(&cluster_name) else {
                         return;
                     };
 
@@ -88,7 +88,7 @@ impl HealthCheckManager {
                     }
                 },
                 HealthCheckProtocol::Tcp(tcp_config) => {
-                    let Ok(endpoints) = clusters_manager::all_tcp_connections(cluster_name) else {
+                    let Ok(endpoints) = clusters_manager::all_tcp_connections(&cluster_name) else {
                         return;
                     };
 
@@ -105,7 +105,7 @@ impl HealthCheckManager {
                     }
                 },
                 HealthCheckProtocol::Grpc(grpc_config) => {
-                    let Ok(endpoints) = clusters_manager::all_grpc_connections(cluster_name) else {
+                    let Ok(endpoints) = clusters_manager::all_grpc_connections(&cluster_name) else {
                         return;
                     };
 

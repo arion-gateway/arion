@@ -32,7 +32,7 @@ use crate::{
     transport::{GrpcService, HttpChannel, HttpChannels, TcpChannelConnector},
 };
 use arion_configuration::config::cluster::{Cluster as ClusterConfig, ClusterSpecifier};
-use arion_interner::StringInterner;
+use arion_interner::{InternedStr, StringInterner};
 use http::{HeaderMap, HeaderName, HeaderValue, Request, header::HOST, uri::Authority};
 use rand::{prelude::SliceRandom, thread_rng};
 use smol_str::SmolStr;
@@ -44,8 +44,7 @@ use std::{
 use tracing::{debug, warn};
 use triomphe::Arc;
 
-type ClusterID = &'static str;
-type ClustersMap = BTreeMap<ClusterID, ClusterType>;
+type ClustersMap = BTreeMap<InternedStr, ClusterType>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MetadataKey(pub SmolStr);
@@ -171,19 +170,19 @@ thread_local! {
     static CLUSTERS_MAP_CACHE : RefCell<CachedWatcher<'static, ClustersMap>> = RefCell::new(CLUSTERS_MAP.watcher());
 }
 
-pub fn resolve_cluster(selector: &ClusterSpecifier, header_map: Option<&HeaderMap>) -> Option<ClusterID> {
+pub fn resolve_cluster(selector: &ClusterSpecifier, header_map: Option<&HeaderMap>) -> Option<InternedStr> {
     debug!("Resolving cluster: {:?} with header map: {:?}", selector, header_map);
     match selector {
-        ClusterSpecifier::Cluster(cluster_name) => Some(cluster_name.to_static_str()),
+        ClusterSpecifier::Cluster(cluster_name) => Some(*cluster_name),
         ClusterSpecifier::WeightedCluster(weighted_clusters) => weighted_clusters
             .choose_weighted(&mut thread_rng(), |cluster| u32::from(cluster.weight))
             .ok()
-            .map(|cluster| cluster.cluster.to_static_str()),
+            .map(|cluster| cluster.cluster),
         ClusterSpecifier::ClusterHeader(name) => {
             debug!("Resolving cluster header '{}'...", name);
             if let Some(header_map) = header_map {
                 if let Some(header_value) = header_map.get(name.as_str()) {
-                    header_value.to_str().ok().map(|s| s.to_static_str())
+                    header_value.to_str().ok().map(StringInterner::to_interned_str)
                 } else {
                     debug!("Header '{}' not found in the request/header map (no cluster found)", name);
                     None
@@ -196,7 +195,7 @@ pub fn resolve_cluster(selector: &ClusterSpecifier, header_map: Option<&HeaderMa
     }
 }
 
-pub fn get_cluster_routing_requirements(cluster_id: ClusterID) -> RoutingRequirement {
+pub fn get_cluster_routing_requirements(cluster_id: &str) -> RoutingRequirement {
     with_cluster(cluster_id, |cluster| Ok(cluster.get_routing_requirements())).unwrap_or(RoutingRequirement::None)
 }
 
@@ -316,27 +315,27 @@ pub fn get_all_clusters() -> Vec<ClusterConfig> {
     CLUSTERS_MAP.get_clone().0.values().by_ref().filter_map(|cluster| ClusterConfig::try_from(cluster).ok()).collect()
 }
 
-pub fn get_http_connection(cluster_id: ClusterID, context: RoutingContext) -> Result<HttpChannels> {
+pub fn get_http_connection(cluster_id: &str, context: RoutingContext) -> Result<HttpChannels> {
     with_cluster(cluster_id, |cluster| cluster.get_http_connection(context))
 }
 
-pub fn get_tcp_connection(cluster_id: ClusterID, context: RoutingContext) -> Result<TcpChannelConnector> {
+pub fn get_tcp_connection(cluster_id: &str, context: RoutingContext) -> Result<TcpChannelConnector> {
     with_cluster(cluster_id, |cluster| cluster.get_tcp_connection(context))
 }
 
-pub fn get_grpc_connection(cluster_id: ClusterID, context: RoutingContext) -> Result<GrpcService> {
+pub fn get_grpc_connection(cluster_id: &str, context: RoutingContext) -> Result<GrpcService> {
     with_cluster(cluster_id, |cluster| cluster.get_grpc_connection(context))
 }
 
-pub fn all_http_connections(cluster_id: ClusterID) -> Result<Vec<(Authority, HttpChannel)>> {
+pub fn all_http_connections(cluster_id: &str) -> Result<Vec<(Authority, HttpChannel)>> {
     with_cluster(cluster_id, |cluster| Ok(cluster.all_http_channels()))
 }
 
-pub fn all_tcp_connections(cluster_id: ClusterID) -> Result<Vec<(Authority, TcpChannelConnector)>> {
+pub fn all_tcp_connections(cluster_id: &str) -> Result<Vec<(Authority, TcpChannelConnector)>> {
     with_cluster(cluster_id, |cluster| Ok(cluster.all_tcp_channels()))
 }
 
-pub fn all_grpc_connections(cluster_id: ClusterID) -> Result<Vec<Result<(Authority, GrpcService)>>> {
+pub fn all_grpc_connections(cluster_id: &str) -> Result<Vec<Result<(Authority, GrpcService)>>> {
     with_cluster(cluster_id, |cluster| Ok(cluster.all_grpc_channels()))
 }
 
@@ -356,7 +355,7 @@ where
 pub use super::circuit_breaker::{CircuitBreakerDenial, RoutingPriority};
 
 pub fn try_increment_connections(
-    cluster_id: ClusterID,
+    cluster_id: &str,
     priority: RoutingPriority,
 ) -> std::result::Result<(), CircuitBreakerDenial> {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
@@ -369,7 +368,7 @@ pub fn try_increment_connections(
     })
 }
 
-pub fn decrement_connections(cluster_id: ClusterID, priority: RoutingPriority) {
+pub fn decrement_connections(cluster_id: &str, priority: RoutingPriority) {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
         if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
             if let Some(cb) = cluster.circuit_breaker() {
@@ -380,7 +379,7 @@ pub fn decrement_connections(cluster_id: ClusterID, priority: RoutingPriority) {
 }
 
 pub fn try_increment_requests(
-    cluster_id: ClusterID,
+    cluster_id: &str,
     priority: RoutingPriority,
 ) -> std::result::Result<(), CircuitBreakerDenial> {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
@@ -393,7 +392,7 @@ pub fn try_increment_requests(
     })
 }
 
-pub fn decrement_requests(cluster_id: ClusterID, priority: RoutingPriority) {
+pub fn decrement_requests(cluster_id: &str, priority: RoutingPriority) {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
         if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
             if let Some(cb) = cluster.circuit_breaker() {
@@ -404,7 +403,7 @@ pub fn decrement_requests(cluster_id: ClusterID, priority: RoutingPriority) {
 }
 
 pub fn try_increment_retries(
-    cluster_id: ClusterID,
+    cluster_id: &str,
     priority: RoutingPriority,
 ) -> std::result::Result<(), CircuitBreakerDenial> {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
@@ -417,7 +416,7 @@ pub fn try_increment_retries(
     })
 }
 
-pub fn decrement_retries(cluster_id: ClusterID, priority: RoutingPriority) {
+pub fn decrement_retries(cluster_id: &str, priority: RoutingPriority) {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
         if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
             if let Some(cb) = cluster.circuit_breaker() {
@@ -438,9 +437,9 @@ mod tests {
     use arion_configuration::config::cluster::{Cluster as ClusterConfig, HttpProtocolOptions};
     use std::sync::atomic::Ordering;
 
-    fn make_cluster_config(name: &str, max_requests: u32) -> ClusterConfig {
+    fn make_cluster_config(name: impl StringInterner, max_requests: u32) -> ClusterConfig {
         ClusterConfig {
-            name: name.into(),
+            name: name.to_interned_str(),
             discovery_settings: ClusterDiscoveryType::OriginalDst(OriginalDstConfig {
                 routing_method: OriginalDstRoutingMethod::HttpHeader { http_header_name: None },
                 upstream_port_override: None,
@@ -496,12 +495,12 @@ mod tests {
         let partial = build_partial(make_cluster_config(name, 5));
         add_cluster(partial).unwrap();
 
-        try_increment_requests(name, RoutingPriority::Default).unwrap();
+        try_increment_requests(name.into(), RoutingPriority::Default).unwrap();
 
         let partial2 = build_partial(make_cluster_config(name, 5));
         add_cluster(partial2).unwrap();
 
-        decrement_requests(name, RoutingPriority::Default);
+        decrement_requests(name.into(), RoutingPriority::Default);
 
         CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
             let cluster = watcher.cached_or_latest().get_mut(name).unwrap();

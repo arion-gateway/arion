@@ -17,6 +17,7 @@
 // limitations under the License.
 //
 
+use arion_interner::InternedStr;
 use bounded_integer::BoundedU16;
 use http::header::HOST;
 use http::{HeaderMap, HeaderValue, Request, StatusCode};
@@ -120,10 +121,10 @@ impl ScopedClientSpan {
         }
     }
 
-    pub fn set_endpoint(&mut self, cluster_name: &str, authority: &str) {
+    pub fn set_endpoint(&mut self, cluster_name: InternedStr, authority: &str) {
         if let Some(span) = self.span.as_mut() {
             span.set_attributes([
-                KeyValue::new("upstream.cluster.name", cluster_name.to_owned()),
+                KeyValue::new("upstream.cluster.name", cluster_name.as_str()),
                 KeyValue::new("upstream.address", authority.to_owned()),
             ]);
         }
@@ -542,7 +543,7 @@ mod tests {
 
         let span = tracer.try_create_span(
             context.as_ref(),
-            &TracingKey("test", 0),
+            &TracingKey("test".into(), 0),
             SpanKind::Server,
             SpanName::Str::<()>("test"),
         );
@@ -582,7 +583,7 @@ mod tests {
 
         let span = tracer.try_create_span(
             context.as_ref(),
-            &TracingKey("test", 0),
+            &TracingKey("test".into(), 0),
             SpanKind::Server,
             SpanName::Str::<()>("test"),
         );
@@ -614,14 +615,15 @@ mod tests {
             tracer
                 .try_create_span(
                     Some(&context),
-                    &TracingKey("test", 0),
+                    &TracingKey("test".into(), 0),
                     SpanKind::Server,
                     SpanName::Str::<()>("server"),
                 )
                 .is_none()
         );
 
-        let guard = HttpTracer::begin_scoped_client_span(Some(&context), Some(&TracingKey("test", 0)), "upstream");
+        let guard =
+            HttpTracer::begin_scoped_client_span(Some(&context), Some(&TracingKey("test".into(), 0)), "upstream");
         let mut headers = HeaderMap::new();
         guard.inject_headers(&mut headers);
 
@@ -638,7 +640,7 @@ mod tests {
             tracer
                 .try_create_span(
                     Some(&context),
-                    &TracingKey("test", 0),
+                    &TracingKey("test".into(), 0),
                     SpanKind::Server,
                     SpanName::Str::<()>("server"),
                 )
@@ -673,7 +675,7 @@ mod tests {
 
         let span = tracer.try_create_span(
             context.as_ref(),
-            &TracingKey("test", 0),
+            &TracingKey("test".into(), 0),
             SpanKind::Server,
             SpanName::Str::<()>("test"),
         );
@@ -712,7 +714,7 @@ mod tests {
 
         let span = tracer.try_create_span(
             context.as_ref(),
-            &TracingKey("test", 0),
+            &TracingKey("test".into(), 0),
             SpanKind::Server,
             SpanName::Str::<()>("test"),
         );
@@ -737,7 +739,7 @@ mod tests {
         assert!(trace_context.is_none());
         let span = no_tracer.try_create_span(
             trace_context.as_ref(),
-            &TracingKey("test", 0),
+            &TracingKey("test".into(), 0),
             SpanKind::Server,
             SpanName::Str::<()>("test"),
         );
@@ -768,7 +770,7 @@ mod tests {
 
         let span = tracer.try_create_span(
             trace_context.as_ref(),
-            &TracingKey("test", 0),
+            &TracingKey("test".into(), 0),
             SpanKind::Server,
             SpanName::Str::<()>("test"),
         );
@@ -804,7 +806,7 @@ mod tests {
             tracer
                 .try_create_span(
                     Some(&context),
-                    &TracingKey("test", 0),
+                    &TracingKey("test".into(), 0),
                     SpanKind::Server,
                     SpanName::Str::<()>("server"),
                 )
@@ -868,7 +870,7 @@ mod tests {
                 tracer
                     .try_create_span(
                         Some(&context),
-                        &TracingKey("provider-test", 0),
+                        &TracingKey("provider-test".into(), 0),
                         SpanKind::Server,
                         SpanName::Str::<()>("server"),
                     )
@@ -907,14 +909,15 @@ mod tests {
             tracer
                 .try_create_span(
                     Some(&context),
-                    &TracingKey("test", 0),
+                    &TracingKey("test".into(), 0),
                     SpanKind::Server,
                     SpanName::Str::<()>("server"),
                 )
                 .is_none()
         );
 
-        let guard = HttpTracer::begin_scoped_client_span(Some(&context), Some(&TracingKey("test", 0)), "upstream");
+        let guard =
+            HttpTracer::begin_scoped_client_span(Some(&context), Some(&TracingKey("test".into(), 0)), "upstream");
         let mut headers = HeaderMap::new();
         guard.inject_headers(&mut headers);
         let propagated = TraceInfo::extract_from(&headers).unwrap().unwrap();

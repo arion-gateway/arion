@@ -18,7 +18,7 @@
 //
 //
 
-use std::ops::Deref;
+use std::{borrow::Borrow, fmt, ops::Deref};
 
 use http::{Method, Version, uri::Scheme};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -26,12 +26,17 @@ use smol_str::SmolStr;
 
 // Interner implementations. Exposed (hidden) so benchmarks can compare them side by side.
 #[doc(hidden)]
-pub mod papaya;
-#[doc(hidden)]
 pub mod legacy;
+#[doc(hidden)]
+pub mod papaya;
 
 pub trait StringInterner {
     fn to_static_str(&self) -> &'static str;
+
+    #[inline]
+    fn to_interned_str(&self) -> InternedStr {
+        InternedStr(self.to_static_str())
+    }
 }
 
 /// Backend used by the public API.
@@ -47,10 +52,22 @@ fn lookup_str(s: &str) -> Option<&'static str> {
     papaya::lookup(s)
 }
 
-impl StringInterner for &str {
+impl StringInterner for str {
     #[inline]
     fn to_static_str(&self) -> &'static str {
         intern_str(self)
+    }
+}
+
+impl StringInterner for &'static str {
+    #[inline]
+    fn to_static_str(&self) -> &'static str {
+        self
+    }
+
+    #[inline]
+    fn to_interned_str(&self) -> InternedStr {
+        InternedStr(intern_str(self))
     }
 }
 
@@ -117,8 +134,8 @@ impl StringInterner for Scheme {
 }
 
 // Create a wrapper type to hide the 'static lifetime from Serde's macros
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct InternedStr(pub &'static str);
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct InternedStr(&'static str);
 
 impl InternedStr {
     #[inline]
@@ -131,6 +148,20 @@ impl InternedStr {
     #[inline]
     pub fn lookup(s: &str) -> Option<Self> {
         lookup_str(s).map(InternedStr)
+    }
+}
+
+impl fmt::Display for InternedStr {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl Borrow<str> for InternedStr {
+    #[inline]
+    fn borrow(&self) -> &str {
+        &self[..]
     }
 }
 
@@ -166,7 +197,7 @@ impl Deref for InternedStr {
 impl<T: StringInterner> From<T> for InternedStr {
     #[inline]
     fn from(value: T) -> Self {
-        InternedStr(value.to_static_str())
+        value.to_interned_str()
     }
 }
 
@@ -210,12 +241,33 @@ mod tests {
         let s = InternedStr::from("listener-1");
         assert_eq!(s.as_str(), "listener-1");
         assert_eq!(&*s, "listener-1");
+        assert_eq!(format!("{s}"), "listener-1");
+        assert_eq!(s.to_static_str(), "listener-1");
+    }
+
+    #[test]
+    fn static_str_to_static_str_does_not_intern() {
+        fn as_static<T: StringInterner>(t: T) -> &'static str {
+            t.to_static_str()
+        }
+        let s = as_static("not-interned-yet");
+        assert_eq!(s, "not-interned-yet");
+        assert_eq!(InternedStr::lookup("not-interned-yet"), None);
+    }
+
+    #[test]
+    fn static_str_to_interned_str_interns() {
+        let to_intern: &'static str = "now-interned";
+        let interned = to_intern.to_interned_str();
+        assert_eq!(interned.as_str(), "now-interned");
+        assert_eq!(InternedStr::lookup("now-interned"), Some(interned));
     }
 
     #[test]
     fn lookup_api() {
         assert_eq!(InternedStr::lookup("never-seen-scheme"), None);
-        let _ = InternedStr::from("listener-seen");
+        let seen = InternedStr::from("listener-seen");
+        assert_eq!(seen.as_str(), "listener-seen");
         assert!(InternedStr::lookup("listener-seen").is_some());
     }
 }

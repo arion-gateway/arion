@@ -526,7 +526,7 @@ impl ExternalProcessor {
                 for key in custom_keys {
                     if let Some(source) = key.source() {
                         if let Some(id) = metrics::extract_custom_partition_key(headers, Some(source)) {
-                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id.as_str()));
                         }
                     }
                 }
@@ -771,7 +771,7 @@ impl ExternalProcessor {
                 for key in custom_keys {
                     if let Some(source) = key.source() {
                         if let Some(id) = metrics::extract_custom_partition_key(headers, Some(source)) {
-                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id.as_str()));
                         }
                     }
                 }
@@ -1800,7 +1800,7 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
                         cluster_grpc.cluster_name
                     ))
                 })?;
-                let grpc_service = clusters_manager::get_grpc_connection(cluster_id, RoutingContext::None)?;
+                let grpc_service = clusters_manager::get_grpc_connection(&cluster_id, RoutingContext::None)?;
                 let mut client =
                     ExternalProcessorClient::new(grpc_service).max_decoding_message_size(max_receive_message_length);
 

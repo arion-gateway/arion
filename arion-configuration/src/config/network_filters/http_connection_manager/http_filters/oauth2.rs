@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 
-use arion_interner::InternedStr;
+use arion_interner::{InternedStr, StringInterner};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
@@ -91,7 +91,7 @@ const fn default_token_lifetime() -> Duration {
 }
 
 fn default_stat_prefix() -> InternedStr {
-    "oauth".into()
+    "oauth".to_interned_str()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -560,7 +560,7 @@ mod envoy_conversions {
             assert_eq!(cfg.default_refresh_token_expires_in, Duration::from_secs(604_800));
             assert_eq!(cfg.csrf_token_expires_in, Duration::from_secs(600));
             assert_eq!(cfg.code_verifier_token_expires_in, Duration::from_secs(600));
-            assert_eq!(cfg.stat_prefix.0, "custom_oauth");
+            assert_eq!(cfg.stat_prefix.as_str(), "custom_oauth");
             assert!(cfg.forward_bearer_token);
             assert!(!cfg.preserve_authorization_header);
         }

@@ -19,6 +19,7 @@
 //
 
 use ::bounded_integer::BoundedU16;
+use arion_interner::InternedStr;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
@@ -63,7 +64,7 @@ pub struct TracingConfig {
     pub provider: Option<SupportedTracingProvider>,
 }
 
-type ListenerName = &'static str;
+type ListenerName = InternedStr;
 type FilterChainMatchHash = u64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

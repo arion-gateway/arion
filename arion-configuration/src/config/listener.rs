@@ -39,7 +39,7 @@ use std::{
     str::FromStr,
 };
 
-use arion_interner::StringInterner;
+use arion_interner::InternedStr;
 
 const DEFAULT_TCP_BACKLOG_SIZE: UInt32Value = UInt32Value { value: 128 };
 
@@ -62,7 +62,7 @@ pub enum ListenerType {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Listener {
-    pub name: SmolStr,
+    pub name: InternedStr,
     #[serde(flatten)]
     pub listener_type: ListenerType,
     #[serde(with = "serde_filterchains")]
@@ -115,11 +115,10 @@ impl Listener {
                 filter_chain_match.hash(&mut filter_chain_match_hash);
 
                 match &filter_chain.terminal_filter {
-                    MainFilter::Http(http_connection_manager) => {
-                        http_connection_manager.tracing.as_ref().map(|tracing| {
-                            (TracingKey(self.name.to_static_str(), filter_chain_match_hash.finish()), tracing.clone())
-                        })
-                    },
+                    MainFilter::Http(http_connection_manager) => http_connection_manager
+                        .tracing
+                        .as_ref()
+                        .map(|tracing| (TracingKey(self.name, filter_chain_match_hash.finish()), tracing.clone())),
                     MainFilter::Tcp(_) => None,
                 }
             })

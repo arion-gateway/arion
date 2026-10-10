@@ -127,7 +127,7 @@ impl Drop for Pool {
 }
 
 fn bench_hit(c: &mut Criterion) {
-    let mut group = c.benchmark_group(format!("intern_hit/{}threads", THREADS));
+    let mut group = c.benchmark_group(format!("intern_hit/{THREADS}threads"));
     for &size in SET_SIZES {
         let set = make_set(size);
         group.throughput(Throughput::Elements(u64::try_from(size * THREADS).unwrap()));

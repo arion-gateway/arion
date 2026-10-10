@@ -178,7 +178,6 @@ mod tests {
     use arion_lib::clusters::{add_cluster, cluster::PartialClusterType};
     use axum_test::TestServer;
     use parking_lot::RwLock;
-    use smol_str::SmolStr;
     use std::{num::NonZeroU32, time::Instant};
     use triomphe::Arc;
 
@@ -191,9 +190,9 @@ mod tests {
         }
     }
 
-    fn make_cluster(name: &str, discovery_settings: ClusterDiscoveryType) -> Cluster {
+    fn make_cluster(name: &'static str, discovery_settings: ClusterDiscoveryType) -> Cluster {
         Cluster {
-            name: SmolStr::new(name),
+            name: name.into(),
             discovery_settings,
             transport_socket: None,
             bind_device: None,

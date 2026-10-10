@@ -14,6 +14,7 @@
 
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpGateway as McpGatewayConfig;
 use arion_http_header::MCP_SESSION_ID;
+use arion_interner::InternedStr;
 use atomic_time::AtomicInstant;
 use bytes::{Bytes, BytesMut};
 use http::{HeaderName, Method, Response, StatusCode};
@@ -62,7 +63,7 @@ const SESSION_IDLE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_
 
 #[allow(clippy::struct_field_names)]
 pub struct Session {
-    pub listener_name: &'static str,
+    pub listener_name: InternedStr,
     pub session_id: SessionId,
     pub last_activity: AtomicInstant,
     pub mcp_upstreams:
@@ -87,7 +88,7 @@ impl std::fmt::Debug for Session {
 impl Default for Session {
     fn default() -> Self {
         Self {
-            listener_name: "",
+            listener_name: "".into(),
             session_id: SessionId::default(),
             last_activity: AtomicInstant::now(),
             mcp_upstreams: PapayaMap::with_hasher(ahash::RandomState::default()),
@@ -157,7 +158,7 @@ pub enum SessionError {
 impl McpGatewayListenerContext {
     const MAX_SESSIONS_LIMIT: usize = 65536;
 
-    pub fn create_session(&self, listener_name: &'static str) -> Result<StdArc<Session>, SessionError> {
+    pub fn create_session(&self, listener_name: InternedStr) -> Result<StdArc<Session>, SessionError> {
         if self.session_map.len() >= Self::MAX_SESSIONS_LIMIT {
             debug!(target: "mcp_gateway", "create_session: session limit reached");
             return Err(SessionError::CreateLimitReached);
@@ -357,7 +358,7 @@ impl McpGateway {
         ctx: &McpGatewayListenerContext,
         request: &mut http::Request<ArionRequestBody>,
         req_ctx: &RequestCtx,
-        listener_name: &'static str,
+        listener_name: InternedStr,
     ) -> FilterDecision {
         let accept = request.get_mcp_accepted_mime();
         if !matches!(accept, Some(AcceptedMime::EventStreamAndJson)) {
@@ -538,7 +539,7 @@ impl McpGateway {
         req_ctx: &RequestCtx,
         req_version: http::Version,
         json_rpc_message: model::JsonRpcMessage,
-        listener_name: &'static str,
+        listener_name: InternedStr,
         session: Option<&StdArc<Session>>,
     ) -> Result<MessageResult, FilterDecision> {
         debug!(target: "mcp_gateway", "handle_rpc_json_message: session: {session:?}, listener: {listener_name}");
@@ -607,7 +608,7 @@ impl McpGateway {
         req_ctx: &RequestCtx,
         req_version: http::Version,
         rpc: model::JsonRpcRequest,
-        listener_name: &'static str,
+        listener_name: InternedStr,
         session: Option<&StdArc<Session>>,
     ) -> Result<MessageResult, FilterDecision> {
         if matches!(rpc.request.method.as_str(), InitializeResultMethod::VALUE) {

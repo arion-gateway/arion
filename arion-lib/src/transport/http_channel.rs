@@ -32,14 +32,14 @@ use crate::{
         synthetic_http_response::SyntheticHttpResponse,
     },
     secrets::{TlsConfigurator, WantsToBuildClient},
-    transport::http1_pool::Http1ClientExt,
-    transport::http2_pool::Http2ClientExt,
+    transport::{http1_pool::Http1ClientExt, http2_pool::Http2ClientExt},
 };
 use arion_configuration::config::{
     cluster::http_protocol_options::{Codec, HttpProtocolOptions},
     network_filters::http_connection_manager::RetryPolicy,
 };
 use arion_format::types::{ResponseFlagsLong, ResponseFlagsShort};
+use arion_interner::{InternedStr, StringInterner};
 #[cfg(feature = "metrics")]
 use arion_metrics::metrics::custom::CUSTOM_METRICS;
 use http::{
@@ -71,23 +71,24 @@ pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[must_use = "dropping the permit releases the retry circuit-breaker slot"]
 struct RetryCircuitBreakerPermit {
-    cluster_name: &'static str,
+    cluster_name: InternedStr,
     priority: RoutingPriority,
 }
 
 impl RetryCircuitBreakerPermit {
     fn try_acquire(
-        cluster_name: &'static str,
+        cluster_name: impl StringInterner,
         priority: RoutingPriority,
     ) -> std::result::Result<Self, CircuitBreakerDenial> {
-        try_increment_retries(cluster_name, priority)?;
-        Ok(Self { cluster_name, priority })
+        let name = cluster_name.to_interned_str();
+        try_increment_retries(name.as_str(), priority)?;
+        Ok(Self { cluster_name: name, priority })
     }
 }
 
 impl Drop for RetryCircuitBreakerPermit {
     fn drop(&mut self) {
-        decrement_retries(self.cluster_name, self.priority);
+        decrement_retries(self.cluster_name.as_str(), self.priority);
     }
 }
 
@@ -108,7 +109,7 @@ impl HttpChannels {
         &self.channel().upstream_authority
     }
 
-    pub fn cluster_name(&self) -> &'static str {
+    pub fn cluster_name(&self) -> InternedStr {
         self.channel().cluster_name
     }
 
@@ -127,7 +128,7 @@ pub struct HttpChannel {
     pub http_version: Codec,
     pub enable_trailers: bool,
     pub upstream_authority: Authority, // upstream authority
-    pub cluster_name: &'static str,
+    pub cluster_name: InternedStr,
 }
 
 #[derive(Clone, Debug)]
@@ -160,7 +161,7 @@ pub struct HttpChannelBuilder {
     tls: Option<TlsConfigurator<ClientConfig, WantsToBuildClient>>,
     server_name: Option<ServerName<'static>>,
     http_protocol_options: HttpProtocolOptions,
-    cluster_name: Option<&'static str>,
+    cluster_name: Option<InternedStr>,
 }
 
 impl HttpChannelBuilder {
@@ -178,7 +179,7 @@ impl HttpChannelBuilder {
         Self { tls: tls_configurator, ..self }
     }
 
-    pub fn with_cluster_name(self, cluster_name: &'static str) -> Self {
+    pub fn with_cluster_name(self, cluster_name: InternedStr) -> Self {
         Self { cluster_name: Some(cluster_name), ..self }
     }
 
@@ -303,7 +304,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
                                 debug!(
                                     attempt,
                                     status = %response.status(),
-                                    cluster = channel.cluster_name,
+                                    cluster = channel.cluster_name.as_str(),
                                     upstream = %channel.upstream_authority,
                                     "Server error response, trying next failover"
                                 );
@@ -315,7 +316,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
                         Err(err) => {
                             debug!(
                                 attempt,
-                                cluster = channel.cluster_name,
+                                cluster = channel.cluster_name.as_str(),
                                 upstream = %channel.upstream_authority,
                                 error = %err,
                                 "Failed to forward request upstream, trying next failover"
@@ -353,11 +354,17 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
         #[cfg(feature = "metrics")]
         let shard_id = get_shard_id!();
 
-        with_metric!(clusters::UPSTREAM_RQ_ACTIVE, add, 1, shard_id, &[KeyValue::new("cluster", self.cluster_name)]);
+        with_metric!(
+            clusters::UPSTREAM_RQ_ACTIVE,
+            add,
+            1,
+            shard_id,
+            &[KeyValue::new("cluster", self.cluster_name.as_str())]
+        );
 
         #[cfg(feature = "metrics")]
         defer! {
-            with_metric!(clusters::UPSTREAM_RQ_ACTIVE, sub, 1, shard_id, &[KeyValue::new("cluster", self.cluster_name)]);
+            with_metric!(clusters::UPSTREAM_RQ_ACTIVE, sub, 1, shard_id, &[KeyValue::new("cluster", self.cluster_name.as_str())]);
         }
 
         #[cfg(feature = "metrics")]
@@ -370,7 +377,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
                 for key in custom_keys {
                     if let Some(source) = key.source() {
                         if let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source)) {
-                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id.as_str()));
                         }
                     }
                 }
@@ -414,7 +421,13 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
         );
 
         if result.is_ok() {
-            with_metric!(clusters::UPSTREAM_RQ_TOTAL, add, 1, shard_id, &[KeyValue::new("cluster", self.cluster_name)]);
+            with_metric!(
+                clusters::UPSTREAM_RQ_TOTAL,
+                add,
+                1,
+                shard_id,
+                &[KeyValue::new("cluster", self.cluster_name.as_str())]
+            );
         }
 
         if retries.requests > 0 {
@@ -423,7 +436,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
                 add,
                 u64::from(retries.requests),
                 shard_id,
-                &[KeyValue::new("cluster", self.cluster_name)]
+                &[KeyValue::new("cluster", self.cluster_name.as_str())]
             );
         }
 
@@ -433,7 +446,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
                 add,
                 u64::from(retries.timeouts),
                 shard_id,
-                &[KeyValue::new("cluster", self.cluster_name)]
+                &[KeyValue::new("cluster", self.cluster_name.as_str())]
             );
         }
 
@@ -444,7 +457,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
                     add,
                     1,
                     shard_id,
-                    &[KeyValue::new("cluster", self.cluster_name)]
+                    &[KeyValue::new("cluster", self.cluster_name.as_str())]
                 );
             }
         }
@@ -691,7 +704,8 @@ impl HttpChannel {
             // take an exponential back off break and retry...
             if index < retry_policy.num_retries() as usize {
                 if retry_permit.is_none() {
-                    let Ok(permit) = RetryCircuitBreakerPermit::try_acquire(self.cluster_name, priority) else {
+                    let Ok(permit) = RetryCircuitBreakerPermit::try_acquire(self.cluster_name.as_str(), priority)
+                    else {
                         debug!(
                             "retry_policy: circuit breaker denied retry #{}/{} for cluster {}",
                             index + 1,
@@ -706,7 +720,7 @@ impl HttpChannel {
                                 add,
                                 1,
                                 shard_id,
-                                &[KeyValue::new("cluster", self.cluster_name)]
+                                &[KeyValue::new("cluster", self.cluster_name.as_str())]
                             );
                         };
                         return result;

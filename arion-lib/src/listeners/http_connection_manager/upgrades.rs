@@ -28,6 +28,8 @@ use crate::{
     utils::instrumented_stream::InstrumentedStream, with_metric,
 };
 use arion_format::types::ResponseFlags as FmtResponseFlags;
+#[cfg(feature = "metrics")]
+use arion_interner::InternedStr;
 
 use crate::get_shard_id;
 use arion_configuration::config::network_filters::http_connection_manager::UpgradeType;
@@ -100,7 +102,7 @@ pub async fn handle_websocket_upgrade(
     req_ctx: &RequestCtx,
     mut request: Request<ArionRequestBody>,
     svc_channel: &HttpChannels,
-    #[cfg(feature = "metrics")] listener_name: &'static str,
+    #[cfg(feature = "metrics")] listener_name: InternedStr,
 ) -> Result<Response<ArionResponseBody>> {
     let version = request.version();
     match version {
@@ -123,17 +125,17 @@ pub async fn handle_websocket_upgrade(
                             add,
                             1,
                             shard_id,
-                            &[KeyValue::new("listener", listener_name)]
+                            &[KeyValue::new("listener", listener_name.as_str())]
                         );
                         with_metric!(
                             http_metrics::DOWNSTREAM_CX_WS_UPGRADES_ACTIVE,
                             add,
                             1,
                             shard_id,
-                            &[KeyValue::new("listener", listener_name)]
+                            &[KeyValue::new("listener", listener_name.as_str())]
                         );
                         defer! {
-                            with_metric!(http_metrics::DOWNSTREAM_CX_WS_UPGRADES_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
+                            with_metric!(http_metrics::DOWNSTREAM_CX_WS_UPGRADES_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name.as_str())]);
                         }
 
                         match (request_upgrade.await, response_upgrade.await) {
@@ -169,14 +171,14 @@ pub async fn handle_websocket_upgrade(
                                     add,
                                     bytes_received_up,
                                     shard_id,
-                                    &[KeyValue::new("cluster", cluster_name)]
+                                    &[KeyValue::new("cluster", cluster_name.as_str())]
                                 );
                                 with_metric!(
                                     clusters::UPSTREAM_CX_TX_BYTES_TOTAL,
                                     add,
                                     bytes_sent_up,
                                     shard_id,
-                                    &[KeyValue::new("cluster", cluster_name)]
+                                    &[KeyValue::new("cluster", cluster_name.as_str())]
                                 );
 
                                 #[cfg(feature = "metrics")]
@@ -188,7 +190,7 @@ pub async fn handle_websocket_upgrade(
                                         shard_id,
                                         &[KeyValue::new(
                                             metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                            partition_key
+                                            partition_key.as_str()
                                         )]
                                     );
                                     with_metric!(
@@ -198,7 +200,7 @@ pub async fn handle_websocket_upgrade(
                                         shard_id,
                                         &[KeyValue::new(
                                             metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                            partition_key
+                                            partition_key.as_str()
                                         )]
                                     );
                                     with_metric!(
@@ -209,9 +211,9 @@ pub async fn handle_websocket_upgrade(
                                         &[
                                             KeyValue::new(
                                                 metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                                partition_key
+                                                partition_key.as_str()
                                             ),
-                                            KeyValue::new("listener", listener_name)
+                                            KeyValue::new("listener", listener_name.as_str())
                                         ]
                                     );
                                     with_metric!(
@@ -222,9 +224,9 @@ pub async fn handle_websocket_upgrade(
                                         &[
                                             KeyValue::new(
                                                 metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                                partition_key
+                                                partition_key.as_str()
                                             ),
-                                            KeyValue::new("listener", listener_name)
+                                            KeyValue::new("listener", listener_name.as_str())
                                         ]
                                     );
                                 }
@@ -235,7 +237,7 @@ pub async fn handle_websocket_upgrade(
                                     add,
                                     1,
                                     shard_id,
-                                    &[KeyValue::new("listener", listener_name)]
+                                    &[KeyValue::new("listener", listener_name.as_str())]
                                 );
                                 error!(
                                     "Upgrade attempt failure, occurred during connection upgrade {:?},{:?}",

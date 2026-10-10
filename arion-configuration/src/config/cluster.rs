@@ -19,6 +19,7 @@
 //
 
 pub mod health_check;
+use arion_interner::InternedStr;
 pub use health_check::HealthCheck;
 pub mod http_protocol_options;
 pub use http_protocol_options::HttpProtocolOptions;
@@ -39,7 +40,7 @@ use smol_str::SmolStr;
 use std::{fmt::Display, num::NonZeroU32, time::Duration};
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct Cluster {
-    pub name: SmolStr,
+    pub name: InternedStr,
     #[serde(flatten)]
     pub discovery_settings: ClusterDiscoveryType,
     #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
@@ -69,7 +70,7 @@ pub struct ClusterLoadAssignment {
         deserialize_with = "deser_through::<LocalityLbEndpointsDeser,_,_>"
     )]
     pub endpoints: Vec<LocalityLbEndpoints>,
-    pub cluster_name: SmolStr,
+    pub cluster_name: InternedStr,
 }
 
 fn simplify_locality_lb_endpoints<S: Serializer>(
@@ -415,6 +416,7 @@ mod envoy_conversions {
         },
         google::protobuf::Any,
     };
+    use arion_interner::StringInterner;
     use http::HeaderName;
     use smol_str::SmolStr;
 
@@ -709,7 +711,7 @@ mod envoy_conversions {
                     .transpose()
                     .with_node("circuit_breakers")?;
                 Ok(Self {
-                    name: SmolStr::from(&name),
+                    name: name.to_interned_str(),
                     discovery_settings,
                     bind_device,
                     transport_socket,

@@ -308,10 +308,12 @@ impl Context for FinishContext {
                 StringType::Smol(SmolStr::new(buffer.format(self.bytes_sent)))
             },
             Operator::UpstreamTransportFailureReason => self
-                .upstream_transport_failure_reason.as_ref()
+                .upstream_transport_failure_reason
+                .as_ref()
                 .map_or(StringType::None, |msg| StringType::Smol(msg.clone())),
             Operator::ConnectionTerminationDetails => self
-                .connection_termination_details.as_ref()
+                .connection_termination_details
+                .as_ref()
                 .map_or(StringType::None, |msg| StringType::Smol(msg.clone())),
             Operator::ResponseCodeDetails => {
                 self.response_code_details.as_ref().map_or(StringType::None, |msg| StringType::Smol(msg.clone()))
@@ -368,9 +370,11 @@ impl Context for ConnectionContext<'_> {
                 let mut buffer = itoa::Buffer::new();
                 StringType::Smol(SmolStr::new(buffer.format(self.duration.as_millis())))
             },
-            Operator::ConnectionTerminationDetails => {
-                self.connection_termination_details.as_ref().as_ref().map_or(StringType::None, |msg| StringType::Smol(SmolStr::new(msg)))
-            },
+            Operator::ConnectionTerminationDetails => self
+                .connection_termination_details
+                .as_ref()
+                .as_ref()
+                .map_or(StringType::None, |msg| StringType::Smol(SmolStr::new(msg))),
             _ => StringType::None,
         }
     }

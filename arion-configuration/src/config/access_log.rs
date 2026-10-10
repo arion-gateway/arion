@@ -45,8 +45,8 @@ use arion_data_plane_api::envoy_data_plane_api::{
 };
 
 use arion_format::{DEFAULT_ACCESS_LOG_FORMAT, LogFormatter};
+use arion_interner::InternedStr;
 use serde::{Deserialize, Serialize};
-use smol_str::SmolStr;
 
 use crate::config::{common::*, core::DataSource};
 
@@ -57,8 +57,8 @@ use crate::config::{common::*, core::DataSource};
 /// - `Admin`: Refers to the Envoy admin interface.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub enum AccessLogTarget {
-    Listener(SmolStr),
-    ListenerFilterChain(SmolStr, u64),
+    Listener(InternedStr),
+    ListenerFilterChain(InternedStr, u64),
     Admin,
 }
 
