@@ -103,6 +103,9 @@ examples/
 demos/
 benches/
 **/benches/
+# arion-format declares a [[bench]] target; cargo refuses to load the
+# workspace when its source file is missing
+!arion-format/benches/
 
 # Exclude tests but keep some bootstrap files used in CI/runtime
 tests/
@@ -118,6 +121,8 @@ docs/performance/
 
 # Tools and local scripts not needed in image
 tools/
+# ...except this one: it is a workspace member, so cargo must find its manifest
+!tools/hyper_unix_listener/
 
 # Coverage / profiling
 coverage/

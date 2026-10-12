@@ -1,7 +1,7 @@
-FROM rust:1.86 AS arion-builder
+FROM rust:1.98-bookworm AS arion-builder
 
 RUN apt-get update && \
-    apt-get install -y protobuf-compiler && \
+    apt-get install -y cmake protobuf-compiler && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /tmp/arion
