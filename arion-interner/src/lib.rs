@@ -18,10 +18,15 @@
 //
 //
 
-use std::{borrow::Borrow, fmt, ops::Deref};
+use std::{
+    borrow::Borrow,
+    fmt,
+    ops::Deref,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use http::{Method, Version, uri::Scheme};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use smol_str::SmolStr;
 
 // Interner implementations. Exposed (hidden) so benchmarks can compare them side by side.
@@ -30,19 +35,64 @@ pub mod legacy;
 #[doc(hidden)]
 pub mod papaya;
 
-pub trait StringInterner {
-    fn to_static_str(&self) -> &'static str;
+pub use papaya::{DEFAULT_MAX_ENTRIES, MAX_ENTRIES_ENV_VAR};
 
+/// Conversion into a `'static`, process-wide interned string.
+///
+/// The interner is bounded (see [`MAX_ENTRIES_ENV_VAR`]): the `try_*` methods return
+/// `None` when a new string cannot be interned because it is full, while
+/// [`to_static_str`](Self::to_static_str) / [`to_interned_str`](Self::to_interned_str)
+/// log a warning and fall back to an empty string.
+pub trait StringInterner {
+    /// Returns the interned slice, or `None` if the interner is full.
+    fn try_to_static_str(&self) -> Option<&'static str>;
+
+    /// Like [`try_to_static_str`](Self::try_to_static_str), but returns `""` (and logs
+    /// a warning) if the interner is full.
+    #[inline]
+    fn to_static_str(&self) -> &'static str {
+        self.try_to_static_str().unwrap_or_else(|| {
+            report_interner_full();
+            ""
+        })
+    }
+
+    /// Returns the [`InternedStr`], or `None` if the interner is full.
+    #[inline]
+    fn try_to_interned_str(&self) -> Option<InternedStr> {
+        self.try_to_static_str().map(InternedStr)
+    }
+
+    /// Like [`try_to_interned_str`](Self::try_to_interned_str), but returns an empty
+    /// [`InternedStr`] (and logs a warning) if the interner is full.
     #[inline]
     fn to_interned_str(&self) -> InternedStr {
         InternedStr(self.to_static_str())
     }
 }
 
-/// Backend used by the public API.
+/// Backend used by the public API. `None` means the interner is full.
 #[inline]
-fn intern_str(s: &str) -> &'static str {
+fn intern_str(s: &str) -> Option<&'static str> {
     papaya::intern(s)
+}
+
+/// Logs that the interner rejected a string because it is full.
+///
+/// Rate-limited (1st, 2nd, 4th, 8th, ... rejection): once full, every new string is
+/// rejected, possibly on a request path, and logging each one would flood the logs.
+#[cold]
+#[inline(never)]
+fn report_interner_full() {
+    static REJECTED: AtomicU64 = AtomicU64::new(0);
+    let rejected = REJECTED.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+    if rejected.is_power_of_two() {
+        tracing::warn!(
+            rejected,
+            max_entries = papaya::max_entries(),
+            "string interner is full, new strings are not interned (raise {MAX_ENTRIES_ENV_VAR})"
+        );
+    }
 }
 
 /// Variant of the backend that ONLY looks up strings without interning them.
@@ -54,38 +104,59 @@ fn lookup_str(s: &str) -> Option<&'static str> {
 
 impl StringInterner for str {
     #[inline]
-    fn to_static_str(&self) -> &'static str {
+    fn try_to_static_str(&self) -> Option<&'static str> {
         intern_str(self)
     }
 }
 
 impl StringInterner for &'static str {
+    /// Already `'static`: returned as is, without interning.
+    #[inline]
+    fn try_to_static_str(&self) -> Option<&'static str> {
+        Some(self)
+    }
+
     #[inline]
     fn to_static_str(&self) -> &'static str {
         self
     }
 
     #[inline]
+    fn try_to_interned_str(&self) -> Option<InternedStr> {
+        intern_str(self).map(InternedStr)
+    }
+
+    /// If the interner is full, falls back to wrapping `self` (non-canonical but
+    /// still correct, since equality is by content) instead of an empty string.
+    #[inline]
     fn to_interned_str(&self) -> InternedStr {
-        InternedStr(intern_str(self))
+        InternedStr(intern_str(self).unwrap_or_else(|| {
+            report_interner_full();
+            self
+        }))
     }
 }
 
 impl StringInterner for String {
     #[inline]
-    fn to_static_str(&self) -> &'static str {
+    fn try_to_static_str(&self) -> Option<&'static str> {
         intern_str(self)
     }
 }
 
 impl StringInterner for SmolStr {
     #[inline]
-    fn to_static_str(&self) -> &'static str {
+    fn try_to_static_str(&self) -> Option<&'static str> {
         intern_str(self)
     }
 }
 
 impl StringInterner for Version {
+    #[inline]
+    fn try_to_static_str(&self) -> Option<&'static str> {
+        Some(self.to_static_str())
+    }
+
     #[inline]
     fn to_static_str(&self) -> &'static str {
         match *self {
@@ -105,17 +176,17 @@ impl StringInterner for Method {
     /// Extension methods are interned: they are client-controlled, so on request
     /// paths prefer mapping them to a fixed value (e.g. `OTel`'s `_OTHER`).
     #[inline]
-    fn to_static_str(&self) -> &'static str {
+    fn try_to_static_str(&self) -> Option<&'static str> {
         match self.as_str() {
-            "GET" => "GET",
-            "POST" => "POST",
-            "PUT" => "PUT",
-            "DELETE" => "DELETE",
-            "HEAD" => "HEAD",
-            "OPTIONS" => "OPTIONS",
-            "CONNECT" => "CONNECT",
-            "PATCH" => "PATCH",
-            "TRACE" => "TRACE",
+            "GET" => Some("GET"),
+            "POST" => Some("POST"),
+            "PUT" => Some("PUT"),
+            "DELETE" => Some("DELETE"),
+            "HEAD" => Some("HEAD"),
+            "OPTIONS" => Some("OPTIONS"),
+            "CONNECT" => Some("CONNECT"),
+            "PATCH" => Some("PATCH"),
+            "TRACE" => Some("TRACE"),
             other => intern_str(other),
         }
     }
@@ -124,10 +195,10 @@ impl StringInterner for Method {
 impl StringInterner for Scheme {
     /// `http` / `https` map to constants (no interning); other schemes are interned.
     #[inline]
-    fn to_static_str(&self) -> &'static str {
+    fn try_to_static_str(&self) -> Option<&'static str> {
         match self.as_str() {
-            "http" => "http",
-            "https" => "https",
+            "http" => Some("http"),
+            "https" => Some("https"),
             other => intern_str(other),
         }
     }
@@ -166,12 +237,19 @@ impl Borrow<str> for InternedStr {
 }
 
 impl<'de> Deserialize<'de> for InternedStr {
+    /// Fails (instead of silently yielding `""`) if the interner is full: an empty
+    /// name in a deserialized config is a corruption, not a sensible fallback.
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        Ok(InternedStr(s.to_static_str()))
+        s.try_to_interned_str().ok_or_else(|| {
+            D::Error::custom(format_args!(
+                "string interner is full ({} entries), raise {MAX_ENTRIES_ENV_VAR}",
+                papaya::max_entries()
+            ))
+        })
     }
 }
 
@@ -258,6 +336,16 @@ mod tests {
         let interned = to_intern.to_interned_str();
         assert_eq!(interned.as_str(), "now-interned");
         assert_eq!(InternedStr::lookup("now-interned"), Some(interned));
+    }
+
+    #[test]
+    fn try_variants_succeed_when_not_full() {
+        assert_eq!("try-variant".to_owned().try_to_static_str(), Some("try-variant"));
+        assert_eq!(Method::GET.try_to_static_str(), Some("GET"));
+        assert_eq!(Version::HTTP_11.try_to_static_str(), Some("HTTP/1.1"));
+        let interned = "try-variant-interned".try_to_interned_str();
+        assert_eq!(interned.map(|s| s.as_str()), Some("try-variant-interned"));
+        assert_eq!(InternedStr::lookup("try-variant-interned"), interned);
     }
 
     #[test]

@@ -19,6 +19,7 @@ lasso = { workspace = true, features = [
 serde.workspace = true
 ahash.workspace = true
 papaya.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

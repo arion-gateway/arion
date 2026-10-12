@@ -20,7 +20,9 @@ pub type InternFn = fn(&str) -> &'static str;
 pub const IMPLS: &[(&str, InternFn)] = &[
     ("legacy-tls", arion_interner::legacy::intern_tls as InternFn),
     ("legacy-glb", arion_interner::legacy::intern_global as InternFn),
-    ("papaya-glb", arion_interner::papaya::intern as InternFn),
+    // Unbounded, so that the miss benchmark is not cut short by the cap; the
+    // `len()` check on the insert path is still measured.
+    ("papaya-glb", (|s: &str| arion_interner::papaya::intern_bounded(s, usize::MAX).unwrap_or_default()) as InternFn),
 ];
 
 /// Number of concurrent worker threads used by every benchmark.
