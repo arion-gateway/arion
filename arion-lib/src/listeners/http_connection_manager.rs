@@ -505,7 +505,7 @@ impl PooledTxnCtx {
     #[allow(clippy::too_many_arguments)]
     pub fn acquire(
         request_id: Option<RequestId>,
-        user_partition_key: Option<SmolStr>,
+        user_partition_key: Option<InternedStr>,
         thread_id: ShardId,
         #[cfg(feature = "access-log")] access_log: &[AccessLog],
         #[cfg(feature = "tracing")] trace_ctx: Option<TraceContext>,
@@ -593,7 +593,7 @@ pub struct TransactionContext {
     start_instant: std::time::Instant,
     request_id: Option<RequestId>,
     #[allow(dead_code)]
-    pub user_partition_key: Option<SmolStr>,
+    pub user_partition_key: Option<InternedStr>,
     shard_id: ShardId,
     #[cfg(feature = "tracing")]
     trace_ctx: Option<TraceContext>,
@@ -662,7 +662,7 @@ impl TransactionContext {
     pub fn reset(
         &mut self,
         request_id: Option<RequestId>,
-        user_partition_key: Option<SmolStr>,
+        user_partition_key: Option<InternedStr>,
         thread_id: ShardId,
         #[cfg(feature = "access-log")] access_log: &[AccessLog],
         #[cfg(feature = "tracing")] trace_ctx: Option<TraceContext>,
@@ -708,7 +708,7 @@ impl TransactionContext {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         request_id: Option<RequestId>,
-        user_partition_key: Option<SmolStr>,
+        user_partition_key: Option<InternedStr>,
         thread_id: ShardId,
         #[cfg(feature = "access-log")] access_log: &[AccessLog],
         #[cfg(feature = "tracing")] trace_ctx: Option<TraceContext>,
@@ -794,7 +794,7 @@ impl TransactionContext {
             let user_attrs = self
                 .user_partition_key
                 .as_ref()
-                .map(|key| [KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), key.to_string())]);
+                .map(|key| [KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), key.as_str())]);
 
             #[cfg(feature = "metrics")]
             if let Some(ref attrs) = user_attrs {
@@ -921,25 +921,25 @@ impl HttpPipelineSvc {
 
         if ctx.conn.stream_metrics.inc_requests() == 0 {
             #[cfg(feature = "metrics")]
-            if let Some(user_partition_key) = ctx.txn.user_partition_key.as_ref() {
+            if let Some(user_partition_key) = ctx.txn.user_partition_key {
                 let user_attr_name = metrics::USER_KEY.attribute_name().unwrap_or("user");
                 with_metric!(
                     user::CONNECTIONS,
                     add,
                     1,
                     ctx.txn.shard_id,
-                    &[KeyValue::new(user_attr_name, user_partition_key.to_string())]
+                    &[KeyValue::new(user_attr_name, user_partition_key.as_str())]
                 );
                 with_metric!(
                     user::CONNECTIONS_ACTIVE,
                     add,
                     1,
                     ctx.txn.shard_id,
-                    &[KeyValue::new(user_attr_name, user_partition_key.to_string())]
+                    &[KeyValue::new(user_attr_name, user_partition_key.as_str())]
                 );
 
                 // store the user_partition_key to decrement CONNECTIONS_ACTIVE later, when the stream is closed.
-                ctx.conn.stream_metrics.set_user_partition_key(user_partition_key.clone());
+                ctx.conn.stream_metrics.set_user_partition_key(user_partition_key);
             }
         }
 
@@ -1028,7 +1028,7 @@ impl HttpPipelineSvc {
                                             record,
                                             elapsed_ms,
                                             shard_id,
-                                            &[opentelemetry::KeyValue::new(user_attr_name, user_key.to_string())]
+                                            &[opentelemetry::KeyValue::new(user_attr_name, user_key.as_str())]
                                         );
                                     }
                                 }
@@ -1263,7 +1263,7 @@ impl RequestHandler<Request<ArionRequestBody>, &HttpConnectionManager> for &Rout
                                     && let Some(id) =
                                         metrics::extract_custom_partition_key(response.headers(), Some(source))
                                 {
-                                    attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                                    attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id.as_str()));
                                 }
                             }
                         }
@@ -1615,7 +1615,7 @@ impl TransactionSvc<HttpPipelineSvc> {
                     if let Some(source) = key.source()
                         && let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source))
                     {
-                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id.as_str()));
                     }
                 }
             }
@@ -1650,7 +1650,7 @@ impl TransactionSvc<HttpPipelineSvc> {
                 &ctx.txn,
                 Some(&ctx.conn.stream_metrics),
                 listener_name,
-                ctx.txn.user_partition_key.as_ref(),
+                ctx.txn.user_partition_key,
                 filterchain_id,
             ));
         };
@@ -1660,7 +1660,7 @@ impl TransactionSvc<HttpPipelineSvc> {
             &ctx.txn,
             Some(&ctx.conn.stream_metrics),
             listener_name,
-            ctx.txn.user_partition_key.as_ref(),
+            ctx.txn.user_partition_key,
             filterchain_id,
         ) {
             return Ok(response_error);
@@ -1738,7 +1738,7 @@ impl TransactionSvc<HttpPipelineSvc> {
                     if let Some(source) = key.source()
                         && let Some(id) = metrics::extract_custom_partition_key(response.headers(), Some(source))
                     {
-                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id.as_str()));
                     }
                 }
             }
@@ -1845,7 +1845,7 @@ impl OnFlush for HttpTxnFlush {
         eval_http_finish_context(FinishContextParams {
             stream_metrics,
             listener_name: self.listener_name,
-            user_partition_key: self.trans_ctx.user_partition_key.as_ref(),
+            user_partition_key: self.trans_ctx.user_partition_key,
             filterchain_id: self.filterchain_id,
             bytes_received,
             bytes_sent,
@@ -1870,7 +1870,7 @@ struct FinishContextParams<'a> {
     stream_metrics: &'a StreamMetrics,
     listener_name: InternedStr,
     #[allow(dead_code)]
-    user_partition_key: Option<&'a SmolStr>,
+    user_partition_key: Option<InternedStr>,
     #[allow(dead_code)]
     filterchain_id: u64,
     #[allow(dead_code)]
@@ -1904,7 +1904,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
                 latency.as_millis() as u64
             },
             params.m_ctx.shard_id,
-            &[KeyValue::new(user_attr_name, user_partition_key.to_string())]
+            &[KeyValue::new(user_attr_name, user_partition_key.as_str())]
         );
     }
 
@@ -1979,7 +1979,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
             wire_bytes_received,
             shard_id,
             &[
-                KeyValue::new(user_attr_name, user_partition_key.to_string()),
+                KeyValue::new(user_attr_name, user_partition_key.as_str()),
                 KeyValue::new("listener", params.listener_name.as_str())
             ]
         );
@@ -1989,7 +1989,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
             wire_bytes_sent,
             shard_id,
             &[
-                KeyValue::new(user_attr_name, user_partition_key.to_string()),
+                KeyValue::new(user_attr_name, user_partition_key.as_str()),
                 KeyValue::new("listener", params.listener_name.as_str())
             ]
         );
@@ -2013,7 +2013,7 @@ fn instrument_early_failure_response(
     trans_ctx: &PooledTxnCtx,
     stream_metrics: Option<&Arc<StreamMetrics>>,
     listener_name: InternedStr,
-    user_partition_key: Option<&SmolStr>,
+    user_partition_key: Option<InternedStr>,
     filterchain_id: u64,
 ) -> Response<ArionClientBody> {
     #[cfg(feature = "access-log")]
@@ -2123,7 +2123,7 @@ fn reject_request_if_invalid(
     trans_ctx: &PooledTxnCtx,
     stream_metrics: Option<&Arc<StreamMetrics>>,
     listener_name: InternedStr,
-    user_partition_key: Option<&SmolStr>,
+    user_partition_key: Option<InternedStr>,
     filterchain_id: u64,
 ) -> Option<Response<crate::ArionClientBody>> {
     // check if request has no host header, or if it has multiple ones (invalid for http1.1)
@@ -2199,7 +2199,7 @@ fn handle_route_conf_not_found(
     trans_ctx: &PooledTxnCtx,
     stream_metrics: Option<&Arc<StreamMetrics>>,
     listener_name: InternedStr,
-    user_partition_key: Option<&SmolStr>,
+    user_partition_key: Option<InternedStr>,
     filterchain_id: u64,
 ) -> Response<crate::ArionClientBody> {
     // immediately return a SyntheticHttpResponse, and calculate the first byte instant

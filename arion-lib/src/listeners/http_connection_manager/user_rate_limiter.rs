@@ -14,6 +14,7 @@
 
 use std::sync::{LazyLock, Once};
 use std::time::{Duration, Instant};
+use arion_interner::{InternedStr, StringInterner};
 use triomphe::Arc;
 
 use arion_configuration::config::{
@@ -21,7 +22,6 @@ use arion_configuration::config::{
     network_filters::http_connection_manager::http_filters::user_rate_limit::UserRateLimiter as ArionUserRateLimiter,
 };
 use papaya::HashMap as PapayaMap;
-use smol_str::SmolStr;
 use tracing::debug;
 
 use crate::listeners::rate_limiter::token_bucket::TokenBucket;
@@ -35,7 +35,7 @@ use {
     opentelemetry::KeyValue,
 };
 
-static USER_RATE_LIMITERS: LazyLock<PapayaMap<SmolStr, TokenBucket, ahash::RandomState>> =
+static USER_RATE_LIMITERS: LazyLock<PapayaMap<InternedStr, TokenBucket, ahash::RandomState>> =
     LazyLock::new(|| PapayaMap::with_hasher(ahash::RandomState::new()));
 static CLEANER_ONCE: Once = Once::new();
 static CLEANER_PERIOD: Duration = Duration::from_secs(10);
@@ -90,7 +90,7 @@ impl UserRateLimiter {
             .get(self.inner.user_id_header.as_str())
             .and_then(|v| v.to_str().ok())
             .filter(|s| !s.is_empty() && s.len() <= MAX_USER_ID_LENGTH)
-            .map(String::from)
+            .map(StringInterner::to_interned_str)
         else {
             debug!(target: "user_rate_limiter", "no user found in request headers");
             #[cfg(feature = "metrics")]
@@ -128,7 +128,7 @@ impl UserRateLimiter {
                     get_shard_id!(),
                     &[
                         KeyValue::new("filter", self.inner.stat_prefix.as_str()),
-                        KeyValue::new("user", user),
+                        KeyValue::new("user", user.as_str()),
                         KeyValue::new("result", filters::EVENT_OK)
                     ]
                 );
@@ -143,7 +143,7 @@ impl UserRateLimiter {
                 get_shard_id!(),
                 &[
                     KeyValue::new("filter", self.inner.stat_prefix.as_str()),
-                    KeyValue::new("user", user),
+                    KeyValue::new("user", user.as_str()),
                     KeyValue::new("result", filters::EVENT_RATE_LIMITED)
                 ]
             );
@@ -156,7 +156,7 @@ impl UserRateLimiter {
         // bucket with `get_or_insert`. On a concurrent race the winner's bucket
         // is reused, which matches the old `entry().or_try_insert_with()` semantics.
         //
-        let limit = if let Some(limit) = self.inner.user_rate_limits.get(&Some(user.clone().into())) {
+        let limit = if let Some(limit) = self.inner.user_rate_limits.get(&Some(user)) {
             limit
         } else if let Some(limit) = self.inner.user_rate_limits.get(&None) {
             limit
@@ -171,7 +171,7 @@ impl UserRateLimiter {
                 get_shard_id!(),
                 &[
                     KeyValue::new("filter", self.inner.stat_prefix.as_str()),
-                    KeyValue::new("user", user),
+                    KeyValue::new("user", user.as_str()),
                     KeyValue::new("result", filters::EVENT_NOT_APPLICABLE)
                 ]
             );
@@ -191,7 +191,7 @@ impl UserRateLimiter {
                         get_shard_id!(),
                         &[
                             KeyValue::new("filter", self.inner.stat_prefix.as_str()),
-                            KeyValue::new("user", user),
+                            KeyValue::new("user", user.as_str()),
                             KeyValue::new("result", filters::EVENT_NOT_APPLICABLE)
                         ]
                     );
@@ -206,7 +206,7 @@ impl UserRateLimiter {
         };
 
         let pinned = USER_RATE_LIMITERS.pin();
-        let tb = pinned.get_or_insert(user.clone().into(), new_bucket);
+        let tb = pinned.get_or_insert(user, new_bucket);
         if tb.consume(1) {
             debug!(target: "user_rate_limiter", "consumed token for user: {user}");
             #[cfg(feature = "metrics")]
@@ -217,7 +217,7 @@ impl UserRateLimiter {
                 get_shard_id!(),
                 &[
                     KeyValue::new("filter", self.inner.stat_prefix.as_str()),
-                    KeyValue::new("user", user),
+                    KeyValue::new("user", user.as_str()),
                     KeyValue::new("result", filters::EVENT_OK)
                 ]
             );
@@ -232,7 +232,7 @@ impl UserRateLimiter {
                 get_shard_id!(),
                 &[
                     KeyValue::new("filter", self.inner.stat_prefix.as_str()),
-                    KeyValue::new("user", user),
+                    KeyValue::new("user", user.as_str()),
                     KeyValue::new("result", filters::EVENT_RATE_LIMITED)
                 ]
             );

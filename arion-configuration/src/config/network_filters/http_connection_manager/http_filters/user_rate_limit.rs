@@ -39,7 +39,7 @@ pub struct UserRateLimiter {
     pub status: StatusCode,
     pub stat_prefix: InternedStr,
     pub user_id_header: SmolStr,
-    pub user_rate_limits: HashMap<Option<SmolStr>, Limit, ahash::RandomState>,
+    pub user_rate_limits: HashMap<Option<InternedStr>, Limit, ahash::RandomState>,
 }
 
 #[cfg(feature = "envoy-conversions")]

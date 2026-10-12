@@ -379,7 +379,7 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, UpstreamCallOpts<'a>> for &Ht
                     if let Some(source) = key.source()
                         && let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source))
                     {
-                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id.as_str()));
                     }
                 }
             }

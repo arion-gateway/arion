@@ -360,6 +360,7 @@ dependencies = [
  "papaya",
  "serde",
  "smol_str",
+ "tracing",
 ]
 
 [[package]]

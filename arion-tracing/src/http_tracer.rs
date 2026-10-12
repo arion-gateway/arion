@@ -97,7 +97,7 @@ impl ScopedClientSpan {
         };
 
         span.set_attributes([
-            KeyValue::new("http.request.method", request.method().as_str().to_owned()),
+            KeyValue::new("http.request.method", request.method().to_static_str()),
             KeyValue::new("url.full", request.uri().to_string()),
             KeyValue::new("url.path", request.uri().path().to_owned()),
             KeyValue::new("network.protocol.name", "http"),
