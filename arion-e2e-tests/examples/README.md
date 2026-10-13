@@ -7,24 +7,19 @@ This directory contains runnable examples for Arion MCP Gateway semantic search.
 
 ## How Semantic Search Works
 
-The MCP gateway can inject a synthetic tool named `semantic_search`. When a client calls it with a `user_query`, Arion ranks available tools using each tool's name, description, and input schema metadata.
+The MCP gateway exposes RBAC-permitted progressive tools through a synthetic tool named `tool_search`. When a client calls it with a `query`, Arion ranks progressive tools using each tool's name, description, and input schema metadata.
 
-By default, ranking uses BM25 locally and does not require an embeddings service. If `semantic_search_tool.embeddings` is configured, Arion can use remote vector ranking and falls back to BM25 if query embedding fails or any candidate lacks a vector.
+By default, ranking uses BM25 locally and does not require an embeddings service. If `search.embeddings` is configured, Arion can use remote vector ranking and falls back to BM25 if query embedding fails or any candidate lacks a vector.
 
-## Direct Mode And Assisted Discovery
+## Discovery Flow
 
-The demo defaults to direct mode:
+Semantic search uses one stateless flow:
 
-1. `tools/list` returns the normal tools plus the `semantic_search` tool.
-2. The client calls `semantic_search`.
-3. Arion returns the top matching tool definitions directly in the `semantic_search` result.
+1. `tools/list` returns eager tools directly plus `tool_search` when progressive tools are available.
+2. The client calls `tool_search`.
+3. Arion returns the matching full tool definitions directly in the `tool_search` result.
 
-With `--assisted-discovery`:
-
-1. Initial `tools/list` returns only `semantic_search`.
-2. The client calls `semantic_search`.
-3. Arion stores the matched tools in the MCP session and emits a tool-list-changed notification.
-4. A follow-up `tools/list` returns filtered tools based on the search result.
+Discovered tools remain callable by their exact qualified `namespace.name` even though they are omitted from `tools/list`.
 
 ## Run
 
@@ -43,28 +38,26 @@ cargo run -p arion-e2e-tests --example mcp_semantic_search
 Useful options:
 
 ```bash
-cargo run -p arion-e2e-tests --example mcp_semantic_search -- \
-  --assisted-discovery --top-k 1
+cargo run -p arion-e2e-tests --example mcp_semantic_search -- --max-allowable-results 1
 
 cargo run -p arion-e2e-tests --example mcp_semantic_search -- --keep-config
 
 cargo run -p arion-e2e-tests --example mcp_semantic_search -- --verbose-arion
 ```
 
-The example prints the generated config path, backend addresses, the MCP endpoint, a copy-pasteable `curl` smoke test, and the result of a sample semantic-search call. The manual `curl` flow must reuse the real `mcp-session-id` returned by `initialize`.
+The example prints the generated config path, backend addresses, the MCP endpoint, a copy-pasteable `curl` smoke test, and the result of a sample `tool_search` call. The manual `curl` flow must reuse the real `mcp-session-id` returned by `initialize`.
 
 ## CLI Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--top-k` | `2` | Number of tools returned by semantic ranking. |
-| `--assisted-discovery` | `false` | Use session-filtered discovery instead of returning tools directly. |
+| `--max-allowable-results` | `2` | Maximum number of tool definitions returned by one search. |
 | `--verbose-arion` | `false` | Print Arion subprocess logs. |
 | `--keep-config` | `false` | Leave the generated YAML config in `/tmp` after exit. |
 
 ## Remote FastEmbed Sidecar
 
-To test vector search with FastEmbed, run the sidecar example and configure `semantic_search_tool.embeddings` to point at its cluster:
+To test vector search with FastEmbed, run the sidecar example and configure `search.embeddings` to point at its cluster:
 
 ```bash
 cargo run -p arion-e2e-tests --features fastembed-service --example fastembed_embedding_service
