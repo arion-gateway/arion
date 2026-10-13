@@ -19,15 +19,15 @@ use std::time::Duration;
 
 use arion_data_plane_api::envoy_data_plane_api::{
     arion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        mcp_gateway, mcp_server_backend, permission::PermissionType, rest_backend, tool, tool_rbac, CodeMode,
-        DisclosureMode, DynamicMcpServer, FunctionGraphBackend, HttpUpstreamPolicy, JwtClaimMatcher, JwtHeaderMatcher,
-        McpGateway, McpServerBackend, OpenApiToolSource, Permission, QueryParam, RemoteEmbeddings, RestBackend,
-        ServerInfo, TdsSpecifier, Tool, ToolRbac, ToolSearch, Toolkit, ToolkitToolRef, ToolsMode,
+        CodeMode, DisclosureMode, DynamicMcpServer, FunctionGraphBackend, HttpUpstreamPolicy, JwtClaimMatcher,
+        JwtHeaderMatcher, McpGateway, McpServerBackend, OpenApiToolSource, Permission, QueryParam, RemoteEmbeddings,
+        RestBackend, ServerInfo, TdsSpecifier, Tool, ToolRbac, ToolSearch, Toolkit, ToolkitToolRef, ToolsMode,
+        mcp_gateway, mcp_server_backend, permission::PermissionType, rest_backend, tool, tool_rbac,
     },
     envoy::{
-        config::core::v3::{data_source::Specifier, DataSource},
+        config::core::v3::{DataSource, data_source::Specifier},
         extensions::filters::network::http_connection_manager::v3::{
-            http_filter::ConfigType as HttpFilterConfigType, HttpFilter,
+            HttpFilter, http_filter::ConfigType as HttpFilterConfigType,
         },
         service::discovery::v3::Resource as XdsResource,
     },

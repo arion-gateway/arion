@@ -33,8 +33,8 @@ use arion_data_plane_api::envoy_data_plane_api::{
 use arion_xds::xds::model::TypeUrl;
 
 use crate::config_builder::mcp_gateway::{
+    MCP_DYNAMIC_SERVER_TYPE_URL, MCP_OPEN_API_SOURCE_TYPE_URL, MCP_TOOL_TYPE_URL, MCP_TOOLKIT_TYPE_URL,
     dynamic_mcp_server_xds_resource, mcp_open_api_source_xds_resource, mcp_tool_xds_resource, mcp_toolkit_xds_resource,
-    MCP_DYNAMIC_SERVER_TYPE_URL, MCP_OPEN_API_SOURCE_TYPE_URL, MCP_TOOLKIT_TYPE_URL, MCP_TOOL_TYPE_URL,
 };
 use pingora_timeout::timeout as fast_timeout;
 use thiserror::Error;

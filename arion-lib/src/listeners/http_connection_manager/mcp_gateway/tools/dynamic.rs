@@ -14,8 +14,8 @@
 
 //! Dynamic MCP upstream servers: TTL bookkeeping, refresh, and tool materialisation.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc as StdArc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
@@ -23,19 +23,22 @@ use arion_configuration::config::network_filters::http_connection_manager::http_
 };
 use atomic_time::AtomicInstant;
 use rmcp::{
+    ServiceExt,
     model::{ClientCapabilities, ClientConfig, Implementation, InitializeRequestParams, Tool},
     service::{ClientInitializeError, RoleClient, RunningService},
-    transport::{streamable_http_client::StreamableHttpClientTransportConfig, StreamableHttpClientTransport},
-    ServiceExt,
+    transport::{
+        DynamicTransportError, StreamableHttpClientTransport,
+        streamable_http_client::StreamableHttpClientTransportConfig,
+    },
 };
 use scopeguard::defer;
 use smol_str::SmolStr;
 use tracing::{debug, info, warn};
 
 use super::{
+    ToolEntry, ToolId, ToolSource, ToolsRegistry,
     entry::{build_tool_entry, convert_config_rbac_to_runtime},
     errors::ListToolsError,
-    ToolEntry, ToolId, ToolSource, ToolsRegistry,
 };
 use crate::listeners::http_connection_manager::mcp_gateway::rbac::ToolRbac;
 
@@ -47,17 +50,27 @@ const DEFAULT_DYNAMIC_REFRESH_RETRY_INTERVAL: Duration = Duration::from_secs(30)
 thread_local! {
     /// Keep-alive pool local to each worker thread. Each transport retains its
     /// own MCP session state while sharing this thread's HTTP connection pool.
-    static UPSTREAM_REQWEST_CLIENT: reqwest::Client = reqwest::Client::builder()
+    static UPSTREAM_REQWEST_CLIENT: Result<reqwest::Client, StdArc<reqwest::Error>> = reqwest::Client::builder()
         .pool_max_idle_per_host(usize::MAX)
         .pool_idle_timeout(Duration::from_secs(90))
         .tcp_keepalive(Duration::from_secs(60))
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .expect("failed to build upstream reqwest client");
+        .map_err(StdArc::new);
 }
 
-fn upstream_http_client() -> reqwest::Client {
-    UPSTREAM_REQWEST_CLIENT.with(Clone::clone)
+fn upstream_http_client() -> Result<reqwest::Client, Box<ClientInitializeError>> {
+    UPSTREAM_REQWEST_CLIENT.with(|result| match result {
+        Ok(client) => Ok(client.clone()),
+        Err(error) => Err(Box::new(ClientInitializeError::TransportError {
+            error: DynamicTransportError::from_parts(
+                "reqwest",
+                std::any::TypeId::of::<reqwest::Client>(),
+                Box::new(StdArc::clone(error)),
+            ),
+            context: "failed to build upstream reqwest client".into(),
+        })),
+    })
 }
 
 pub struct DynamicMcpServerEntry {
@@ -263,7 +276,7 @@ impl ToolsRegistry {
     ) -> Result<RunningService<RoleClient, InitializeRequestParams>, Box<ClientInitializeError>> {
         debug!(target: "mcp_gateway", "Creating MCP client for URL: {url}...");
         let transport = StreamableHttpClientTransport::with_client(
-            upstream_http_client(),
+            upstream_http_client()?,
             StreamableHttpClientTransportConfig::with_uri(url),
         );
         let client_info =
@@ -271,5 +284,20 @@ impl ToolsRegistry {
         client_info.serve(transport).await.map_err(Box::new).inspect_err(|e| {
             info!(target: "mcp_gateway", "get_mcp_client error: {}!", e);
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_upstream_http_client_initialization() {
+        let client_result = upstream_http_client();
+        assert!(client_result.is_ok(), "upstream_http_client should initialize without error: {client_result:?}");
+        let first = client_result.unwrap();
+        let second = upstream_http_client().unwrap();
+        drop(first);
+        drop(second);
     }
 }

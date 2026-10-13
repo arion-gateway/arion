@@ -18,7 +18,7 @@ use std::collections::HashSet;
 
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpOpenApiToolSource;
 
-use super::{entry::build_tool_entry, ToolBuilderError, ToolId, ToolSource, ToolsRegistry};
+use super::{ToolBuilderError, ToolId, ToolSource, ToolsRegistry, entry::build_tool_entry};
 
 impl ToolsRegistry {
     pub fn with_open_api_sources(self, sources: Vec<McpOpenApiToolSource>) -> Result<Self, ToolBuilderError> {

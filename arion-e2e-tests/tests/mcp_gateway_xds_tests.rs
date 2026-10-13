@@ -35,9 +35,9 @@ use std::time::Duration;
 
 use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::Tool as ArionMcpTool;
 use arion_e2e_tests::config_builder::{
-    inline_string_data_source, mcp_resource_id, ClusterBuilder, DynamicMcpServerBuilder, EndpointBuilder,
-    McpGatewayBuilder, McpGatewayHttpConfigBuilder, McpOpenApiToolSourceBuilder, McpRestBackendBuilder, McpToolBuilder,
-    McpToolRbacBuilder,
+    ClusterBuilder, DynamicMcpServerBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder,
+    McpOpenApiToolSourceBuilder, McpRestBackendBuilder, McpToolBuilder, McpToolRbacBuilder, inline_string_data_source,
+    mcp_resource_id,
 };
 use arion_e2e_tests::{
     HarnessError, JwtKeyPair, McpTestClient, McpTool, MockMcpServer, PreConfiguredResponse, TestBackend, TestJwtClaims,

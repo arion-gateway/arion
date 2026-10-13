@@ -35,8 +35,8 @@ use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http
     DisclosureMode, Tool as ArionMcpTool,
 };
 use arion_e2e_tests::config_builder::{
-    inline_string_data_source, BootstrapBuilder, ClusterBuilder, EndpointBuilder, McpGatewayBuilder,
-    McpGatewayHttpConfigBuilder, McpRestBackendBuilder, McpToolBuilder, McpToolSearchBuilder,
+    BootstrapBuilder, ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder,
+    McpRestBackendBuilder, McpToolBuilder, McpToolSearchBuilder, inline_string_data_source,
 };
 use arion_e2e_tests::{
     ArionInstance, CallToolResult, CapturedEmbeddingsTestRequest, EmbeddingsTestService, McpTestClient,
@@ -218,10 +218,9 @@ async fn test_rest_search_is_sessionless_includes_both_modes_and_validates_http(
     let gateway = McpGatewayBuilder::new("test-gateway", "1.0.0")
         .tools([progressive, eager])
         .search(McpToolSearchBuilder::new().max_allowable_results(3));
-    let bootstrap = McpGatewayHttpConfigBuilder::new(gateway)
-        .build_bootstrap(vec![
-            ClusterBuilder::new(BACKEND_CLUSTER).endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
-        ]);
+    let bootstrap = McpGatewayHttpConfigBuilder::new(gateway).build_bootstrap(vec![
+        ClusterBuilder::new(BACKEND_CLUSTER).endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
+    ]);
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
     let arion = ArionInstance::spawn_auto_port(&config_path, "http", semantic_spawn_options())
         .await
@@ -263,10 +262,9 @@ async fn test_rest_search_works_when_every_tool_is_eager_without_semantic_config
     let mut tool = GET_WEATHER_TOOL.into_config();
     tool.disclosure_mode = DisclosureMode::Eager.into();
     let gateway = McpGatewayBuilder::new("test-gateway", "1.0.0").tool(tool);
-    let bootstrap = McpGatewayHttpConfigBuilder::new(gateway)
-        .build_bootstrap(vec![
-            ClusterBuilder::new(BACKEND_CLUSTER).endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
-        ]);
+    let bootstrap = McpGatewayHttpConfigBuilder::new(gateway).build_bootstrap(vec![
+        ClusterBuilder::new(BACKEND_CLUSTER).endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
+    ]);
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
     let arion = ArionInstance::spawn_auto_port(&config_path, "http", semantic_spawn_options())
         .await

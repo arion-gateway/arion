@@ -262,7 +262,7 @@ impl HttpFilterValue {
         match self {
             // RBAC and RateLimit do not apply on the response path
             HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_response(response, ctx).await,
-            HttpFilterValue::McpGateway(mcp) => mcp.apply_response(response).await,
+            HttpFilterValue::McpGateway(mcp) => mcp.apply_response(response),
             HttpFilterValue::Cors(cors) => cors.apply_response(response),
             #[cfg(feature = "wasm")]
             HttpFilterValue::Wasm(wasm) => wasm.apply_response(response, ctx).await,

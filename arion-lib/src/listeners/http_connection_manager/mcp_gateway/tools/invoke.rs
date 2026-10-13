@@ -21,8 +21,8 @@ use arion_tracing::http_tracer::ScopedClientSpan;
 use opentelemetry::KeyValue;
 use pingora_timeout::fast_timeout::fast_timeout;
 use rmcp::{
-    model::{CallToolRequestParams, CallToolResult},
     ServiceError,
+    model::{CallToolRequestParams, CallToolResult},
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -35,11 +35,11 @@ use {
 };
 
 use super::{
+    ToolEntry, ToolId, ToolsRegistry,
     entry::{McpServerBackend, ToolBackend},
     errors::{CallToolError, ToolInvocationErrorCode, ToolInvocationFailure, ToolInvocationOutcome},
-    ToolEntry, ToolId, ToolsRegistry,
 };
-use crate::listeners::http_connection_manager::{mcp_gateway::mcp::Session, RequestCtx};
+use crate::listeners::http_connection_manager::{RequestCtx, mcp_gateway::mcp::Session};
 
 /// Request-scoped values borrowed from the live request during a tool call.
 #[derive(Clone, Copy)]

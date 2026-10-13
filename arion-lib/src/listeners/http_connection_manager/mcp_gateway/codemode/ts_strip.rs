@@ -15,11 +15,11 @@
 use std::sync::{Arc as StdArc, Mutex};
 
 use swc_common::{
-    errors::{DiagnosticBuilder, Emitter, Handler, HANDLER},
+    GLOBALS, Globals, SourceMap, Span,
+    errors::{DiagnosticBuilder, Emitter, HANDLER, Handler},
     sync::Lrc,
-    Globals, SourceMap, Span, GLOBALS,
 };
-use swc_fast_ts_strip::{operate, ErrorCode, Mode, Options, TsError};
+use swc_fast_ts_strip::{ErrorCode, Mode, Options, TsError, operate};
 
 use super::error::CodeModeError;
 

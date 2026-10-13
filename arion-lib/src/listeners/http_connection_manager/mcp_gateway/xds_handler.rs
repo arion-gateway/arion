@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use std::{
-    future::Future,
     pin::Pin,
     sync::{Arc as StdArc, Once, OnceLock, Weak},
 };
@@ -307,7 +306,7 @@ impl XdsExtensionHandler for McpXdsHandler {
                         tool.name = resource_id.name;
                     }
                     for registry in subscriptions.iter().filter_map(|subscription| subscription.tools.upgrade()) {
-                        registry.add_tool(tool.clone()).await.map_err(|e| {
+                        registry.add_tool(tool.clone()).map_err(|e| {
                             XdsExtensionError::HandlerError(format!("Failed to add tool '{name}': {e}"))
                         })?;
                     }
@@ -463,7 +462,7 @@ mod tests {
         McpToolSearch, UpstreamLimits,
     };
     use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        tool::UpstreamBackend as ArionUpstreamBackend, RestBackend as ArionRestBackend,
+        RestBackend as ArionRestBackend, tool::UpstreamBackend as ArionUpstreamBackend,
     };
     use arion_xds::xds::client::SubscriptionEvent;
     use tokio::sync::mpsc;
@@ -727,7 +726,7 @@ mod tests {
         let tools = empty_registry();
         for name in ["one", "two"] {
             let tool: McpTool = rest_tool_proto(name).try_into().unwrap();
-            tools.add_tool(tool).await.unwrap();
+            tools.add_tool(tool).unwrap();
         }
         let static_toolkit: McpToolkit = toolkit_proto("static description").try_into().unwrap();
         let toolkits = StdArc::new(ToolkitRegistry::with_config(vec![static_toolkit]).unwrap());
@@ -794,7 +793,7 @@ mod tests {
     }
 
     fn open_api_source_proto(spec: &str) -> ArionOpenApiToolSource {
-        use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::{data_source, DataSource};
+        use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::{DataSource, data_source};
 
         ArionOpenApiToolSource {
             spec: Some(DataSource {

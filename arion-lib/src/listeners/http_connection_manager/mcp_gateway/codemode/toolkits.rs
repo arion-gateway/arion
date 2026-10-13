@@ -19,7 +19,7 @@ use papaya::HashMap as PapayaMap;
 use serde::Serialize;
 use smol_str::SmolStr;
 
-use super::super::tools::{catalog_page, CallToolError, CatalogPage, ToolEntry, ToolId, ToolsRegistry};
+use super::super::tools::{CallToolError, CatalogPage, ToolEntry, ToolId, ToolsRegistry, catalog_page};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ToolkitError {
@@ -230,8 +230,8 @@ mod tests {
         ToolkitEntry::try_from(duplicate).unwrap_err();
     }
 
-    #[tokio::test]
-    async fn toolkit_visibility_tracks_live_tools_and_renders_definitions() {
+    #[test]
+    fn toolkit_visibility_tracks_live_tools_and_renders_definitions() {
         let tools = ToolsRegistry::with_config(
             vec![tool("tickets", "create")],
             Vec::new(),
@@ -247,7 +247,7 @@ mod tests {
 
         let mut customer_tool = tool("crm", "find");
         customer_tool.description = "Find a customer by ID".into();
-        tools.add_tool(customer_tool).await.unwrap();
+        tools.add_tool(customer_tool).unwrap();
         let summaries = toolkits.visible_summaries(&tools, &req_ext);
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].tool_count, 2);

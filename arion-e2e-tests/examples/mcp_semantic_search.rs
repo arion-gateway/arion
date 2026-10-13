@@ -24,8 +24,8 @@ use std::time::Duration;
 
 use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::Tool as ArionMcpTool;
 use arion_e2e_tests::config_builder::{
-    inline_string_data_source, ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder,
-    McpRestBackendBuilder, McpToolBuilder, McpToolSearchBuilder,
+    ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder, McpRestBackendBuilder,
+    McpToolBuilder, McpToolSearchBuilder, inline_string_data_source,
 };
 use arion_e2e_tests::{ArionInstance, CallToolResult, McpTestClient, PreConfiguredResponse, SpawnOptions, TestBackend};
 use bytes::Bytes;

@@ -39,8 +39,8 @@ use arion_data_plane_api::envoy_data_plane_api::{
     google::protobuf::{Duration as ProstDuration, UInt32Value},
 };
 use arion_e2e_tests::config_builder::{
-    inline_string_data_source, ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder,
-    McpOpenApiToolSourceBuilder, McpRestBackendBuilder, McpServerBackendBuilder, McpToolBuilder, McpToolRbacBuilder,
+    ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder, McpOpenApiToolSourceBuilder,
+    McpRestBackendBuilder, McpServerBackendBuilder, McpToolBuilder, McpToolRbacBuilder, inline_string_data_source,
 };
 use arion_e2e_tests::{
     ArionInstance, JwtKeyPair, McpTestClient, MockMcpServer, PreConfiguredResponse, SpawnOptions, TestBackend,
@@ -484,7 +484,7 @@ async fn test_mcp_gateway_invalid_rest_output() {
             .rest_backend(McpRestBackendBuilder::new("backend_cluster", "GET", "/invalid-output"))
             .build();
     let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![
-        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
     ]);
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
     let arion = ArionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
@@ -1063,10 +1063,9 @@ async fn test_mcp_gateway_open_api_source_derives_and_invokes_tools() {
             .exclude_operations(["dropDatabase"])
             .eager_tools();
     let gateway = McpGatewayBuilder::new(SERVER_NAME, SERVER_VERSION).open_api_tool_source(source);
-    let bootstrap = McpGatewayHttpConfigBuilder::new(gateway)
-        .build_bootstrap(vec![
-            ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
-        ]);
+    let bootstrap = McpGatewayHttpConfigBuilder::new(gateway).build_bootstrap(vec![
+        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
+    ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
     let arion = ArionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())

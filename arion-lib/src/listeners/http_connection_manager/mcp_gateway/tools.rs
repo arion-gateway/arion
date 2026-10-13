@@ -35,18 +35,18 @@ pub use dynamic::DynamicMcpServerEntry;
 pub(crate) use entry::catalog_page;
 pub use entry::{CatalogPage, CompactToolDefinition, NamespaceSummary, ToolDefinition, ToolEntry, ToolSource};
 pub use errors::{CallToolError, ToolBuilderError};
-pub(crate) use invoke::call_tool_result_into_value;
-#[cfg(feature = "codemode")]
-pub(crate) use invoke::serialized_json_size;
 #[cfg(test)]
 pub(crate) use invoke::TestCallContext;
 pub use invoke::ToolCallContext;
+pub(crate) use invoke::call_tool_result_into_value;
+#[cfg(feature = "codemode")]
+pub(crate) use invoke::serialized_json_size;
 
 use std::{
     collections::BTreeMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc as StdArc,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -61,7 +61,7 @@ use tokio::sync::{Mutex, OnceCell};
 
 use entry::build_tool_entry;
 
-use crate::listeners::http_connection_manager::{mcp_gateway::embeddings, RequestCtx};
+use crate::listeners::http_connection_manager::{RequestCtx, mcp_gateway::embeddings};
 
 const MAX_MCP_TOOL_NAME_BYTES: usize = 128;
 pub const TOOL_SEARCH_TOOL_NAME: &str = "tool_search";
@@ -275,8 +275,7 @@ impl ToolsRegistry {
         Ok(())
     }
 
-    #[allow(clippy::unused_async)]
-    pub async fn add_tool(&self, tool: McpTool) -> Result<(), ToolBuilderError> {
+    pub fn add_tool(&self, tool: McpTool) -> Result<(), ToolBuilderError> {
         let id = ToolId::from_tool(&tool)?;
         if self.dynamic_mcp_servers.pin().contains_key(&id.namespace)
             || self.open_api_sources.pin().contains(&id.namespace)

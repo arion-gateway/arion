@@ -32,14 +32,14 @@ use std::{
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpCodeMode;
 use rmcp::model::{self, Tool};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use dispatcher::{CodeModeToolDispatcher, ToolCallRecord, ToolDispatcher};
 use engine::{CodeModeEngine, CodeModeLimits, ExecOutcome, ExecuteRequest};
 
 use super::tools::{
-    serialized_json_size, CallToolError, NamespaceSummary, ToolBuilderError, ToolCallContext, ToolsRegistry,
-    CODEMODE_EXECUTE_TOOL_NAME,
+    CODEMODE_EXECUTE_TOOL_NAME, CallToolError, NamespaceSummary, ToolBuilderError, ToolCallContext, ToolsRegistry,
+    serialized_json_size,
 };
 use crate::listeners::http_connection_manager::RequestCtx;
 

@@ -19,15 +19,15 @@ use std::{borrow::Cow, time::Duration};
 use arion_configuration::config::{
     cluster::ClusterSpecifier,
     network_filters::http_connection_manager::{
-        http_filters::mcp_gateway::{HttpUpstreamPolicy, McpRestQueryParams, UpstreamLimits},
         RetryPolicy,
+        http_filters::mcp_gateway::{HttpUpstreamPolicy, McpRestQueryParams, UpstreamLimits},
     },
 };
 use arion_http_header::X_REQUEST_ID;
 use bytes::Bytes;
-use http::{header::HOST, HeaderValue, Request, Response, StatusCode};
+use http::{HeaderValue, Request, Response, StatusCode, header::HOST};
 use http_body_util::Full;
-use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{Map, Value};
 use smol_str::SmolStr;
@@ -40,6 +40,7 @@ use super::{
     invoke::{Invocation, ToolCallContext},
 };
 use crate::{
+    ArionRequestBody, ArionResponseBody, UpstreamCallOpts,
     body::{
         instrumented_body::InstrumentedBody,
         poly_body::{PolyBody, PolyBodyError},
@@ -47,13 +48,12 @@ use crate::{
         timeout_body::{TimeoutBody, TimeoutBodyError},
     },
     clusters::{
-        clusters_manager::RoutingContextError,
-        http_upstream::{acquire_http_upstream, AcquireHttpUpstreamError, AcquireHttpUpstreamErrorKind},
         RoutingPriority,
+        clusters_manager::RoutingContextError,
+        http_upstream::{AcquireHttpUpstreamError, AcquireHttpUpstreamErrorKind, acquire_http_upstream},
     },
     event_error::UpstreamError,
-    listeners::http_connection_manager::{http_modifiers, RequestHandler},
-    ArionRequestBody, ArionResponseBody, UpstreamCallOpts,
+    listeners::http_connection_manager::{RequestHandler, http_modifiers},
 };
 
 pub(super) const DEFAULT_USER_AGENT: &str = concat!("arion/", env!("CARGO_PKG_VERSION"));
@@ -240,7 +240,7 @@ impl RestBackend {
             },
         }
 
-        let cluster = ClusterSpecifier::Cluster(self.cluster.clone());
+        let cluster = ClusterSpecifier::Cluster(self.cluster.clone().into());
         let acquired = acquire_http_upstream(
             &cluster,
             &request,
@@ -262,7 +262,7 @@ impl RestBackend {
         }
         *request.version_mut() = acquired.channels().http_version().into();
         invocation.span().set_http_request(&request);
-        invocation.span().set_endpoint(acquired.cluster_id(), acquired.channels().upstream_authority().as_str());
+        invocation.span().set_endpoint(acquired.cluster_name(), acquired.channels().upstream_authority().as_str());
         invocation.span().inject_headers(request.headers_mut());
 
         if let Some(response) = http_modifiers::apply_preflight_functions(&mut request) {
@@ -511,6 +511,24 @@ mod tests {
             &UpstreamLimits::default(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn malformed_dynamic_templates_return_compilation_errors() {
+        for (path, body_template) in [("/api/{{", None), ("/api", Some("{{"))] {
+            let error = RestBackend::compile(
+                http::Method::POST,
+                path.into(),
+                Vec::new(),
+                "test_cluster".into(),
+                HttpUpstreamPolicy::default(),
+                body_template.map(Into::into),
+                None,
+                &UpstreamLimits::default(),
+            )
+            .unwrap_err();
+            assert!(matches!(error, ToolBuilderError::FailedCompilingTemplate(_)), "{error:?}");
+        }
     }
 
     #[tokio::test]

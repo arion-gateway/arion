@@ -16,50 +16,51 @@ use arion_configuration::config::network_filters::http_connection_manager::http_
     McpGateway as McpGatewayConfig, McpGatewayMode as ConfigGatewayMode, McpServerInfo,
 };
 use arion_http_header::MCP_SESSION_ID;
+use arion_interner::InternedStr;
 use atomic_time::AtomicInstant;
 use bytes::Bytes;
 use http::{HeaderName, Method, Response, StatusCode};
 use http_body_util::{BodyExt, Empty, Full};
 use papaya::HashMap as PapayaMap;
 use parking_lot::Mutex;
-use serde_json::{json, Value};
-use smallvec::{smallvec, SmallVec};
-use smol_str::{format_smolstr, SmolStr, ToSmolStr};
+use serde_json::{Value, json};
+use smallvec::{SmallVec, smallvec};
+use smol_str::{SmolStr, ToSmolStr, format_smolstr};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc as StdArc, LazyLock,
+    atomic::{AtomicBool, Ordering},
 };
 use tracing::{debug, info};
 use uuid::Uuid;
 
 use rmcp::{
+    RoleClient,
     model::{
         self, CallToolRequestMethod, ConstString, Implementation, InitializeRequestParams, InitializeResult,
         InitializeResultMethod, InitializedNotificationMethod, ListToolsRequestMethod, NumberOrString,
         PingRequestMethod, ServerCapabilities, Tool,
     },
     service::RunningService,
-    RoleClient,
 };
 
 use crate::{
+    ArionRequestBody, ArionResponseBody, PolyBody,
     body::timeout_body::TimeoutBody,
     listeners::{
         http_connection_manager::{
+            RequestCtx,
             mcp_gateway::{
                 embeddings,
                 tools::{
-                    call_tool_result_into_value, CallToolError, ToolBuilderError, ToolCallContext, ToolId,
-                    ToolSearchRequest, ToolSearchScope, ToolsRegistry, TOOL_SEARCH_TOOL_NAME,
+                    CallToolError, TOOL_SEARCH_TOOL_NAME, ToolBuilderError, ToolCallContext, ToolId, ToolSearchRequest,
+                    ToolSearchScope, ToolsRegistry, call_tool_result_into_value,
                 },
-                transport::{AcceptedMime, RequestExt, SessionId, MIME_APPLICATION_JSON},
+                transport::{AcceptedMime, MIME_APPLICATION_JSON, RequestExt, SessionId},
             },
-            RequestCtx,
         },
         http_filters::{FilterDecision, FilterFactory},
         listener::FilterListenerContext,
     },
-    ArionRequestBody, ArionResponseBody, PolyBody,
 };
 
 #[cfg(feature = "codemode")]
@@ -109,7 +110,7 @@ fn parse_json_rpc_message(body: &[u8]) -> serde_json::Result<model::JsonRpcMessa
 
 #[allow(clippy::struct_field_names)]
 pub struct Session {
-    pub listener_name: &'static str,
+    pub listener_name: InternedStr,
     pub session_id: SessionId,
     pub last_activity: AtomicInstant,
     pub mcp_upstreams:
@@ -131,7 +132,7 @@ impl std::fmt::Debug for Session {
 impl Default for Session {
     fn default() -> Self {
         Self {
-            listener_name: "",
+            listener_name: "".into(),
             session_id: SessionId::default(),
             last_activity: AtomicInstant::now(),
             mcp_upstreams: PapayaMap::with_hasher(ahash::RandomState::default()),
@@ -179,7 +180,7 @@ impl McpGatewayListenerContext {
         }
     }
 
-    pub fn create_session(&self, listener_name: &'static str) -> Option<StdArc<Session>> {
+    pub fn create_session(&self, listener_name: InternedStr) -> Option<StdArc<Session>> {
         if self.session_map.len() >= Self::MAX_SESSIONS_LIMIT {
             debug!(target: "mcp_gateway", "create_session: session limit reached");
             return None;
@@ -552,8 +553,8 @@ impl McpGateway {
         }
     }
 
-    #[allow(clippy::unused_async)]
-    pub async fn apply_response(&mut self, _response: &mut Response<ArionResponseBody>) -> FilterDecision {
+    #[allow(clippy::unused_self)]
+    pub fn apply_response(&mut self, _response: &mut Response<ArionResponseBody>) -> FilterDecision {
         FilterDecision::Continue
     }
 
@@ -590,7 +591,7 @@ impl McpGateway {
         ctx: &McpGatewayListenerContext,
         request: &mut http::Request<ArionRequestBody>,
         req_ctx: &RequestCtx,
-        listener_name: &'static str,
+        listener_name: InternedStr,
     ) -> FilterDecision {
         let accept = request.get_mcp_accepted_mime();
         if !matches!(accept, Some(AcceptedMime::EventStreamAndJson)) {
@@ -711,7 +712,7 @@ impl McpGateway {
         req_headers: &http::HeaderMap,
         req_ctx: &RequestCtx,
         json_rpc_message: model::JsonRpcMessage,
-        listener_name: &'static str,
+        listener_name: InternedStr,
         session: Option<&StdArc<Session>>,
     ) -> Result<MessageResult, FilterDecision> {
         debug!(target: "mcp_gateway", "handle_rpc_json_message: session: {session:?}, listener: {listener_name}");
@@ -754,7 +755,7 @@ impl McpGateway {
         req_headers: &http::HeaderMap,
         req_ctx: &RequestCtx,
         rpc: model::JsonRpcRequest,
-        listener_name: &'static str,
+        listener_name: InternedStr,
         session: Option<&StdArc<Session>>,
     ) -> Result<MessageResult, FilterDecision> {
         if matches!(rpc.request.method.as_str(), InitializeResultMethod::VALUE) {
@@ -961,7 +962,7 @@ impl McpGateway {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tools::{TestCallContext, CODEMODE_EXECUTE_TOOL_NAME};
+    use super::super::tools::{CODEMODE_EXECUTE_TOOL_NAME, TestCallContext};
     use super::*;
     use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
         DisclosureMode, EmbeddingVector, HttpUpstreamPolicy, McpCodeMode, McpGatewayMode, McpTool, McpToolSearch,
