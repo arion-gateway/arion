@@ -24,7 +24,7 @@ impl ToolsRegistry {
     pub fn with_open_api_sources(self, sources: Vec<McpOpenApiToolSource>) -> Result<Self, ToolBuilderError> {
         for source in sources {
             if self.open_api_sources.pin().contains(&source.namespace) {
-                return Err(ToolBuilderError::DuplicateOpenApiSource(source.namespace));
+                return Err(ToolBuilderError::DuplicateOpenApiSource(source.namespace.as_str().into()));
             }
             self.add_open_api_source(source)?;
         }
@@ -33,9 +33,9 @@ impl ToolsRegistry {
 
     pub fn add_open_api_source(&self, source: McpOpenApiToolSource) -> Result<(), ToolBuilderError> {
         Self::validate_namespace(&source.namespace)?;
-        let namespace = source.namespace.clone();
+        let namespace = source.namespace;
         if self.namespace_has_direct_tools(&namespace) || self.dynamic_mcp_servers.pin().contains_key(&namespace) {
-            return Err(ToolBuilderError::SharedNamespace(namespace));
+            return Err(ToolBuilderError::SharedNamespace(namespace.as_str().into()));
         }
 
         // Build every entry first so a bad tool leaves the registry unchanged.
@@ -43,7 +43,7 @@ impl ToolsRegistry {
         let mut entries = Vec::with_capacity(source.tools.len());
         for tool in source.tools {
             let id = ToolId::from_tool(&tool)?;
-            if id.namespace != namespace {
+            if id.namespace != namespace.as_str() {
                 return Err(ToolBuilderError::InvalidNamespace(id.namespace));
             }
             self.validate_supplied_embedding(&tool)?;
@@ -53,7 +53,7 @@ impl ToolsRegistry {
             entries.push(build_tool_entry(tool, ToolSource::OpenApi, &self.upstream_limits)?);
         }
 
-        self.open_api_sources.pin().insert(namespace.clone());
+        self.open_api_sources.pin().insert(namespace);
         self.evict_open_api_tools_for(&namespace);
         for entry in entries {
             let id = entry.id.clone();

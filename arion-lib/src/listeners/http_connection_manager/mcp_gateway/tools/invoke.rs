@@ -16,9 +16,8 @@
 
 use std::{io, sync::Arc as StdArc, time::Instant};
 
-use arion_interner::StringInterner;
 use arion_tracing::http_tracer::ScopedClientSpan;
-use opentelemetry::KeyValue;
+use opentelemetry::{KeyValue, StringValue};
 use pingora_timeout::fast_timeout::fast_timeout;
 use rmcp::{
     ServiceError,
@@ -133,7 +132,12 @@ async fn invoke_mcp_server(
         }
     };
 
-    let invocation = Invocation::start(cx.request, entry.tool.name.as_ref(), "mcp_server", url);
+    let invocation = Invocation::start(
+        cx.request,
+        entry.tool.name.as_ref(),
+        "mcp_server",
+        StdArc::<str>::from(backend.url.clone()).into(),
+    );
     let mut outcome: ToolInvocationOutcome = match fast_timeout(backend.timeout, upstream_call).await {
         Err(_) => Err(ToolInvocationFailure::upstream_timeout()),
         Ok(Ok(result)) => Ok(result),
@@ -155,20 +159,21 @@ async fn invoke_mcp_server(
 }
 
 /// Owns tracing and metrics state for one tool invocation.
-pub(super) struct Invocation<'a> {
-    tool_name: &'a str,
+pub(super) struct Invocation {
+    tool_name: StringValue,
     started: Instant,
     span: ScopedClientSpan,
 }
 
-impl<'a> Invocation<'a> {
-    pub(super) fn start(req_ctx: &RequestCtx, tool_name: &'a str, backend: &'static str, upstream: &str) -> Self {
+impl Invocation {
+    pub(super) fn start(req_ctx: &RequestCtx, tool_name: &str, backend: &'static str, upstream: StringValue) -> Self {
         let started = Instant::now();
-        let mut span = req_ctx.begin_upstream_span(upstream);
+        let tool_name = StringValue::from(StdArc::<str>::from(tool_name));
+        let mut span = req_ctx.begin_upstream_span(upstream.as_str());
         span.set_attributes([
-            KeyValue::new("mcp.tool.name", tool_name.to_static_str()),
+            KeyValue::new("mcp.tool.name", tool_name.clone()),
             KeyValue::new("mcp.backend", backend),
-            KeyValue::new("mcp.upstream", upstream.to_static_str()),
+            KeyValue::new("mcp.upstream", upstream),
         ]);
         Self { tool_name, started, span }
     }
@@ -178,7 +183,7 @@ impl<'a> Invocation<'a> {
     }
 
     pub(super) fn record_response_bytes(&self, bytes: usize) {
-        record_response_bytes(self.tool_name, bytes);
+        record_response_bytes(&self.tool_name, bytes);
     }
 
     pub(super) fn complete(mut self, outcome: ToolInvocationOutcome) -> CallToolResult {
@@ -192,17 +197,16 @@ impl<'a> Invocation<'a> {
             self.span.set_error(code);
         }
         self.span.complete();
-        record_invocation(self.tool_name, self.started, failure_code);
+        record_invocation(&self.tool_name, self.started, failure_code);
         outcome.unwrap_or_else(ToolInvocationFailure::into_call_tool_result)
     }
 }
 
 #[cfg(feature = "metrics")]
-fn record_invocation(tool_name: &str, started: Instant, failure_code: Option<&'static str>) {
+fn record_invocation(tool_name: &StringValue, started: Instant, failure_code: Option<&'static str>) {
     let shard_id = get_shard_id!();
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let static_tool_name = tool_name.to_static_str();
-    let tool_attrs = &[KeyValue::new("tool", static_tool_name)];
+    let tool_attrs = &[KeyValue::new("tool", tool_name.clone())];
     with_metric!(mcp_metrics::TOOL_RQ_TOTAL, add, 1, shard_id, tool_attrs);
     with_histogram!(mcp_metrics::TOOL_RQ_TIME, record, elapsed_ms, shard_id, tool_attrs);
     if let Some(error_code) = failure_code {
@@ -211,28 +215,28 @@ fn record_invocation(tool_name: &str, started: Instant, failure_code: Option<&'s
             add,
             1,
             shard_id,
-            &[KeyValue::new("tool", static_tool_name), KeyValue::new("error", error_code)]
+            &[KeyValue::new("tool", tool_name.clone()), KeyValue::new("error", error_code)]
         );
     }
 }
 
 #[cfg(not(feature = "metrics"))]
-fn record_invocation(_tool_name: &str, _started: Instant, _failure_code: Option<&'static str>) {}
+fn record_invocation(_tool_name: &StringValue, _started: Instant, _failure_code: Option<&'static str>) {}
 
 #[cfg(feature = "metrics")]
-fn record_response_bytes(tool_name: &str, bytes: usize) {
+fn record_response_bytes(tool_name: &StringValue, bytes: usize) {
     let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
     with_histogram!(
         mcp_metrics::TOOL_RESPONSE_BYTES,
         record,
         bytes,
         get_shard_id!(),
-        &[KeyValue::new("tool", tool_name.to_static_str())]
+        &[KeyValue::new("tool", tool_name.clone())]
     );
 }
 
 #[cfg(not(feature = "metrics"))]
-fn record_response_bytes(_tool_name: &str, _bytes: usize) {}
+fn record_response_bytes(_tool_name: &StringValue, _bytes: usize) {}
 
 /// Counts encoded bytes without allocating a second copy of the JSON response.
 #[derive(Default)]

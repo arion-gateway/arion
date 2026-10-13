@@ -15,6 +15,7 @@
 use std::{collections::BTreeSet, sync::Arc as StdArc};
 
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpToolkit;
+use arion_interner::InternedStr;
 use papaya::HashMap as PapayaMap;
 use serde::Serialize;
 use smol_str::SmolStr;
@@ -31,7 +32,7 @@ pub enum ToolkitError {
 
 #[derive(Debug, Clone)]
 struct ToolkitEntry {
-    name: SmolStr,
+    name: InternedStr,
     description: SmolStr,
     instructions: SmolStr,
     tools: Vec<ToolId>,
@@ -39,7 +40,7 @@ struct ToolkitEntry {
 
 #[derive(Debug)]
 pub struct ToolkitRegistry {
-    entries: PapayaMap<SmolStr, StdArc<ToolkitEntry>, ahash::RandomState>,
+    entries: PapayaMap<InternedStr, StdArc<ToolkitEntry>, ahash::RandomState>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,8 +63,8 @@ impl ToolkitRegistry {
         let registry = Self { entries: PapayaMap::with_hasher(ahash::RandomState::new()) };
         for toolkit in toolkits {
             let entry = StdArc::new(ToolkitEntry::try_from(toolkit)?);
-            if registry.entries.pin().insert(entry.name.clone(), StdArc::clone(&entry)).is_some() {
-                return Err(ToolkitError::DuplicateName(entry.name.clone()));
+            if registry.entries.pin().insert(entry.name, StdArc::clone(&entry)).is_some() {
+                return Err(ToolkitError::DuplicateName(entry.name.as_str().into()));
             }
         }
         Ok(registry)
@@ -71,7 +72,7 @@ impl ToolkitRegistry {
 
     pub fn add(&self, toolkit: McpToolkit) -> Result<(), ToolkitError> {
         let entry = StdArc::new(ToolkitEntry::try_from(toolkit)?);
-        self.entries.pin().insert(entry.name.clone(), entry);
+        self.entries.pin().insert(entry.name, entry);
         Ok(())
     }
 
@@ -90,7 +91,7 @@ impl ToolkitRegistry {
         for entry in entries {
             if tools.permitted_entries_by_id(req_ext, &entry.tools).is_some() {
                 visible.push(ToolkitSummary {
-                    name: entry.name.clone(),
+                    name: entry.name.as_str().into(),
                     description: entry.description.clone(),
                     tool_count: entry.tools.len(),
                 });
@@ -120,7 +121,7 @@ impl TryFrom<McpToolkit> for ToolkitEntry {
     type Error = ToolkitError;
 
     fn try_from(toolkit: McpToolkit) -> Result<Self, Self::Error> {
-        let invalid = |reason: String| ToolkitError::Invalid { name: toolkit.name.clone(), reason };
+        let invalid = |reason: String| ToolkitError::Invalid { name: toolkit.name.as_str().into(), reason };
         if toolkit.name.is_empty() || !valid_catalog_name(&toolkit.name) {
             return Err(invalid("name must contain only letters, digits, '_', '-', or '.'".to_owned()));
         }
@@ -133,7 +134,8 @@ impl TryFrom<McpToolkit> for ToolkitEntry {
 
         let mut tools = BTreeSet::new();
         for tool in toolkit.tools {
-            let id = ToolId::new(tool.namespace, tool.name).map_err(|error| invalid(error.to_string()))?;
+            let id =
+                ToolId::new(tool.namespace.as_str(), tool.name.as_str()).map_err(|error| invalid(error.to_string()))?;
             if !tools.insert(id.clone()) {
                 return Err(invalid(format!("duplicate tool reference '{}'", id.qualified_name())));
             }
@@ -161,7 +163,7 @@ impl ToolkitEntry {
             )
         });
         let content = std::iter::once(header).chain(sections).collect::<String>();
-        RenderedToolkit { name: self.name.clone(), description: self.description.clone(), content }
+        RenderedToolkit { name: self.name.as_str().into(), description: self.description.clone(), content }
     }
 }
 
@@ -179,11 +181,12 @@ mod tests {
         DisclosureMode, EmbeddingVector, HttpUpstreamPolicy, McpTool, McpToolSearch, McpToolkitToolRef,
         UpstreamBackend, UpstreamLimits,
     };
+    use arion_interner::StringInterner;
 
     use super::*;
 
     fn tool_ref(namespace: &str, name: &str) -> McpToolkitToolRef {
-        McpToolkitToolRef { namespace: namespace.into(), name: name.into() }
+        McpToolkitToolRef { namespace: namespace.to_interned_str(), name: name.to_interned_str() }
     }
 
     fn toolkit() -> McpToolkit {
@@ -197,7 +200,7 @@ mod tests {
 
     fn tool(namespace: &str, name: &str) -> McpTool {
         McpTool {
-            namespace: namespace.into(),
+            namespace: namespace.to_interned_str(),
             name: name.into(),
             description: format!("{namespace} {name}").into(),
             input_schema: serde_json::from_value(serde_json::json!({

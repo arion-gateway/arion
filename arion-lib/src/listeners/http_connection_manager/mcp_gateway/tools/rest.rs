@@ -24,6 +24,7 @@ use arion_configuration::config::{
     },
 };
 use arion_http_header::X_REQUEST_ID;
+use arion_interner::InternedStr;
 use bytes::Bytes;
 use http::{HeaderValue, Request, Response, StatusCode, header::HOST};
 use http_body_util::Full;
@@ -75,7 +76,7 @@ pub(super) struct RestBackend {
     body: Option<CompiledTemplate<Bytes>>,
     body_json: Option<SmolStr>,
     template_engine: Engine<'static>,
-    cluster: SmolStr,
+    cluster: InternedStr,
     authority: Option<HeaderValue>,
     timeout: Duration,
     retry_policy: Option<RetryPolicy>,
@@ -96,7 +97,7 @@ impl RestBackend {
         method: http::Method,
         path: SmolStr,
         query_params: Vec<McpRestQueryParams>,
-        cluster: SmolStr,
+        cluster: InternedStr,
         policy: HttpUpstreamPolicy,
         body_template: Option<SmolStr>,
         body_json: Option<SmolStr>,
@@ -157,7 +158,7 @@ impl RestBackend {
             })?;
 
         let tool_name = entry.tool.name.as_ref();
-        let mut invocation = Invocation::start(cx.request, tool_name, "rest", &self.cluster);
+        let mut invocation = Invocation::start(cx.request, tool_name, "rest", self.cluster.as_str().into());
         let outcome = match self.invoke_upstream(request, cx, &mut invocation, tool_name).await {
             Ok(response) => self.interpret_response(entry, response, &mut invocation).await,
             Err(failure) => Err(failure),
@@ -220,7 +221,7 @@ impl RestBackend {
         &self,
         mut request: Request<ArionRequestBody>,
         cx: ToolCallContext<'_>,
-        invocation: &mut Invocation<'_>,
+        invocation: &mut Invocation,
         tool_name: &str,
     ) -> Result<Response<ArionResponseBody>, ToolInvocationFailure> {
         match &self.authority {
@@ -240,7 +241,7 @@ impl RestBackend {
             },
         }
 
-        let cluster = ClusterSpecifier::Cluster(self.cluster.clone().into());
+        let cluster = ClusterSpecifier::Cluster(self.cluster);
         let acquired = acquire_http_upstream(
             &cluster,
             &request,
@@ -295,7 +296,7 @@ impl RestBackend {
         &self,
         entry: &ToolEntry,
         response: Response<ArionResponseBody>,
-        invocation: &mut Invocation<'_>,
+        invocation: &mut Invocation,
     ) -> ToolInvocationOutcome {
         let status = response.status();
         invocation.span().set_http_status(status);

@@ -225,9 +225,10 @@ pub(super) fn build_tool_entry(
             arc_swap::ArcSwapOption::from(Some(StdArc::new(v)))
         }
     };
-    let bm25_doc = Bm25Document::from_tool_parts(&id.qualified_name(), &description, &input_schema);
+    let qualified_name = id.qualified_name();
+    let bm25_doc = Bm25Document::from_tool_parts(&qualified_name, &description, &input_schema);
     let tool = {
-        let mut tool = Tool::new(id.qualified_name(), description.to_string(), StdArc::new(input_schema.clone()));
+        let mut tool = Tool::new(qualified_name, description.to_string(), StdArc::new(input_schema.clone()));
         tool.meta = Some(model::MetaObject(Map::from_iter([(
             "arion/namespace".to_owned(),
             Value::String(id.namespace.to_string()),

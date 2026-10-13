@@ -23,6 +23,7 @@ use arion_configuration::config::network_filters::{
     },
     network_rbac::Action,
 };
+use arion_interner::StringInterner;
 use serde_json::{Value, json};
 
 use super::entry::ToolBackend;
@@ -60,7 +61,7 @@ fn registry_with_tool(tool: McpTool) -> ToolsRegistry {
 
 fn dynamic_server_entry(namespace: &str) -> DynamicMcpServerEntry {
     DynamicMcpServerEntry::new(DynamicMcpServer {
-        namespace: namespace.into(),
+        namespace: namespace.to_interned_str(),
         description: "".into(),
         transport: McpBackendTransportUpstream::StreamableHttp,
         url: "http://localhost/mcp".into(),
@@ -987,12 +988,12 @@ fn open_api_source(namespace: &str, tool_names: &[&str]) -> McpOpenApiToolSource
         .iter()
         .map(|name| {
             let mut tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
-            tool.namespace = namespace.into();
+            tool.namespace = namespace.to_interned_str();
             tool.name = (*name).into();
             tool
         })
         .collect();
-    McpOpenApiToolSource { namespace: namespace.into(), tools }
+    McpOpenApiToolSource { namespace: namespace.to_interned_str(), tools }
 }
 
 #[test]

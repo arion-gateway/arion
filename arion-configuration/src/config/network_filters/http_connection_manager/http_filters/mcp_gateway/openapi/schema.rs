@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 const COMPONENT_SCHEMA_PREFIX: &str = "#/components/schemas/";
 

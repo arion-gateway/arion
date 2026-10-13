@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::RemoteEmbeddings;
-use arion_interner::{InternedStr, StringInterner};
+use arion_interner::InternedStr;
 use bytes::Bytes;
 use http::{Method, Request, header};
 use http_body_util::{BodyExt, Full};
@@ -42,7 +42,6 @@ const DEFAULT_EMBEDDINGS_MAX_BATCH: usize = 64;
 #[derive(Debug)]
 pub struct EmbeddingsClient {
     cluster_id: InternedStr,
-    cluster_label: SmolStr,
     model_id: SmolStr,
     path: SmolStr,
     timeout: Duration,
@@ -58,10 +57,8 @@ impl EmbeddingsClient {
         let RemoteEmbeddings { cluster, model_id, path, timeout, dimensions, max_batch_size } = config;
         let description = format!("remote://{cluster}{path} ({model_id})");
         let dimensions = AtomicUsize::new(dimensions);
-        let cluster_id = cluster.as_str().to_interned_str();
         Self {
-            cluster_id,
-            cluster_label: cluster,
+            cluster_id: cluster,
             model_id,
             path,
             timeout: timeout.unwrap_or(DEFAULT_EMBEDDINGS_TIMEOUT),
@@ -87,7 +84,7 @@ impl EmbeddingsClient {
         let body_bytes = serde_json::to_vec(&payload).map_err(|e| EmbeddingError::Service(format!("encode: {e}")))?;
 
         let channels = clusters_manager::get_http_connection(&self.cluster_id, RoutingContext::None)
-            .map_err(|e| EmbeddingError::Service(format!("cluster '{}' lookup failed: {e}", self.cluster_label)))?;
+            .map_err(|e| EmbeddingError::Service(format!("cluster '{}' lookup failed: {e}", self.cluster_id)))?;
         let upstream_authority = channels.upstream_authority().as_str();
 
         let body: ArionRequestBody = InstrumentedBody::new(
@@ -231,8 +228,7 @@ impl EmbeddingsClient {
         use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::REMOTE_EMBEDDINGS_PATH;
 
         Self {
-            cluster_id: "".into(),
-            cluster_label: "test".into(),
+            cluster_id: "test".into(),
             model_id: "test-model".into(),
             path: SmolStr::new_inline(REMOTE_EMBEDDINGS_PATH),
             timeout: DEFAULT_EMBEDDINGS_TIMEOUT,
