@@ -12,25 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::{atomic::Ordering, Arc as StdArc, Mutex};
+use std::sync::{Arc as StdArc, Mutex, atomic::Ordering};
 use std::time::Instant;
 
-use futures::future::BoxFuture;
 use futures::FutureExt;
+use futures::future::BoxFuture;
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use smol_str::SmolStr;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 use super::toolkits::ToolkitRegistry;
 use crate::listeners::http_connection_manager::{
+    RequestCtx,
     mcp_gateway::{
         mcp::Session,
         tools::{CallToolError, ToolCallContext, ToolId, ToolSearchRequest, ToolsRegistry},
     },
-    RequestCtx,
 };
 
 /// Dispatches sandboxed tool and catalog calls into the gateway.

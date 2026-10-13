@@ -15,8 +15,8 @@
 //! Error types for tool invocation, listing, and registry construction.
 
 use http::StatusCode;
-use rmcp::{model, service::ClientInitializeError, ServiceError};
-use serde_json::{json, Value};
+use rmcp::{ServiceError, model, service::ClientInitializeError};
+use serde_json::{Value, json};
 use smol_str::SmolStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +117,18 @@ pub enum CallToolError {
     CodeModeConcurrencyLimit,
 }
 
+impl From<ClientInitializeError> for CallToolError {
+    fn from(error: ClientInitializeError) -> Self {
+        Self::ClientInitializeError(Box::new(error))
+    }
+}
+
+impl From<ServiceError> for CallToolError {
+    fn from(error: ServiceError) -> Self {
+        Self::ServiceError(Box::new(error))
+    }
+}
+
 impl From<CallToolError> for model::ErrorData {
     fn from(err: CallToolError) -> Self {
         match err {
@@ -137,10 +149,10 @@ impl From<CallToolError> for model::ErrorData {
             },
             CallToolError::ClientInitializeError(ref init_err) => match init_err.as_ref() {
                 ClientInitializeError::JsonRpcError(error_data) => error_data.clone(),
-                ClientInitializeError::ConnectionClosed(ref msg) => {
+                ClientInitializeError::ConnectionClosed(msg) => {
                     model::ErrorData::internal_error(format!("Upstream connection closed: {msg}"), None)
                 },
-                ClientInitializeError::TransportError { ref error, ref context } => {
+                ClientInitializeError::TransportError { error, context } => {
                     model::ErrorData::internal_error(format!("Upstream transport error ({context}): {error}"), None)
                 },
                 ClientInitializeError::Cancelled => {
@@ -155,14 +167,14 @@ impl From<CallToolError> for model::ErrorData {
             },
             CallToolError::ServiceError(ref svc_err) => match svc_err.as_ref() {
                 ServiceError::McpError(error_data) => error_data.clone(),
-                ServiceError::TransportSend(ref e) => {
+                ServiceError::TransportSend(e) => {
                     model::ErrorData::internal_error(format!("Upstream transport send error: {e}"), None)
                 },
                 ServiceError::TransportClosed => model::ErrorData::internal_error("Upstream transport closed", None),
                 ServiceError::UnexpectedResponse => {
                     model::ErrorData::internal_error("Unexpected response from upstream", None)
                 },
-                ServiceError::Cancelled { ref reason } => model::ErrorData::internal_error(
+                ServiceError::Cancelled { reason } => model::ErrorData::internal_error(
                     format!("Upstream request cancelled: {}", reason.as_deref().unwrap_or("<unknown>")),
                     None,
                 ),
@@ -194,6 +206,18 @@ pub enum ListToolsError {
     InvalidSnapshot(String),
 }
 
+impl From<ClientInitializeError> for ListToolsError {
+    fn from(error: ClientInitializeError) -> Self {
+        Self::ClientError(Box::new(error))
+    }
+}
+
+impl From<ServiceError> for ListToolsError {
+    fn from(error: ServiceError) -> Self {
+        Self::ServiceError(Box::new(error))
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ToolBuilderError {
     #[error("Invalid input schema")]
@@ -201,7 +225,7 @@ pub enum ToolBuilderError {
     #[error("Invalid output schema")]
     InvalidOutputSchema(String),
     #[error("Failed compiling template: {0}")]
-    FailedCompilingTemplate(#[from] upon::Error),
+    FailedCompilingTemplate(#[from] Box<upon::Error>),
     #[error("body_template and body_json are mutually exclusive")]
     ConflictingBodyModes,
     #[error("Invalid REST upstream authority: {0}")]
@@ -240,4 +264,10 @@ pub enum ToolBuilderError {
     #[cfg(feature = "codemode")]
     #[error("Invalid Code Mode toolkit configuration: {0}")]
     InvalidToolkit(String),
+}
+
+impl From<upon::Error> for ToolBuilderError {
+    fn from(error: upon::Error) -> Self {
+        Self::FailedCompilingTemplate(Box::new(error))
+    }
 }

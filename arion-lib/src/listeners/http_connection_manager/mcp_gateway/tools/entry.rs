@@ -28,7 +28,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use smol_str::SmolStr;
 
-use super::{errors::CallToolError, errors::ToolBuilderError, rest::RestBackend, ToolId};
+use super::{ToolId, errors::CallToolError, errors::ToolBuilderError, rest::RestBackend};
 use crate::listeners::http_connection_manager::mcp_gateway::{
     embeddings::{self, Bm25Document},
     rbac::{
@@ -145,10 +145,10 @@ impl ToolEntry {
         validator: Option<&jsonschema::Validator>,
         arguments: &Value,
     ) -> Result<(), CallToolError> {
-        if let Some(validator) = validator {
-            if let Some(err) = validator.iter_errors(arguments).next() {
-                return Err(CallToolError::ValidationError(err.to_string()));
-            }
+        if let Some(validator) = validator
+            && let Some(err) = validator.iter_errors(arguments).next()
+        {
+            return Err(CallToolError::ValidationError(err.to_string()));
         }
         Ok(())
     }

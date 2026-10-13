@@ -18,8 +18,8 @@
 //! `cargo build --features codemode` (or point `ARION_BIN` at such a build).
 
 use arion_e2e_tests::config_builder::{
-    inline_string_data_source, ClusterBuilder, EndpointBuilder, McpCodeModeBuilder, McpGatewayBuilder,
-    McpGatewayHttpConfigBuilder, McpRestBackendBuilder, McpToolBuilder, McpToolkitBuilder,
+    ClusterBuilder, EndpointBuilder, McpCodeModeBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder,
+    McpRestBackendBuilder, McpToolBuilder, McpToolkitBuilder, inline_string_data_source,
 };
 use arion_e2e_tests::{ArionInstance, McpTestClient, PreConfiguredResponse, SpawnOptions, TestBackend};
 use serde_json::json;
@@ -143,14 +143,12 @@ async fn test_codemode_composes_tools_and_records_calls() {
     let structured = result.structured_content.unwrap_or_else(|| panic!("execute did not return structured content"));
 
     assert_eq!(structured.get("status").and_then(serde_json::Value::as_str), Some("completed"), "{structured}");
-    assert!(structured
-        .pointer("/result/customer")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|v| v.contains("c-1")));
-    assert!(structured
-        .pointer("/result/created")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|v| v.contains("opened")));
+    assert!(
+        structured.pointer("/result/customer").and_then(serde_json::Value::as_str).is_some_and(|v| v.contains("c-1"))
+    );
+    assert!(
+        structured.pointer("/result/created").and_then(serde_json::Value::as_str).is_some_and(|v| v.contains("opened"))
+    );
 
     let tool_calls = structured
         .get("toolCalls")

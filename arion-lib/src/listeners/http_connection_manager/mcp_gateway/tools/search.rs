@@ -14,7 +14,7 @@
 
 //! Tool search: candidate selection, vector/BM25 ranking, and lazy embedding.
 
-use std::sync::{atomic::Ordering, Arc as StdArc};
+use std::sync::{Arc as StdArc, atomic::Ordering};
 
 #[cfg(feature = "metrics")]
 use crate::get_shard_id;
@@ -27,12 +27,12 @@ use smol_str::SmolStr;
 use tracing::{debug, warn};
 
 use super::{
-    entry::validate_positive_limit, CallToolError, CompactToolDefinition, ToolEntry, ToolSearchRequest,
-    ToolSearchScope, ToolsRegistry,
+    CallToolError, CompactToolDefinition, ToolEntry, ToolSearchRequest, ToolSearchScope, ToolsRegistry,
+    entry::validate_positive_limit,
 };
 use crate::listeners::http_connection_manager::{
-    mcp_gateway::embeddings::{self, Bm25Document},
     RequestCtx,
+    mcp_gateway::embeddings::{self, Bm25Document},
 };
 
 impl ToolsRegistry {

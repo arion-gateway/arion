@@ -23,7 +23,7 @@ use arion_configuration::config::network_filters::{
     },
     network_rbac::Action,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::entry::ToolBackend;
 use super::*;
@@ -529,14 +529,14 @@ fn test_array_validation() {
     assert!(tool_entry.validate_against_input_schema(&invalid_args).is_err());
 }
 
-#[tokio::test]
-async fn test_add_and_remove_provided_tool() {
+#[test]
+fn test_add_and_remove_provided_tool() {
     let registry =
         ToolsRegistry::with_config(Vec::new(), Vec::new(), McpToolSearch::default(), UpstreamLimits::default(), None)
             .unwrap();
     let tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
 
-    registry.add_tool(tool).await.unwrap();
+    registry.add_tool(tool).unwrap();
     assert!(registry.get_tool_by_name("test.test_tool").is_some());
 
     assert!(registry.remove_tool(&ToolId::new("test", "test_tool").unwrap()));
@@ -544,8 +544,8 @@ async fn test_add_and_remove_provided_tool() {
     assert!(!registry.remove_tool(&ToolId::new("test", "test_tool").unwrap()));
 }
 
-#[tokio::test]
-async fn tds_added_tools_inherit_registry_limits() {
+#[test]
+fn tds_added_tools_inherit_registry_limits() {
     let limits = UpstreamLimits { timeout: Duration::from_secs(8), max_response_bytes: 321 };
     let registry =
         ToolsRegistry::with_config(Vec::new(), Vec::new(), McpToolSearch::default(), limits.clone(), None).unwrap();
@@ -555,7 +555,7 @@ async fn tds_added_tools_inherit_registry_limits() {
         url: "http://localhost/mcp".into(),
     };
 
-    registry.add_tool(tool).await.unwrap();
+    registry.add_tool(tool).unwrap();
     let entry = registry.get_tool_by_name("test.test_tool").unwrap();
     let ToolBackend::McpServer(backend) = &entry.backend else {
         panic!("expected compiled MCP backend");
@@ -611,8 +611,8 @@ fn dynamic_tools_inherit_registry_limits_and_original_name() {
     assert_eq!(backend.max_response_bytes, limits.max_response_bytes);
 }
 
-#[tokio::test]
-async fn test_remove_dynamic_server_evicts_its_tools() {
+#[test]
+fn test_remove_dynamic_server_evicts_its_tools() {
     let registry =
         ToolsRegistry::with_config(Vec::new(), Vec::new(), McpToolSearch::default(), UpstreamLimits::default(), None)
             .unwrap();
@@ -656,7 +656,7 @@ async fn test_remove_dynamic_server_evicts_its_tools() {
 
     // And a provided tool that must be left alone
     let provided = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
-    registry.add_tool(provided).await.unwrap();
+    registry.add_tool(provided).unwrap();
 
     assert!(registry.remove_dynamic_server("srv"));
     assert!(registry.get_tool_by_name("srv.alpha").is_none());
@@ -752,7 +752,7 @@ async fn add_tool_replacement_refreshes_bm25_ranking() {
 
     let registry =
         ToolsRegistry::with_config(vec![tool_a], Vec::new(), search, UpstreamLimits::default(), None).unwrap();
-    registry.add_tool(tool_b).await.unwrap();
+    registry.add_tool(tool_b).unwrap();
 
     let req_ext = http::Extensions::new();
     let req_ctx = RequestCtx::default();
@@ -770,7 +770,7 @@ async fn add_tool_replacement_refreshes_bm25_ranking() {
     let mut replacement = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
     replacement.name = "alpha".into();
     replacement.description = "Billing billing billing invoices invoices ledger reconciliation".into();
-    registry.add_tool(replacement).await.unwrap();
+    registry.add_tool(replacement).unwrap();
 
     let ranked = registry
         .search_tools(
@@ -828,8 +828,8 @@ async fn remote_embedding_failure_degrades_to_bm25() {
     assert_eq!(ranked[0].name.as_ref(), "test.billing_lookup");
 }
 
-#[tokio::test]
-async fn add_tool_inserts_even_when_embeddings_client_fails() {
+#[test]
+fn add_tool_inserts_even_when_embeddings_client_fails() {
     let client = embeddings::EmbeddingsClient::test_failing();
     let search = McpToolSearch::default();
     let registry =
@@ -837,7 +837,7 @@ async fn add_tool_inserts_even_when_embeddings_client_fails() {
     let mut tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
     tool.name = "tds_tool".into();
 
-    let res = registry.add_tool(tool).await;
+    let res = registry.add_tool(tool);
     assert!(res.is_ok(), "embeddings failure should not block insertion: {res:?}");
     assert!(registry.get_tool_by_name("test.tds_tool").is_some());
     assert!(registry.get_tool_by_name("test.tds_tool").unwrap().embedding.load_full().is_none());
@@ -1036,7 +1036,7 @@ async fn namespace_exclusivity_covers_all_three_source_kinds() {
     // Direct tool into an OpenAPI namespace.
     let mut tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
     tool.namespace = "api".into();
-    assert!(matches!(registry.add_tool(tool).await, Err(ToolBuilderError::SharedNamespace(_))));
+    assert!(matches!(registry.add_tool(tool), Err(ToolBuilderError::SharedNamespace(_))));
 
     // Dynamic server into an OpenAPI namespace (rejected before any fetch).
     let server = dynamic_server_entry("api").conf;

@@ -18,7 +18,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use wasmtime::component::{HasSelf, Linker};
 
-use super::dispatcher::{error_envelope, CatalogRequest, DispatchDefect};
+use super::dispatcher::{CatalogRequest, DispatchDefect, error_envelope};
 use super::engine::ExecState;
 use crate::listeners::http_connection_manager::mcp_gateway::tools::ToolId;
 

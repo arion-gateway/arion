@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use std::{
-    future::Future,
     sync::{Arc as StdArc, Condvar, LazyLock, Mutex},
     time::{Duration, Instant},
 };
@@ -477,14 +476,16 @@ impl EpochTicker {
         let thread_ticker = StdArc::clone(&ticker);
         let _ticker_thread = std::thread::Builder::new()
             .name("codemode-epoch".to_owned())
-            .spawn(move || loop {
-                let mut active = thread_ticker.activity.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                while *active == 0 {
-                    active = thread_ticker.wake.wait(active).unwrap_or_else(std::sync::PoisonError::into_inner);
+            .spawn(move || {
+                loop {
+                    let mut active = thread_ticker.activity.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    while *active == 0 {
+                        active = thread_ticker.wake.wait(active).unwrap_or_else(std::sync::PoisonError::into_inner);
+                    }
+                    drop(active);
+                    std::thread::sleep(Duration::from_millis(10));
+                    engine.increment_epoch();
                 }
-                drop(active);
-                std::thread::sleep(Duration::from_millis(10));
-                engine.increment_epoch();
             })
             .unwrap_or_else(|error| panic!("failed to spawn codemode epoch ticker: {error}"));
         ticker
