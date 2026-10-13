@@ -1,6 +1,6 @@
 [package]
 name                   = "arion-codemode-sandbox"
-edition      = "2021"
+edition      = "2024"
 license-file = "../LICENSE"
 version      = "0.1.0"
 

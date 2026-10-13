@@ -13,10 +13,15 @@ The script downloads missing, pinned releases into `arion-sandbox/.build`, then
 builds the core module, initializes QuickJS with Wizer, and componentizes it.
 It selects the sandbox's pinned Rust toolchain and Wasm target flags regardless
 of the directory it is invoked from, using the checked-in sandbox `Cargo.lock`.
+The Cargo build and compiler metadata ignore inherited `RUSTFLAGS`,
+`CARGO_ENCODED_RUSTFLAGS`, `RUSTUP_TOOLCHAIN`, and `CARGO_TARGET_DIR` so the proxy's
+native build settings cannot change the guest build.
 
-The vendored component and build metadata originate from commit `b6fbe8e1`.
-The lockfile pins subsequent builds; it was not part of that original build,
-so a rebuild may produce a different checksum.
+The vendored component is built from the Rust 2024 guest with the checked-in
+lockfile and pinned tools below. `BUILD_INFO` records the edition, guest lockfile
+SHA-256, tool versions, and compiler version. The artifact's checksum is stored
+alongside it in `codemode_sandbox.wasm.sha256`; verify it from the artifact
+directory with `sha256sum --check codemode_sandbox.wasm.sha256`.
 
 ## Offline build
 

@@ -1,5 +1,7 @@
 sandbox=arion-codemode-sandbox@0.1.0
 component=arion:codemode/sandbox@0.1.0
+edition=2024
+guest-lock-sha256=1b43831cb1b1d299913f0f74d4398bd6d23485bf7e100fd0dc53241020335bbb
 rquickjs=0.12.0
 wit-bindgen=0.57.1
 target=wasm32-wasip1
