@@ -116,9 +116,9 @@ impl DynamicMcpServerEntry {
 impl ToolsRegistry {
     pub async fn add_dynamic_server(&self, server: DynamicMcpServer) -> Result<(), super::ToolBuilderError> {
         Self::validate_namespace(&server.namespace)?;
-        let namespace = server.namespace.clone();
+        let namespace = server.namespace;
         if self.namespace_has_direct_tools(&namespace) || self.open_api_sources.pin().contains(&namespace) {
-            return Err(super::ToolBuilderError::SharedNamespace(namespace));
+            return Err(super::ToolBuilderError::SharedNamespace(namespace.as_str().into()));
         }
         let entry = StdArc::new(DynamicMcpServerEntry::new(server));
         let materialised = self
@@ -126,10 +126,10 @@ impl ToolsRegistry {
             .await
             .map_err(|error| super::ToolBuilderError::DynamicRefresh(error.to_string()))?;
         if self.namespace_has_direct_tools(&namespace) || self.open_api_sources.pin().contains(&namespace) {
-            return Err(super::ToolBuilderError::SharedNamespace(namespace));
+            return Err(super::ToolBuilderError::SharedNamespace(namespace.as_str().into()));
         }
         entry.bump_deadline(true);
-        self.dynamic_mcp_servers.pin().insert(namespace.clone(), entry);
+        self.dynamic_mcp_servers.pin().insert(namespace, entry);
         self.replace_dynamic_tools(&namespace, materialised);
         Ok(())
     }
@@ -219,7 +219,7 @@ impl ToolsRegistry {
         server: &DynamicMcpServerEntry,
         upstream_tools: Vec<Tool>,
     ) -> Result<Vec<ToolEntry>, ListToolsError> {
-        let namespace = server.conf.namespace.clone();
+        let namespace = server.conf.namespace;
         let mut entries = Vec::with_capacity(upstream_tools.len());
         let mut ids = std::collections::HashSet::with_capacity(upstream_tools.len());
         for tool in upstream_tools {
@@ -228,7 +228,7 @@ impl ToolsRegistry {
             let input_schema = tool.input_schema.as_ref().clone();
             let output_schema = tool.output_schema.as_deref().cloned().unwrap_or_default();
             let conf = McpTool {
-                namespace: namespace.clone(),
+                namespace,
                 name: upstream_tool_name.clone(),
                 description,
                 input_schema,

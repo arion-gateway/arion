@@ -332,6 +332,20 @@ mod tests {
         StdArc::new(ToolkitRegistry::with_config(Vec::new()).unwrap())
     }
 
+    #[test]
+    fn catalog_request_identifiers_remain_owned() {
+        for request in [
+            json!({"operation": "tools_describe", "namespace": "fresh_catalog_namespace", "name": "fresh_catalog_tool"}),
+            json!({"operation": "toolkits_get", "name": "fresh_catalog_toolkit"}),
+            json!({"operation": "tools_search", "query": "fresh_catalog_query", "namespace": "fresh_catalog_namespace"}),
+        ] {
+            serde_json::from_value::<CatalogRequest>(request).unwrap();
+        }
+        for value in ["fresh_catalog_namespace", "fresh_catalog_tool", "fresh_catalog_toolkit", "fresh_catalog_query"] {
+            assert!(arion_interner::InternedStr::lookup(value).is_none(), "{value} must not be interned");
+        }
+    }
+
     fn dispatcher_with(
         tools: StdArc<ToolsRegistry>,
         toolkits: StdArc<ToolkitRegistry>,

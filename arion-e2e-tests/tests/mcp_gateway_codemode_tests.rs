@@ -19,9 +19,11 @@
 
 use arion_e2e_tests::config_builder::{
     ClusterBuilder, EndpointBuilder, McpCodeModeBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder,
-    McpRestBackendBuilder, McpToolBuilder, McpToolkitBuilder, inline_string_data_source,
+    McpRestBackendBuilder, McpToolBuilder, McpToolkitBuilder, inline_string_data_source, mcp_resource_id,
 };
-use arion_e2e_tests::{ArionInstance, McpTestClient, PreConfiguredResponse, SpawnOptions, TestBackend};
+use arion_e2e_tests::{
+    ArionInstance, HarnessError, McpTestClient, PreConfiguredResponse, SpawnOptions, TestBackend, XdsEnabledHarness,
+};
 use serde_json::json;
 
 const SERVER_NAME: &str = "codemode-gateway";
@@ -231,4 +233,96 @@ async fn test_codemode_search_describe_call_flow() {
 
     arion.shutdown();
     std::fs::remove_file(config_path).unwrap_or_else(|error| panic!("Failed to remove temporary config: {error}"));
+}
+
+async fn get_live_toolkit(client: &McpTestClient) -> serde_json::Value {
+    let response = client
+        .call_tool("execute", json!({"code": "return await catalog.toolkits.get({name: 'live_workflow'})"}))
+        .await
+        .unwrap_or_else(|error| panic!("Failed to query toolkit catalog: {error}"));
+    let structured = response.structured_content.unwrap_or_else(|| panic!("execute returned no structured content"));
+    assert_eq!(structured.get("status").and_then(serde_json::Value::as_str), Some("completed"));
+    structured.get("result").cloned().unwrap_or_else(|| panic!("execute returned no catalog result"))
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_codemode_xds_toolkit_add_update_reject_and_remove() {
+    let mut harness =
+        XdsEnabledHarness::start().await.unwrap_or_else(|error| panic!("Failed to start harness: {error}"));
+    let port =
+        harness.allocate_listener_port().unwrap_or_else(|error| panic!("Failed to allocate listener port: {error}"));
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let cluster = ClusterBuilder::new("catalog_backend").endpoint(EndpointBuilder::new("127.0.0.1", 1)).build();
+    harness.push_cluster(&cluster).await.unwrap_or_else(|error| panic!("Failed to push cluster: {error}"));
+    let gateway = McpGatewayBuilder::new(SERVER_NAME, SERVER_VERSION)
+        .tds("catalog")
+        .code_mode(McpCodeModeBuilder::new())
+        .tools(["one", "two"].map(|name| {
+            McpToolBuilder::new("catalog", name, "A toolkit target").rest_backend(McpRestBackendBuilder::new(
+                "catalog_backend",
+                "GET",
+                "/target",
+            ))
+        }));
+    let listener = McpGatewayHttpConfigBuilder::new(gateway).listener("codemode_xds", port).build_listener().build();
+    harness.push_listener(&listener).await.unwrap_or_else(|error| panic!("Failed to push listener: {error}"));
+    harness
+        .arion_mut()
+        .wait_for_listener_at(address, std::time::Duration::from_secs(10))
+        .await
+        .unwrap_or_else(|error| panic!("Listener did not become ready: {error}"));
+    let mut client = McpTestClient::new(address);
+    client.initialize().await.unwrap_or_else(|error| panic!("Failed to initialize client: {error}"));
+    assert_eq!(
+        get_live_toolkit(&client).await.pointer("/error/code").and_then(serde_json::Value::as_str),
+        Some("not_found")
+    );
+
+    let resource_id = mcp_resource_id(SERVER_NAME, "catalog", "live_workflow");
+    for instructions in ["First workflow instructions", "Updated workflow instructions"] {
+        // The resource identity is authoritative even when its payload supplies another name.
+        let toolkit = McpToolkitBuilder::new("ignored_payload_name", "A live workflow", instructions)
+            .tool("catalog", "one")
+            .tool("catalog", "two")
+            .build();
+        harness
+            .push_mcp_toolkit(&resource_id, &toolkit)
+            .await
+            .unwrap_or_else(|error| panic!("Failed to push toolkit: {error}"));
+        let envelope = get_live_toolkit(&client).await;
+        assert_eq!(envelope.pointer("/data/name").and_then(serde_json::Value::as_str), Some("live_workflow"));
+        assert!(
+            envelope
+                .pointer("/data/content")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .starts_with(instructions)
+        );
+    }
+
+    let invalid = McpToolkitBuilder::new("ignored_payload_name", "Invalid replacement", "Rejected instructions")
+        .tool("catalog", "one")
+        .build();
+    let error = harness
+        .push_mcp_toolkit(&resource_id, &invalid)
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("Invalid toolkit replacement must be rejected"));
+    assert!(matches!(error, HarnessError::Nack { .. }), "expected xDS NACK, got {error:?}");
+    assert!(
+        get_live_toolkit(&client)
+            .await
+            .pointer("/data/content")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .starts_with("Updated workflow instructions")
+    );
+
+    harness.remove_mcp_toolkit(&resource_id).await.unwrap_or_else(|error| panic!("Failed to remove toolkit: {error}"));
+    assert_eq!(
+        get_live_toolkit(&client).await.pointer("/error/code").and_then(serde_json::Value::as_str),
+        Some("not_found")
+    );
+    harness.shutdown();
 }

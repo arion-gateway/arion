@@ -53,6 +53,7 @@ use std::{
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
     DisclosureMode, DynamicMcpServer, McpTool, McpToolSearch, UpstreamLimits,
 };
+use arion_interner::InternedStr;
 use papaya::{HashMap as PapayaMap, HashSet as PapayaSet};
 use rmcp::model::Tool;
 use serde::{Deserialize, Serialize, Serializer};
@@ -91,7 +92,7 @@ impl ToolId {
     }
 
     pub fn from_tool(tool: &McpTool) -> Result<Self, ToolBuilderError> {
-        Self::new(tool.namespace.clone(), tool.name.clone())
+        Self::new(tool.namespace.as_str(), tool.name.clone())
     }
 
     pub fn parse_qualified(name: &str) -> Option<Self> {
@@ -143,8 +144,8 @@ pub enum ToolSearchScope {
 #[derive(Debug)]
 pub struct ToolsRegistry {
     tools: PapayaMap<ToolId, StdArc<ToolEntry>, ahash::RandomState>,
-    dynamic_mcp_servers: PapayaMap<SmolStr, StdArc<DynamicMcpServerEntry>, ahash::RandomState>,
-    open_api_sources: PapayaSet<SmolStr, ahash::RandomState>,
+    dynamic_mcp_servers: PapayaMap<InternedStr, StdArc<DynamicMcpServerEntry>, ahash::RandomState>,
+    open_api_sources: PapayaSet<InternedStr, ahash::RandomState>,
     search: McpToolSearch,
     upstream_limits: UpstreamLimits,
     bootstrapped: OnceCell<()>,
@@ -185,13 +186,13 @@ impl ToolsRegistry {
 
         for server in dynamic_mcp_servers {
             Self::validate_namespace(&server.namespace)?;
-            let namespace = server.namespace.clone();
+            let namespace = server.namespace;
             if registry.namespace_has_direct_tools(&namespace) {
-                return Err(ToolBuilderError::SharedNamespace(namespace));
+                return Err(ToolBuilderError::SharedNamespace(namespace.as_str().into()));
             }
             let entry = StdArc::new(DynamicMcpServerEntry::new(server));
-            if registry.dynamic_mcp_servers.pin().insert(namespace.clone(), entry).is_some() {
-                return Err(ToolBuilderError::DuplicateDynamicServer(namespace));
+            if registry.dynamic_mcp_servers.pin().insert(namespace, entry).is_some() {
+                return Err(ToolBuilderError::DuplicateDynamicServer(namespace.as_str().into()));
             }
         }
 
@@ -220,13 +221,13 @@ impl ToolsRegistry {
         Ok(())
     }
 
-    fn validate_namespace(namespace: &SmolStr) -> Result<(), ToolBuilderError> {
+    fn validate_namespace(namespace: &str) -> Result<(), ToolBuilderError> {
         if namespace.is_empty()
             || namespace.contains('.')
             || namespace.contains('/')
             || !valid_mcp_name_segment(namespace)
         {
-            return Err(ToolBuilderError::InvalidNamespace(namespace.clone()));
+            return Err(ToolBuilderError::InvalidNamespace(namespace.into()));
         }
         Ok(())
     }
@@ -277,8 +278,8 @@ impl ToolsRegistry {
 
     pub fn add_tool(&self, tool: McpTool) -> Result<(), ToolBuilderError> {
         let id = ToolId::from_tool(&tool)?;
-        if self.dynamic_mcp_servers.pin().contains_key(&id.namespace)
-            || self.open_api_sources.pin().contains(&id.namespace)
+        if self.dynamic_mcp_servers.pin().contains_key(id.namespace.as_str())
+            || self.open_api_sources.pin().contains(id.namespace.as_str())
         {
             return Err(ToolBuilderError::SharedNamespace(id.namespace));
         }

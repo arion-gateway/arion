@@ -17,7 +17,8 @@ mod schema;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde_json::{json, Map, Value};
+use arion_interner::InternedStr;
+use serde_json::{Map, Value, json};
 use smol_str::SmolStr;
 use tracing::warn;
 
@@ -29,8 +30,8 @@ use crate::config::GenericError;
 
 #[derive(Debug, Clone)]
 pub struct OpenApiExpansionParams {
-    pub namespace: SmolStr,
-    pub cluster: SmolStr,
+    pub namespace: InternedStr,
+    pub cluster: InternedStr,
     pub upstream_policy: HttpUpstreamPolicy,
     pub rbac: Option<McpToolRbac>,
     pub tool_disclosure_mode: DisclosureMode,
@@ -106,11 +107,7 @@ fn base_path(params: &OpenApiExpansionParams, spec: &Spec) -> String {
         },
     };
     let base = base.trim_end_matches('/');
-    if base.is_empty() || base.starts_with('/') {
-        base.to_owned()
-    } else {
-        format!("/{base}")
-    }
+    if base.is_empty() || base.starts_with('/') { base.to_owned() } else { format!("/{base}") }
 }
 
 fn is_selected(params: &OpenApiExpansionParams, operation_id: Option<&str>, method_path: &str) -> bool {
@@ -245,7 +242,7 @@ fn build_tool(
     schema::validate(&input_schema, "input")?;
 
     Ok(McpTool {
-        namespace: params.namespace.clone(),
+        namespace: params.namespace,
         name: name.as_str().into(),
         description: operation.summary.as_deref().or(operation.description.as_deref()).unwrap_or(&name).into(),
         input_schema,
@@ -254,7 +251,7 @@ fn build_tool(
             method: method.clone(),
             path: format!("{base_path}{path_template}").into(),
             query_params,
-            cluster: params.cluster.clone(),
+            cluster: params.cluster,
             upstream_policy: Box::new(params.upstream_policy.clone()),
             body_template: None,
             body_json,
@@ -300,11 +297,7 @@ fn derived_name(method: &http::Method, raw_path: &str) -> String {
 fn sanitize_tool_name(name: &str) -> String {
     let sanitized: String =
         name.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '_' | '-') { c } else { '_' }).collect();
-    if sanitized.is_empty() {
-        "_".to_owned()
-    } else {
-        sanitized
-    }
+    if sanitized.is_empty() { "_".to_owned() } else { sanitized }
 }
 
 fn convert_path_template(raw_path: &str) -> Result<(String, BTreeSet<String>), String> {

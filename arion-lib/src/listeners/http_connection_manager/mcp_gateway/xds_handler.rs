@@ -288,23 +288,23 @@ impl XdsExtensionHandler for McpXdsHandler {
 
             match type_url.as_str() {
                 MCP_TOOL_TYPE_URL => {
-                    let proto = decode_proto::<ArionTool>(&payload, "MCP Tool")?;
-                    let mut tool: McpTool = convert(proto, "MCP Tool")?;
+                    let mut proto = decode_proto::<ArionTool>(&payload, "MCP Tool")?;
                     let resource_id = super::tools::ToolId::parse_qualified(name).ok_or_else(|| {
                         XdsExtensionError::HandlerError(format!(
                             "Invalid MCP Tool resource name '{name}': expected namespace.name"
                         ))
                     })?;
-                    if tool.namespace != resource_id.namespace || tool.name != resource_id.name {
+                    if proto.namespace != resource_id.namespace.as_str() || proto.name != resource_id.name.as_str() {
                         warn!(
                             target: "mcp_gateway",
                             "xDS: Tool payload identity '{}.{}' does not match resource name '{name}' in scope '{scope}'; using resource name",
-                            tool.namespace,
-                            tool.name,
+                            proto.namespace,
+                            proto.name,
                         );
-                        tool.namespace = resource_id.namespace;
-                        tool.name = resource_id.name;
+                        proto.namespace = resource_id.namespace.to_string();
+                        proto.name = resource_id.name.to_string();
                     }
+                    let tool: McpTool = convert(proto, "MCP Tool")?;
                     for registry in subscriptions.iter().filter_map(|subscription| subscription.tools.upgrade()) {
                         registry.add_tool(tool.clone()).map_err(|e| {
                             XdsExtensionError::HandlerError(format!("Failed to add tool '{name}': {e}"))
@@ -313,16 +313,16 @@ impl XdsExtensionHandler for McpXdsHandler {
                     debug!(target: "mcp_gateway", "xDS: added/updated tool '{name}' in scope '{scope}' ({} registries)", subscriptions.len());
                 },
                 MCP_DYNAMIC_SERVER_TYPE_URL => {
-                    let proto = decode_proto::<ArionDynamicMcpServer>(&payload, "MCP DynamicMcpServer")?;
-                    let mut server: DynamicMcpServer = convert(proto, "MCP DynamicMcpServer")?;
-                    if server.namespace.as_str() != name {
+                    let mut proto = decode_proto::<ArionDynamicMcpServer>(&payload, "MCP DynamicMcpServer")?;
+                    if proto.namespace != name {
                         warn!(
                             target: "mcp_gateway",
                             "xDS: DynamicMcpServer payload namespace '{}' does not match resource name '{name}' in scope '{scope}'; using resource name",
-                            server.namespace,
+                            proto.namespace,
                         );
-                        server.namespace = name.into();
+                        name.clone_into(&mut proto.namespace);
                     }
+                    let server: DynamicMcpServer = convert(proto, "MCP DynamicMcpServer")?;
                     for registry in subscriptions.iter().filter_map(|subscription| subscription.tools.upgrade()) {
                         registry.add_dynamic_server(server.clone()).await.map_err(|e| {
                             XdsExtensionError::HandlerError(format!("Failed to add dynamic server '{name}': {e}"))
@@ -360,11 +360,11 @@ impl XdsExtensionHandler for McpXdsHandler {
                             debug!(target: "mcp_gateway", "xDS: ignoring Toolkit '{name}' for non-CodeMode scope '{scope}'");
                             return Ok(());
                         }
-                        let proto = decode_proto::<ArionToolkit>(&payload, "MCP Toolkit")?;
-                        let mut toolkit: McpToolkit = convert(proto, "MCP Toolkit")?;
-                        if toolkit.name.as_str() != name {
-                            toolkit.name = name.into();
+                        let mut proto = decode_proto::<ArionToolkit>(&payload, "MCP Toolkit")?;
+                        if proto.name != name {
+                            name.clone_into(&mut proto.name);
                         }
+                        let toolkit: McpToolkit = convert(proto, "MCP Toolkit")?;
                         for registry in registries {
                             registry.add(toolkit.clone()).map_err(|error| {
                                 XdsExtensionError::HandlerError(format!("Failed to add toolkit '{name}': {error}"))

@@ -340,7 +340,7 @@ impl ToolsMode {
 #[derive(Debug)]
 struct TdsRegistration {
     runtime_id: usize,
-    server_name: SmolStr,
+    server_name: InternedStr,
     scope: SmolStr,
 }
 
@@ -348,7 +348,7 @@ impl Drop for McpGatewayInner {
     fn drop(&mut self) {
         if let Some(reg) = self.tds_registration.take() {
             super::xds_handler::unsubscribe_from_updates(&reg.scope, &self.tools);
-            super::uniqueness::release(reg.runtime_id, &reg.server_name);
+            super::uniqueness::release(reg.runtime_id, reg.server_name);
         }
     }
 }
@@ -424,8 +424,9 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
 
         let tds_registration = if let Some(tds) = &config.tds {
             let runtime_id = crate::runtime_context::get_runtime_id();
-            let server_name = config.server_info.name.clone();
-            super::uniqueness::claim(runtime_id, server_name.clone()).map_err(ToolBuilderError::DuplicateServerName)?;
+            let server_name = config.server_info.name;
+            super::uniqueness::claim(runtime_id, server_name)
+                .map_err(|name| ToolBuilderError::DuplicateServerName(name.as_str().into()))?;
             let scope = format_smolstr!("{server_name}/{config_name}", config_name = tds.config_name);
             #[cfg(feature = "codemode")]
             let toolkits = match &mode {
