@@ -17,9 +17,9 @@
 
 use std::collections::HashSet;
 
-use arion_e2e_tests::config_builder::{presets, ClusterBuilder, EndpointBuilder, RouteBuilder};
+use arion_e2e_tests::config_builder::{ClusterBuilder, EndpointBuilder, RouteBuilder, presets};
 use arion_e2e_tests::{
-    cleanup_config_file, ArionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient,
+    ArionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient, cleanup_config_file,
 };
 use http::StatusCode;
 

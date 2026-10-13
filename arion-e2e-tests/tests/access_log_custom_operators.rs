@@ -27,7 +27,7 @@ use arion_e2e_tests::config_builder::{
     BootstrapBuilder, ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, RouteBuilder,
     RouteConfigBuilder, VirtualHostBuilder,
 };
-use arion_e2e_tests::{cleanup_config_file, ArionInstance, PreConfiguredResponse, SpawnOptions, TestBackend};
+use arion_e2e_tests::{ArionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, cleanup_config_file};
 use base64::Engine;
 use http::HeaderName;
 
@@ -64,10 +64,10 @@ fn parse_log_line(line: &str) -> HashMap<String, String> {
 async fn read_log_file(path: &std::path::Path, timeout: Duration) -> String {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            if !content.trim().is_empty() {
-                return content;
-            }
+        if let Ok(content) = std::fs::read_to_string(path)
+            && !content.trim().is_empty()
+        {
+            return content;
         }
         if tokio::time::Instant::now() >= deadline {
             break;

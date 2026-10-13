@@ -19,16 +19,16 @@ use arion_configuration::config::{
     cluster::ClusterSpecifier,
     network_filters::http_connection_manager::http_filters::jwt::{JwtProvider, RemoteJwks},
 };
-use http::{request, Method, StatusCode};
+use http::{Method, StatusCode, request};
 use http_body_util::BodyExt;
-use jsonwebtoken::{jwk::Jwk, Algorithm, DecodingKey, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, jwk::Jwk};
 use tracing::error;
 use triomphe::Arc;
 
 use crate::{
-    clusters::{clusters_manager, RoutingContext, RoutingPriority},
-    listeners::http_connection_manager::jwt_authn::{error::JwkError, Kid, ValidationKey},
     ArionRequestBody,
+    clusters::{RoutingContext, RoutingPriority, clusters_manager},
+    listeners::http_connection_manager::jwt_authn::{Kid, ValidationKey, error::JwkError},
 };
 
 pub fn parse_jwks(
@@ -68,7 +68,7 @@ pub async fn fetch_remote_jwks(
         JwkError::ClusterResolutionFailed(cluster_spec.name().into())
     ).inspect_err(|err| error!(target: "jwt", "{provider_name}: failed to resolve cluster {} for jwks: {}", remote.http_uri.cluster, err))?;
 
-    let http_service = clusters_manager::get_http_connection(cluster_id, RoutingContext::None).
+    let http_service = clusters_manager::get_http_connection(&cluster_id, RoutingContext::None).
                             inspect_err(|err| error!(target: "jwt", "{provider_name}: failed to get http connection for cluster {}: {}", remote.http_uri.cluster, err))?;
 
     // prepare the request to send...

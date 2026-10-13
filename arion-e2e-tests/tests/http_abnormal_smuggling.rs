@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use arion_e2e_tests::config_builder::presets;
 use arion_e2e_tests::{
-    cleanup_config_file, ArionInstance, PreConfiguredResponse, RawHttpResponse, SpawnOptions, TcpTestBackend,
-    TcpTestClient, TestBackend, READ_TIMEOUT,
+    ArionInstance, PreConfiguredResponse, READ_TIMEOUT, RawHttpResponse, SpawnOptions, TcpTestBackend, TcpTestClient,
+    TestBackend, cleanup_config_file,
 };
 
 async fn setup() -> (ArionInstance, TestBackend, TcpTestClient, std::path::PathBuf) {

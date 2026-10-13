@@ -19,19 +19,19 @@ use std::{net::SocketAddr, pin::Pin, sync::Arc};
 
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::service::discovery::v3::{
-        aggregated_discovery_service_server::{AggregatedDiscoveryService, AggregatedDiscoveryServiceServer},
         DeltaDiscoveryRequest, DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse, ResourceName,
+        aggregated_discovery_service_server::{AggregatedDiscoveryService, AggregatedDiscoveryServiceServer},
     },
-    tonic::{transport::Server, IntoStreamingRequest, Response, Status},
+    tonic::{IntoStreamingRequest, Response, Status, transport::Server},
 };
 use atomic_take::AtomicTake;
-use dashmap::DashMap;
+use papaya::HashMap as PapayaMap;
 use tokio::sync::{
     broadcast,
     mpsc::{self, Receiver},
     oneshot,
 };
-use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
+use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tracing::{debug, info};
 
 pub use arion_xds::xds::server::ServerAction;
@@ -56,31 +56,33 @@ pub struct TrackedPush {
 }
 
 pub struct AckTracker {
-    pending: DashMap<String, oneshot::Sender<PushResult>>,
+    pending: PapayaMap<String, AtomicTake<oneshot::Sender<PushResult>>>,
 }
 
 impl AckTracker {
     pub fn new() -> Self {
-        Self { pending: DashMap::new() }
+        Self { pending: PapayaMap::new() }
     }
 
     pub fn register(&self, nonce: String, result_tx: oneshot::Sender<PushResult>) {
-        self.pending.insert(nonce, result_tx);
+        self.pending.pin().insert(nonce, AtomicTake::new(result_tx));
     }
 
     pub fn complete(&self, nonce: &str, result: PushResult) -> bool {
-        if let Some((_, tx)) = self.pending.remove(nonce) {
+        let pinned = self.pending.pin();
+        if let Some(entry) = pinned.remove(nonce)
+            && let Some(tx) = entry.take()
+        {
             if tx.send(result).is_err() {
                 debug!("ack receiver dropped before result could be delivered for nonce {nonce}");
             }
-            true
-        } else {
-            false
+            return true;
         }
+        false
     }
 
     pub fn clear_all(&self) {
-        self.pending.clear();
+        self.pending.pin().clear();
     }
 }
 

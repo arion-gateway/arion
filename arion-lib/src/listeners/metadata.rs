@@ -18,6 +18,7 @@
 //
 //
 
+use arion_interner::InternedStr;
 use std::{collections::HashMap, net::SocketAddr};
 use triomphe::Arc;
 
@@ -61,12 +62,12 @@ impl DownstreamConnectionMetadata {
 pub struct DownstreamMetadata {
     pub connection: DownstreamConnectionMetadata,
     pub sni: Option<SmolStr>,
-    pub listener_name: &'static str,
+    pub listener_name: InternedStr,
 }
 
 impl DownstreamMetadata {
     #[inline]
-    pub fn new<S>(connection: DownstreamConnectionMetadata, sni: Option<S>, listener_name: &'static str) -> Self
+    pub fn new<S>(connection: DownstreamConnectionMetadata, sni: Option<S>, listener_name: InternedStr) -> Self
     where
         S: Into<SmolStr>,
     {
@@ -98,7 +99,7 @@ impl ConnMeta {
     }
 
     #[inline]
-    pub fn listener_name(&self) -> &'static str {
+    pub fn listener_name(&self) -> InternedStr {
         self.downstream.listener_name
     }
 
@@ -120,7 +121,7 @@ impl Default for ConnMeta {
         let downstream = Arc::new(DownstreamMetadata::new(
             DownstreamConnectionMetadata::FromSocket { peer_address: unspecified, local_address: unspecified },
             None::<&str>,
-            "synthetic",
+            "synthetic".into(),
         ));
         Self::new(downstream, Arc::new(StreamMetrics::default()))
     }

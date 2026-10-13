@@ -28,11 +28,7 @@ fn map() -> &'static PapayaSet<(usize, SmolStr), ahash::RandomState> {
 }
 
 pub fn claim(runtime_id: usize, server_name: SmolStr) -> Result<(), SmolStr> {
-    if map().pin().insert((runtime_id, server_name.clone())) {
-        Ok(())
-    } else {
-        Err(server_name)
-    }
+    if map().pin().insert((runtime_id, server_name.clone())) { Ok(()) } else { Err(server_name) }
 }
 
 pub fn release(runtime_id: usize, server_name: &str) {

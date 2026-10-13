@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::admin::AdminState;
-use arion_stats::{get_proxy_state, ProxyState};
+use arion_stats::{ProxyState, get_proxy_state};
 use axum::extract::State;
 use http::StatusCode;
 

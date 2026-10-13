@@ -25,7 +25,7 @@ use arion_configuration::config::metrics::{
 };
 use arion_e2e_tests::config_builder::presets;
 use arion_e2e_tests::{
-    cleanup_config_file, ArionInstance, PortBlock, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient,
+    ArionInstance, PortBlock, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient, cleanup_config_file,
 };
 
 fn parse_custom_metric_value(prometheus_output: &str, metric_name: &str, labels: &[(&str, &str)]) -> Option<f64> {
@@ -44,10 +44,10 @@ fn parse_custom_metric_value(prometheus_output: &str, metric_name: &str, labels:
             }
             if matches {
                 let parts: Vec<&str> = line.split_whitespace().collect();
-                if let Some(val_str) = parts.last() {
-                    if let Ok(val) = val_str.parse::<f64>() {
-                        return Some(val);
-                    }
+                if let Some(val_str) = parts.last()
+                    && let Ok(val) = val_str.parse::<f64>()
+                {
+                    return Some(val);
                 }
             }
         }
@@ -299,12 +299,14 @@ async fn test_custom_metrics() {
     // C. Verify Edge Case B (Missing partition key header: recorded with color="purple" but without tenant label)
     assert_eq!(parse_custom_metric_value(metrics, "custom_custom_req_counter", &[("color", "purple")]), Some(1.0));
     // Ensure it doesn't have the tenant label
-    assert!(parse_custom_metric_value(
-        metrics,
-        "custom_custom_req_counter",
-        &[("color", "purple"), ("tenant", "tenant-req")]
-    )
-    .is_none());
+    assert!(
+        parse_custom_metric_value(
+            metrics,
+            "custom_custom_req_counter",
+            &[("color", "purple"), ("tenant", "tenant-req")]
+        )
+        .is_none()
+    );
 
     arion.shutdown();
     cleanup_config_file(&config_path);

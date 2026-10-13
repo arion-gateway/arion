@@ -27,9 +27,9 @@ use triomphe::Arc;
 use rand::Rng;
 
 use super::{
+    Balancer, WeightedEndpoint,
     default_balancer::{EndpointWithAuthority, LbItem},
     hash_policy::DeterministicBuildHasher,
-    Balancer, WeightedEndpoint,
 };
 
 /// A consistent balancer based on the "ketama hash" algorithm.
@@ -137,7 +137,7 @@ impl<T> Balancer<T> for RingHashBalancer<T> {
         }
 
         // If no hash is provided, a random one is generated
-        let hash = hash.unwrap_or(rand::thread_rng().gen());
+        let hash = hash.unwrap_or(rand::thread_rng().r#gen());
 
         // Find the closest entry doing a binary search of the hash
         let ring_index = match self.ring.binary_search_by_key(&hash, |(hash, _)| *hash) {
@@ -163,7 +163,7 @@ mod test {
     use triomphe::Arc;
 
     use http::uri::Authority;
-    use rand::{rngs::SmallRng, Rng, SeedableRng};
+    use rand::{Rng, SeedableRng, rngs::SmallRng};
 
     use crate::clusters::balancers::{Balancer, EndpointWithAuthority};
 
@@ -349,7 +349,7 @@ mod test {
             // Test 100 requests with a random hash each one
             let mut rng = SmallRng::seed_from_u64(1);
             for _ in 0..100 {
-                let hash = rng.gen();
+                let hash = rng.r#gen();
 
                 // Check that load balancing is consistent for this request
                 (0..10).map(|_| balancer.next_item(Some(hash)).unwrap().value).reduce(|initial, current| {

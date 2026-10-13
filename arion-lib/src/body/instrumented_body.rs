@@ -75,12 +75,11 @@ mod metrics_enabled {
     impl<B> PinnedDrop for InstrumentedBody<B> {
         fn drop(self: std::pin::Pin<&mut Self>) {
             let this = self.project();
-            if let Some(mut arc_closure) = this.on_complete.take() {
-                if let Some(closure) = StdArc::get_mut(&mut arc_closure) {
-                    if let Some(metrics) = this.stream_metrics.as_ref() {
-                        closure.call(*this.body_bytes, metrics.as_ref(), None, ResponseFlags::default());
-                    }
-                }
+            if let Some(mut arc_closure) = this.on_complete.take()
+                && let Some(closure) = StdArc::get_mut(&mut arc_closure)
+                && let Some(metrics) = this.stream_metrics.as_ref()
+            {
+                closure.call(*this.body_bytes, metrics.as_ref(), None, ResponseFlags::default());
             }
         }
     }

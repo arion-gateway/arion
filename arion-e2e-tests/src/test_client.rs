@@ -24,8 +24,8 @@ use http::{Method, Request, StatusCode, Uri};
 use http_body::Frame;
 use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::body::Incoming;
-use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
+use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use tracing::debug;
 

@@ -32,7 +32,7 @@ use arion_data_plane_api::envoy_data_plane_api::{
 use arion_xds::xds::model::TypeUrl;
 
 use crate::config_builder::mcp_gateway::{
-    dynamic_mcp_server_xds_resource, mcp_tool_xds_resource, MCP_DYNAMIC_SERVER_TYPE_URL, MCP_TOOL_TYPE_URL,
+    MCP_DYNAMIC_SERVER_TYPE_URL, MCP_TOOL_TYPE_URL, dynamic_mcp_server_xds_resource, mcp_tool_xds_resource,
 };
 use pingora_timeout::timeout as fast_timeout;
 use thiserror::Error;
@@ -305,4 +305,4 @@ impl ConfigPusher {
     }
 }
 
-pub use crate::xds_server::{start_tracked_aggregate_server, PushResult, ServerEvent, TrackedXdsServer};
+pub use crate::xds_server::{PushResult, ServerEvent, TrackedXdsServer, start_tracked_aggregate_server};

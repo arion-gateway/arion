@@ -18,8 +18,8 @@
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::{
-            core::v3::{transport_socket::ConfigType as TransportSocketConfigType, TransportSocket},
-            listener::v3::{filter::ConfigType, Filter, FilterChain as EnvoyFilterChain, FilterChainMatch},
+            core::v3::{TransportSocket, transport_socket::ConfigType as TransportSocketConfigType},
+            listener::v3::{Filter, FilterChain as EnvoyFilterChain, FilterChainMatch, filter::ConfigType},
         },
         extensions::filters::network::{
             connection_limit::v3::ConnectionLimit as EnvoyConnectionLimit,

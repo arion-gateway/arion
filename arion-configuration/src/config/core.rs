@@ -137,11 +137,7 @@ pub(crate) struct CaseSensitive<'a>(pub bool, pub &'a str);
 impl CaseSensitive<'_> {
     #[inline]
     pub fn equals(&self, b: &str) -> bool {
-        if self.0 {
-            self.1 == b
-        } else {
-            self.1.eq_ignore_ascii_case(b)
-        }
+        if self.0 { self.1 == b } else { self.1.eq_ignore_ascii_case(b) }
     }
 
     #[inline]
@@ -311,26 +307,26 @@ pub mod envoy_conversions {
     use crate::config::common::*;
     use arion_data_plane_api::envoy_data_plane_api::envoy::{
         config::core::v3::{
-            address::Address as EnvoyAddress, data_source::Specifier as EnvoySpecifier,
-            envoy_internal_address::AddressNameSpecifier as EnvoyAddressNameSpecifier, socket_address::PortSpecifier,
             Address as EnvoyOuterAddress, CidrRange as EnvoyCidrRange, DataSource as EnvoyDataSource,
             EnvoyInternalAddress, Pipe as EnvoyPipe, SocketAddress as EnvoySocketAddress,
+            address::Address as EnvoyAddress, data_source::Specifier as EnvoySpecifier,
+            envoy_internal_address::AddressNameSpecifier as EnvoyAddressNameSpecifier, socket_address::PortSpecifier,
         },
         r#type::{
             matcher::v3::{
-                string_matcher::MatchPattern as EnvoyStringMatcherPattern, RegexMatcher as EnvoyRegexMatcher,
-                StringMatcher as EnvoyStringMatcher,
+                RegexMatcher as EnvoyRegexMatcher, StringMatcher as EnvoyStringMatcher,
+                string_matcher::MatchPattern as EnvoyStringMatcherPattern,
             },
             v3::HttpStatus,
         },
     };
-    use http::{uri::Authority, StatusCode};
+    use http::{StatusCode, uri::Authority};
     use ipnet::IpNet;
     use regex::{Regex, RegexBuilder};
     use smol_str::SmolStr;
 
     use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::{
-        http_uri::HttpUpstreamType as EnvoyHttpClusterType, HttpUri as EnvoyHttpUri,
+        HttpUri as EnvoyHttpUri, http_uri::HttpUpstreamType as EnvoyHttpClusterType,
     };
     use arion_data_plane_api::envoy_data_plane_api::google::protobuf::Duration as EnvoyDuration;
     use std::time::Duration;

@@ -60,7 +60,7 @@ pub enum FailureMode {
 #[cfg(feature = "envoy-conversions")]
 mod envoy_conversions {
     use super::{
-        default_principal_entity_type, default_resource_entity_type, CedarPolicy, EnforcementMode, FailureMode,
+        CedarPolicy, EnforcementMode, FailureMode, default_principal_entity_type, default_resource_entity_type,
     };
     use crate::config::common::*;
     use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::cedar::cedar_policy::v3::{
@@ -89,7 +89,7 @@ mod envoy_conversions {
                 Ok(ProtoEnforcementMode::Enforce) => EnforcementMode::Enforce,
                 Ok(ProtoEnforcementMode::LogOnly) => EnforcementMode::LogOnly,
                 Err(_) => {
-                    return Err(GenericError::unsupported_variant(format!("enforcement_mode={enforcement_mode}")))
+                    return Err(GenericError::unsupported_variant(format!("enforcement_mode={enforcement_mode}")));
                 },
             };
 

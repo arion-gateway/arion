@@ -100,7 +100,7 @@ use super::is_default;
 mod envoy_conversions {
     #![allow(deprecated)]
     use super::{
-        ext_proc::ExtProcPerRoute, FilterConfigOverride, FilterOverride, HttpFilter, HttpFilterType, HttpRbac,
+        FilterConfigOverride, FilterOverride, HttpFilter, HttpFilterType, HttpRbac, ext_proc::ExtProcPerRoute,
     };
     use crate::config::common::*;
     use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::cedar::cedar_policy::v3::CedarPolicy as ProtoCedarPolicy;
@@ -124,7 +124,7 @@ mod envoy_conversions {
                     router::v3::Router as EnvoyRouter,
                 },
                 network::http_connection_manager::v3::{
-                    http_filter::ConfigType as EnvoyConfigType, HttpFilter as EnvoyHttpFilter,
+                    HttpFilter as EnvoyHttpFilter, http_filter::ConfigType as EnvoyConfigType,
                 },
             },
         },

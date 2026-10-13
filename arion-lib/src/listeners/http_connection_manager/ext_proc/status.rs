@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{listeners::http_connection_manager::ext_proc::kind::MessageKind, ArionResponseBody};
+use crate::{ArionResponseBody, listeners::http_connection_manager::ext_proc::kind::MessageKind};
 
 use arion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HeaderMutation;
 

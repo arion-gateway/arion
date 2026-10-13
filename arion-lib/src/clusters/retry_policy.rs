@@ -35,7 +35,7 @@ pub enum RetryCondition<'a, B> {
 impl<'a, B: Body> RetryCondition<'a, B> {
     pub fn from_upstream_result(result: &'a crate::Result<Response<B>>) -> Option<Self> {
         match result {
-            Ok(ref resp) => {
+            Ok(resp) => {
                 // exclude a priori the evaluation of the retry policy for 1xx, and 2xx.
                 if resp.status().is_informational() || resp.status().is_success() {
                     return None;
@@ -50,11 +50,7 @@ impl<'a, B: Body> RetryCondition<'a, B> {
     }
 
     pub fn inner_response(&self) -> Option<&Response<B>> {
-        if let RetryCondition::Response(resp) = self {
-            Some(resp)
-        } else {
-            None
-        }
+        if let RetryCondition::Response(resp) = self { Some(resp) } else { None }
     }
 
     #[allow(dead_code)]
@@ -101,12 +97,12 @@ impl<'a, B: Body> RetryCondition<'a, B> {
                     }
                 },
                 RetryOn::EnvoyRateLimited => {
-                    if let Some(resp) = response {
-                        if resp.headers().iter().any(|(name, _)| {
+                    if let Some(resp) = response
+                        && resp.headers().iter().any(|(name, _)| {
                             name.as_str() == X_ENVOY_RATELIMITED || name.as_str() == X_ARION_RATELIMITED
-                        }) {
-                            return true;
-                        }
+                        })
+                    {
+                        return true;
                     }
                 },
                 RetryOn::Retriable4xx => {

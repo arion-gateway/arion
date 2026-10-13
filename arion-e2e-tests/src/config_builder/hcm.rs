@@ -21,21 +21,21 @@ use arion_data_plane_api::envoy_data_plane_api::{
     arion::extensions::filters::http::user_rate_limit::v3::UserRateLimiter as ArionUserRateLimiter,
     envoy::{
         config::{
-            accesslog::v3::{access_log::ConfigType as AccessLogConfigType, AccessLog as EnvoyAccessLog},
+            accesslog::v3::{AccessLog as EnvoyAccessLog, access_log::ConfigType as AccessLogConfigType},
             common::mutation_rules::v3::{
-                header_mutation::{Action as MutationAction, RemoveOnMatch},
                 HeaderMutation as EnvoyHeaderMutation,
+                header_mutation::{Action as MutationAction, RemoveOnMatch},
             },
             core::v3::{
-                config_source::ConfigSourceSpecifier, substitution_format_string::Format as SubstitutionFormat,
                 AggregatedConfigSource, ConfigSource, HeaderValue as EnvoyHeaderValue,
                 HeaderValueOption as EnvoyHeaderValueOption, SubstitutionFormatString, TypedExtensionConfig,
+                config_source::ConfigSourceSpecifier, substitution_format_string::Format as SubstitutionFormat,
             },
             route::v3::RouteConfiguration,
         },
         extensions::{
             access_loggers::file::v3::{
-                file_access_log::AccessLogFormat as FileAccessLogFormat, FileAccessLog as EnvoyFileAccessLog,
+                FileAccessLog as EnvoyFileAccessLog, file_access_log::AccessLogFormat as FileAccessLogFormat,
             },
             filters::{
                 http::{
@@ -45,14 +45,14 @@ use arion_data_plane_api::envoy_data_plane_api::{
                     {rbac::v3::Rbac as HttpRbac, router::v3::Router},
                 },
                 network::http_connection_manager::v3::{
+                    HttpConnectionManager as EnvoyHcm, HttpFilter, Rds,
                     http_connection_manager::{CodecType as ProtoCodecType, RouteSpecifier, Tracing as EnvoyTracing},
                     http_filter::ConfigType as HttpFilterConfigType,
-                    HttpConnectionManager as EnvoyHcm, HttpFilter, Rds,
                 },
             },
             http::early_header_mutation::header_mutation::v3::HeaderMutation as EnvoyEarlyHeaderMutationConfig,
         },
-        r#type::matcher::v3::{string_matcher::MatchPattern, StringMatcher},
+        r#type::matcher::v3::{StringMatcher, string_matcher::MatchPattern},
     },
     google::protobuf::{Any, BoolValue},
     prost::Message,
@@ -421,8 +421,8 @@ impl HcmBuilder {
     ) -> Self {
         use arion_data_plane_api::envoy_data_plane_api::envoy::config::route::v3::RouteMatch;
         use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::{
-            jwt_provider, jwt_requirement, requirement_rule, JwtAuthentication, JwtClaimToHeader, JwtHeader,
-            JwtProvider, JwtRequirement, RequirementRule,
+            JwtAuthentication, JwtClaimToHeader, JwtHeader, JwtProvider, JwtRequirement, RequirementRule, jwt_provider,
+            jwt_requirement, requirement_rule,
         };
 
         let jwks_string = jwks_inline.into();

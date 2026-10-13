@@ -29,32 +29,31 @@ use arion_configuration::config::network_filters::http_connection_manager::http_
     HeaderProcessingMode, MetadataNamespaces, MetadataOptions, RouteCacheAction, TrailerProcessingMode,
 };
 use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::ext_proc::v3::{
-    processing_mode, ProcessingMode as EnvoyProcessingMode,
+    ProcessingMode as EnvoyProcessingMode, processing_mode,
 };
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::core::v3::{
-            header_value_option::HeaderAppendAction, HeaderValue as EnvoyHeaderValue, HeaderValueOption, Metadata,
+            HeaderValue as EnvoyHeaderValue, HeaderValueOption, Metadata, header_value_option::HeaderAppendAction,
         },
-        r#type::v3::HttpStatus as EnvoyHttpStatus,
         service::ext_proc::v3::{
+            BodyMutation, BodyResponse, CommonResponse, HeaderMutation, HeadersResponse, StreamedBodyResponse,
+            TrailersResponse,
             body_mutation::Mutation,
             common_response::ResponseStatus,
             external_processor_server::{ExternalProcessor as ExternalProcessorService, ExternalProcessorServer},
             processing_request::Request as ProcessingRequestType,
             processing_response::Response as ProcessingResponseType,
-            BodyMutation, BodyResponse, CommonResponse, HeaderMutation, HeadersResponse, StreamedBodyResponse,
-            TrailersResponse,
         },
+        r#type::v3::HttpStatus as EnvoyHttpStatus,
     },
-    google::protobuf::{value::Kind, Struct, Value},
+    google::protobuf::{Struct, Value, value::Kind},
     tonic::{
-        async_trait,
+        Request as TonicRequest, Response as TonicResponse, async_trait,
         transport::{Error as TonicError, Server},
-        Request as TonicRequest, Response as TonicResponse,
     },
 };
-use http::{uri::Authority, Method, Version};
+use http::{Method, Version, uri::Authority};
 use http_body_util::{Empty, StreamBody};
 use pingora::prelude::fast_timeout::fast_timeout;
 use std::{
@@ -259,12 +258,11 @@ impl ExternalProcessorService for MockExternalProcessor {
                                 break;
                             }
 
-                            if let Some(expected_end_of_stream) = processing_response.expected_end_of_stream() {
-                                if end_of_stream != Some(expected_end_of_stream) {
+                            if let Some(expected_end_of_stream) = processing_response.expected_end_of_stream()
+                                && end_of_stream != Some(expected_end_of_stream) {
                                     let _ = tx.send(Err(Status::internal(format!("MockExternalProcessor: Received a processing request with end_of_stream={end_of_stream:?} but expected end_of_stream={expected_end_of_stream:?}. Request: {processing_request:#?}, Response: {processing_response:#?}")))).await.ok();
                                     break;
                                 }
-                            }
 
                             if processing_response.mode_override.is_some() {
                                 last_end_of_stream = None;
@@ -575,10 +573,10 @@ fn create_headers_response<M: MessageKind>(
     let header_mutation = transform(headers).and_then(|hdrs| create_header_mutation(hdrs));
     let body_mutation = body_data.map(|body| create_body_mutation(body, end_of_stream));
     let mut trailers_new = None;
-    if status == ResponseStatus::ContinueAndReplace as i32 {
-        if let Some(trailers) = transform(trailers) {
-            trailers_new = Some(convert_trailers_to_envoy_header_map(trailers));
-        }
+    if status == ResponseStatus::ContinueAndReplace as i32
+        && let Some(trailers) = transform(trailers)
+    {
+        trailers_new = Some(convert_trailers_to_envoy_header_map(trailers));
     }
 
     let header_response = HeadersResponse {
@@ -660,10 +658,10 @@ fn create_body_response<M: MessageKind>(
     let header_mutation = transform(headers).and_then(|hdrs| create_header_mutation(hdrs));
     let body_mutation = body_data.map(|body| create_body_mutation(body, end_of_stream));
     let mut trailers_new = None;
-    if status == ResponseStatus::ContinueAndReplace as i32 {
-        if let Some(trailers) = transform(trailers) {
-            trailers_new = Some(convert_trailers_to_envoy_header_map(trailers));
-        }
+    if status == ResponseStatus::ContinueAndReplace as i32
+        && let Some(trailers) = transform(trailers)
+    {
+        trailers_new = Some(convert_trailers_to_envoy_header_map(trailers));
     }
 
     let body_response = BodyResponse {
@@ -3500,11 +3498,7 @@ where
     }
 
     // Final check: ensure all expected data was processed
-    if data_index == expected_data.len() {
-        Ok(())
-    } else {
-        Err("Body was not consumed completely.".to_owned())
-    }
+    if data_index == expected_data.len() { Ok(()) } else { Err("Body was not consumed completely.".to_owned()) }
 }
 
 #[tokio::test]

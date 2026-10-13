@@ -16,7 +16,7 @@
 // limitations under the License.
 
 use arion_data_plane_api::envoy_data_plane_api::envoy::config::{
-    core::v3::{header_value_option::HeaderAppendAction, HeaderValue, HeaderValueOption},
+    core::v3::{HeaderValue, HeaderValueOption, header_value_option::HeaderAppendAction},
     route::v3::{RetryPolicy, Route, VirtualHost as EnvoyVirtualHost},
 };
 

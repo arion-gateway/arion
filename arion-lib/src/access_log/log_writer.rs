@@ -22,7 +22,7 @@ use arion_configuration::config::access_log::AccessLogSink;
 use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
 use tracing_rolling_file::{RollingConditionBase, RollingFileAppender, RollingFrequency};
 
-use super::{deferred_init, LoggerError};
+use super::{LoggerError, deferred_init};
 use deferred_init::DeferredInit;
 
 pub(crate) struct LogWriter {

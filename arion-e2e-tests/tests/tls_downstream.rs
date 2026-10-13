@@ -15,10 +15,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use arion_e2e_tests::config_builder::{presets, BootstrapBuilder, ClusterBuilder, DownstreamTlsBuilder, TlsVersion};
+use arion_e2e_tests::config_builder::{BootstrapBuilder, ClusterBuilder, DownstreamTlsBuilder, TlsVersion, presets};
 use arion_e2e_tests::{
-    cleanup_config_file, ArionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestCerts,
-    TlsTestClientBuilder,
+    ArionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestCerts, TlsTestClientBuilder,
+    cleanup_config_file,
 };
 use http::StatusCode;
 

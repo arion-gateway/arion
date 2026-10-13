@@ -24,14 +24,14 @@ use std::time::Duration;
 
 use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::Tool as ArionMcpTool;
 use arion_e2e_tests::config_builder::{
-    inline_string_data_source, ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder,
-    McpRestBackendBuilder, McpSemanticSearchBuilder, McpToolBuilder,
+    ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder, McpRestBackendBuilder,
+    McpSemanticSearchBuilder, McpToolBuilder, inline_string_data_source,
 };
 use arion_e2e_tests::{ArionInstance, CallToolResult, McpTestClient, PreConfiguredResponse, SpawnOptions, TestBackend};
 use bytes::Bytes;
 use clap::Parser;
 use http::StatusCode;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const LISTENER_NAME: &str = "mcp_semantic_search_demo";
 const SAMPLE_QUERY: &str = "I need the weather forecast and temperature";
@@ -112,11 +112,7 @@ fn validate_args(args: &Args) -> Result<(), io::Error> {
 
 fn spawn_options(args: &Args) -> SpawnOptions {
     let options = SpawnOptions::default().with_ready_timeout(Duration::from_secs(300));
-    if args.verbose_arion {
-        options.with_verbose()
-    } else {
-        options
-    }
+    if args.verbose_arion { options.with_verbose() } else { options }
 }
 
 fn build_config(args: &Args, backends: &DemoBackends) -> arion_e2e_tests::Result<PathBuf> {
@@ -312,9 +308,5 @@ fn semantic_result_tool_names(result: &CallToolResult) -> Vec<String> {
 
 fn format_names<'a>(names: impl IntoIterator<Item = &'a str>) -> String {
     let names: Vec<&str> = names.into_iter().collect();
-    if names.is_empty() {
-        "(none)".to_owned()
-    } else {
-        names.join(", ")
-    }
+    if names.is_empty() { "(none)".to_owned() } else { names.join(", ") }
 }

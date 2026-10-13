@@ -27,12 +27,12 @@ mod pool;
 
 use arion_configuration::config::access_log::{AccessLogSink, AccessLogTarget};
 use arion_format::FormattedMessage;
-use base64::{prelude::BASE64_STANDARD, Engine};
+use arion_interner::InternedStr;
+use base64::{Engine, prelude::BASE64_STANDARD};
 use flume::{SendError, TrySendError};
 use http::HeaderName;
 use logger::AccessLogger;
 use pool::LoggerPool;
-use smol_str::SmolStr;
 use std::sync::OnceLock;
 use tracing_rolling_file::RollingFrequency;
 
@@ -167,8 +167,8 @@ macro_rules! with_access_log {
 /// - `Admin`: the admin interface.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Target {
-    Listener(SmolStr),
-    ListenerFilterChain(SmolStr, u64),
+    Listener(InternedStr),
+    ListenerFilterChain(InternedStr, u64),
     Admin,
 }
 
@@ -413,12 +413,12 @@ mod tests {
     use std::time::Duration;
 
     use arion_format::{
+        DEFAULT_ACCESS_LOG_FORMAT, LogFormatter,
         context::{
             DownstreamContext, DownstreamResponseContext, FinishContext, InitContext, SocketAddrContext,
             UpstreamContext,
         },
         types::ResponseFlags,
-        LogFormatter, DEFAULT_ACCESS_LOG_FORMAT,
     };
     use tokio::time::timeout;
 

@@ -18,10 +18,10 @@
 // `request_headers_to_add` and `response_headers_to_add`.
 //
 
-use http::{header::InvalidHeaderValue, HeaderValue};
+use http::{HeaderValue, header::InvalidHeaderValue};
 use serde::{Deserialize, Serialize};
 
-use crate::{context::Context, FormatError, LogFormatter};
+use crate::{FormatError, LogFormatter, context::Context};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct HeaderFormatter {

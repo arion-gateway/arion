@@ -20,8 +20,8 @@
 
 use anyhow::Result;
 use arion_configuration::{config::Config, options::Options};
-use arion_lib::{metrics, RUNTIME_CONFIG};
-use arion_stats::{set_proxy_state, ProxyState};
+use arion_lib::{RUNTIME_CONFIG, metrics};
+use arion_stats::{ProxyState, set_proxy_state};
 
 #[macro_use]
 mod admin;
@@ -95,7 +95,7 @@ pub fn run() -> bool {
 mod proxy_tracing {
     use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
     use tracing_subscriber::{
-        fmt, fmt::format::DefaultFields, layer::Layered, reload, reload::Handle, EnvFilter, Registry,
+        EnvFilter, Registry, fmt, fmt::format::DefaultFields, layer::Layered, reload, reload::Handle,
     };
 
     use anyhow::Result;

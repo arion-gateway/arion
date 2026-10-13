@@ -19,7 +19,7 @@
 //
 
 use anyhow::{Context, Error};
-use arion_configuration::config::{deserialize_yaml, Bootstrap, Config};
+use arion_configuration::config::{Bootstrap, Config, deserialize_yaml};
 use std::{fs::File, path::PathBuf};
 
 #[test]

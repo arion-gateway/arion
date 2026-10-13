@@ -164,17 +164,17 @@ async fn test_http_health_check_recovery() {
     let mut saw_b2 = false;
     fast_timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(response) = client.get("/test").await {
-                if response.status == StatusCode::OK {
-                    let body = response.body_str().unwrap_or("");
-                    if body == "b1" {
-                        saw_b1 = true;
-                    } else if body == "b2" {
-                        saw_b2 = true;
-                    }
-                    if saw_b1 && saw_b2 {
-                        break;
-                    }
+            if let Ok(response) = client.get("/test").await
+                && response.status == StatusCode::OK
+            {
+                let body = response.body_str().unwrap_or("");
+                if body == "b1" {
+                    saw_b1 = true;
+                } else if body == "b2" {
+                    saw_b2 = true;
+                }
+                if saw_b1 && saw_b2 {
+                    break;
                 }
             }
             tokio::time::sleep(Duration::from_millis(50)).await;

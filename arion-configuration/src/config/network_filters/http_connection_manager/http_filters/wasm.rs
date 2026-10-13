@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use arion_interner::InternedStr;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
@@ -19,7 +20,7 @@ use crate::config::core::DataSource;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WasmConfig {
-    pub name: SmolStr,
+    pub name: InternedStr,
     pub root_id: SmolStr,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vm_id: Option<SmolStr>,
@@ -35,11 +36,11 @@ pub struct WasmConfig {
 mod envoy_conversions {
     use super::*;
     use crate::config::common::envoy_conversions::IsUsed;
-    use crate::config::{required, unsupported_field, GenericError};
+    use crate::config::{GenericError, required, unsupported_field};
     use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::async_data_source::Specifier as EnvoyAsyncSpecifier;
     use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::wasm::v3::Wasm as EnvoyWasm;
-    use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::wasm::v3::plugin_config::Vm as EnvoyVm;
     use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::wasm::v3::PluginConfig as EnvoyPluginConfig;
+    use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::wasm::v3::plugin_config::Vm as EnvoyVm;
 
     impl TryFrom<EnvoyWasm> for WasmConfig {
         type Error = GenericError;

@@ -19,7 +19,7 @@ use triomphe::Arc;
 pub use crate::config::core::HttpUri;
 use crate::config::{
     core::{DataSource, StringMatcher},
-    network_filters::http_connection_manager::{route::RouteMatch, RetryPolicy},
+    network_filters::http_connection_manager::{RetryPolicy, route::RouteMatch},
 };
 use http::HeaderName;
 use serde::{Deserialize, Serialize};
@@ -113,12 +113,9 @@ mod envoy_conversions {
     use crate::config::common::envoy_conversions::IsUsed;
     use crate::config::core::RustType;
     use crate::config::network_filters::http_connection_manager::{RetryBackoff, RetryOn};
-    use crate::config::{required, unsupported_field, GenericError, WithNodeOnResult};
+    use crate::config::{GenericError, WithNodeOnResult, required, unsupported_field};
     use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::BackoffStrategy as EnvoyCoreBackoffStrategy;
     use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::RetryPolicy as EnvoyCoreRetryPolicy;
-    use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::jwt_provider::JwksSourceSpecifier as EnvoyJwksSourceSpecifier;
-    use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::jwt_requirement::RequiresType as EnvoyRequiresType;
-    use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::requirement_rule::RequirementType as EnvoyRequirementType;
     use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::JwtAuthentication as EnvoyJwtAuthentication;
     use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::JwtClaimToHeader as EnvoyJwtClaimToHeader;
     use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::JwtHeader as EnvoyJwtHeader;
@@ -126,6 +123,9 @@ mod envoy_conversions {
     use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::JwtRequirement as EnvoyJwtRequirement;
     use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::RemoteJwks as EnvoyRemoteJwks;
     use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::RequirementRule as EnvoyRequirementRule;
+    use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::jwt_provider::JwksSourceSpecifier as EnvoyJwksSourceSpecifier;
+    use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::jwt_requirement::RequiresType as EnvoyRequiresType;
+    use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::requirement_rule::RequirementType as EnvoyRequirementType;
 
     // NOTE: envoy makes use of two different retry policies: one for route and one for core.
     // Core is much simpler than route, as it only supports only a subset of fields.

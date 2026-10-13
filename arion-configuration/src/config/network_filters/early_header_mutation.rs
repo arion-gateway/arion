@@ -43,8 +43,8 @@ mod envoy_conversions {
         envoy::{
             config::{
                 common::mutation_rules::v3::{
-                    header_mutation::{Action as EnvoyMutationAction, RemoveOnMatch as EnvoyRemoveOnMatch},
                     HeaderMutation as EnvoyEarlyHeaderMutation,
+                    header_mutation::{Action as EnvoyMutationAction, RemoveOnMatch as EnvoyRemoveOnMatch},
                 },
                 core::v3::TypedExtensionConfig as EnvoyTypedExtensionConfig,
             },

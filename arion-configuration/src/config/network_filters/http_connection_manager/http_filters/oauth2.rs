@@ -14,13 +14,13 @@
 
 use std::time::Duration;
 
-use arion_interner::InternedStr;
+use arion_interner::{InternedStr, StringInterner};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::config::{
     core::HttpUri,
-    network_filters::http_connection_manager::{header_matcher::HeaderMatcher, route::PathMatcher, RetryPolicy},
+    network_filters::http_connection_manager::{RetryPolicy, header_matcher::HeaderMatcher, route::PathMatcher},
 };
 
 #[allow(clippy::struct_excessive_bools)]
@@ -91,7 +91,7 @@ const fn default_token_lifetime() -> Duration {
 }
 
 fn default_stat_prefix() -> InternedStr {
-    "oauth".into()
+    "oauth".to_interned_str()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -221,11 +221,11 @@ mod envoy_conversions {
 
     use crate::config::{common::*, core::RustType};
     use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::oauth2::v3::{
+        CookieConfig as EnvoyCookieConfig, CookieConfigs as EnvoyCookieConfigs, OAuth2 as EnvoyOAuth2,
+        OAuth2Config as EnvoyOAuth2Config, OAuth2Credentials as EnvoyOAuth2Credentials,
         cookie_config::SameSite as EnvoySameSite,
         o_auth2_config::AuthType as EnvoyAuthType,
         o_auth2_credentials::{CookieNames as EnvoyCookieNames, TokenFormation as EnvoyTokenFormation},
-        CookieConfig as EnvoyCookieConfig, CookieConfigs as EnvoyCookieConfigs, OAuth2 as EnvoyOAuth2,
-        OAuth2Config as EnvoyOAuth2Config, OAuth2Credentials as EnvoyOAuth2Credentials,
     };
 
     impl TryFrom<EnvoyOAuth2> for OAuth2Config {
@@ -473,11 +473,11 @@ mod envoy_conversions {
     mod tests {
         use super::*;
         use arion_data_plane_api::envoy_data_plane_api::envoy::{
-            config::core::v3::{http_uri::HttpUpstreamType, HttpUri as EnvoyHttpUri},
+            config::core::v3::{HttpUri as EnvoyHttpUri, http_uri::HttpUpstreamType},
             extensions::transport_sockets::tls::v3::SdsSecretConfig as EnvoySdsSecretConfig,
             r#type::matcher::v3::{
-                path_matcher::Rule as EnvoyPathMatcherRule, string_matcher::MatchPattern as EnvoyStringMatcherPattern,
                 PathMatcher as EnvoyTypePathMatcher, StringMatcher as EnvoyStringMatcher,
+                path_matcher::Rule as EnvoyPathMatcherRule, string_matcher::MatchPattern as EnvoyStringMatcherPattern,
             },
         };
         use arion_data_plane_api::envoy_data_plane_api::google::protobuf::Duration as EnvoyDuration;
@@ -560,7 +560,7 @@ mod envoy_conversions {
             assert_eq!(cfg.default_refresh_token_expires_in, Duration::from_secs(604_800));
             assert_eq!(cfg.csrf_token_expires_in, Duration::from_secs(600));
             assert_eq!(cfg.code_verifier_token_expires_in, Duration::from_secs(600));
-            assert_eq!(cfg.stat_prefix.0, "custom_oauth");
+            assert_eq!(cfg.stat_prefix.as_str(), "custom_oauth");
             assert!(cfg.forward_bearer_token);
             assert!(!cfg.preserve_authorization_header);
         }

@@ -23,7 +23,7 @@ use std::io::{self, Write};
 use std::sync::OnceLock;
 use std::{borrow::Cow, collections::HashMap};
 
-use ::http::{header::HeaderMap, StatusCode};
+use ::http::{StatusCode, header::HeaderMap};
 use axum::extract::State;
 use opentelemetry::KeyValue;
 use tracing::debug;
@@ -31,9 +31,9 @@ use tracing::debug;
 use crate::admin::AdminState;
 use arion_metrics::{
     metrics::{
-        clusters, custom, filters, http, listeners,
+        Metric, clusters, custom, filters, http, listeners,
         server::{self, update_server_metrics},
-        tcp, tls, user, Metric,
+        tcp, tls, user,
     },
     sharded::{Gauge, ShardedHistogram, ShardedU64},
 };

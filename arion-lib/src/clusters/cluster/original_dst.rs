@@ -23,6 +23,7 @@ use std::{
     time::Duration,
 };
 
+use arion_interner::InternedStr;
 use lru_time_cache::LruCache;
 use ref_cast::RefCast;
 use rustls::ClientConfig;
@@ -41,6 +42,7 @@ use webpki::types::ServerName;
 use triomphe::Arc;
 
 use crate::{
+    Result,
     clusters::{
         circuit_breaker::{CircuitBreakerCounters, ClusterCircuitBreaker},
         clusters_manager::{MetadataKey, RoutingContext, RoutingRequirement},
@@ -51,10 +53,9 @@ use crate::{
         GrpcService, HttpChannel, HttpChannelBuilder, HttpChannels, TcpChannelConnector,
         UpstreamTransportSocketConfigurator,
     },
-    Result,
 };
 use arion_configuration::config::cluster::HttpProtocolOptions;
-use http::{uri::Authority, HeaderValue};
+use http::{HeaderValue, uri::Authority};
 
 use super::{ClusterOps, ClusterType};
 
@@ -70,7 +71,7 @@ const DEFAULT_CLEANUP_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct OriginalDstClusterBuilder {
-    pub name: &'static str,
+    pub name: InternedStr,
     pub bind_device: Option<BindDevice>,
     pub transport_socket: UpstreamTransportSocketConfigurator,
     pub connect_timeout: Option<Duration>,
@@ -153,7 +154,7 @@ pub struct DynamicDest(pub SmolStr);
 
 #[derive(Clone)]
 pub struct GlobalOriginalDstCluster {
-    pub name: &'static str,
+    pub name: InternedStr,
     transport_socket: UpstreamTransportSocketConfigurator,
     bind_device: Option<BindDevice>,
     routing_requirements: RoutingRequirement,
@@ -170,7 +171,7 @@ pub struct OriginalDstCluster {
 }
 
 impl ClusterOps for OriginalDstCluster {
-    fn get_name(&self) -> &'static str {
+    fn get_name(&self) -> InternedStr {
         self.global.name
     }
 
@@ -259,7 +260,7 @@ impl OriginalDstCluster {
             Some(port_override) => {
                 let host = authority.host();
                 let upd_auth = format!("{host}:{port_override}").parse::<Authority>().map_err(|e| {
-                    tracing::error!(cluster = self.global.name, port_override, %e, "Failed to apply port override");
+                    tracing::error!(cluster = self.global.name.as_str(), port_override, %e, "Failed to apply port override");
                     crate::Error::from(e)
                 })?;
 
@@ -379,7 +380,7 @@ struct Endpoint {
 
 impl Endpoint {
     fn try_new(
-        cluster_name: &'static str,
+        cluster_name: InternedStr,
         authority: &Authority,
         http_config: &HttpChannelConfig,
         bind_device: Option<BindDevice>,
@@ -539,18 +540,18 @@ mod tests {
 
     use crate::secrets::SecretManager;
     use arion_configuration::config::cluster::{
-        http_protocol_options::Codec, Cluster as ClusterConfig, LbPolicy, OriginalDstConfig, StandardLbPolicy,
+        Cluster as ClusterConfig, LbPolicy, OriginalDstConfig, StandardLbPolicy, http_protocol_options::Codec,
     };
     use std::str::FromStr;
 
     fn create_test_cluster_config(
-        name: &str,
+        name: InternedStr,
         routing_method: OriginalDstRoutingMethod,
         port_override: Option<u16>,
         cleanup_interval: Option<Duration>,
     ) -> ClusterConfig {
         ClusterConfig {
-            name: name.into(),
+            name,
             discovery_settings: ClusterDiscoveryType::OriginalDst(OriginalDstConfig {
                 routing_method,
                 upstream_port_override: port_override,
@@ -577,7 +578,7 @@ mod tests {
 
     #[test]
     fn test_http_connection_by_authority() {
-        let config = create_test_cluster_config("test-cluster", OriginalDstRoutingMethod::Default, None, None);
+        let config = create_test_cluster_config("test-cluster".into(), OriginalDstRoutingMethod::Default, None, None);
         let mut cluster = build_original_dst_cluster(config);
 
         let authority = Authority::from_str("localhost:52000").unwrap();
@@ -587,7 +588,7 @@ mod tests {
         assert_eq!(cluster.endpoints.len(), 1);
 
         let config = create_test_cluster_config(
-            "test-cluster",
+            "test-cluster".into(),
             OriginalDstRoutingMethod::HttpHeader { http_header_name: None },
             Some(50001),
             None,
@@ -606,7 +607,8 @@ mod tests {
     #[test]
     #[allow(clippy::indexing_slicing)]
     fn test_get_tcp_connection() {
-        let config = create_test_cluster_config("test-cluster", OriginalDstRoutingMethod::Default, Some(50002), None);
+        let config =
+            create_test_cluster_config("test-cluster".into(), OriginalDstRoutingMethod::Default, Some(50002), None);
         let mut cluster = build_original_dst_cluster(config);
 
         let authority = Authority::from_str("localhost:52000").unwrap();
@@ -622,7 +624,8 @@ mod tests {
 
     #[test]
     fn test_grpc_connection() {
-        let mut config = create_test_cluster_config("test-cluster", OriginalDstRoutingMethod::Default, None, None);
+        let mut config =
+            create_test_cluster_config("test-cluster".into(), OriginalDstRoutingMethod::Default, None, None);
         config.http_protocol_options.codec = Codec::Http2;
         let mut cluster = build_original_dst_cluster(config);
 
@@ -645,7 +648,7 @@ mod tests {
     }
 
     fn create_test_cluster_config_with_circuit_breaker(
-        name: &str,
+        name: InternedStr,
         routing_method: OriginalDstRoutingMethod,
         max_connections: u32,
     ) -> ClusterConfig {
@@ -661,7 +664,7 @@ mod tests {
     #[test]
     fn http_channel_has_correct_cluster_name() {
         let config = create_test_cluster_config(
-            "my-original-dst",
+            "my-original-dst".into(),
             OriginalDstRoutingMethod::HttpHeader { http_header_name: None },
             None,
             None,
@@ -670,13 +673,13 @@ mod tests {
 
         let authority = Authority::from_str("localhost:52000").unwrap();
         let channel = cluster.get_http_connection_by_authority(&authority).unwrap();
-        assert_eq!(channel.cluster_name, "my-original-dst");
+        assert_eq!(channel.cluster_name.as_str(), "my-original-dst");
     }
 
     #[test]
     fn circuit_breaker_is_present_when_configured() {
         let config = create_test_cluster_config_with_circuit_breaker(
-            "cb-cluster",
+            "cb-cluster".into(),
             OriginalDstRoutingMethod::HttpHeader { http_header_name: None },
             5,
         );
@@ -692,7 +695,7 @@ mod tests {
         use crate::clusters::circuit_breaker::CircuitBreakerDenial;
 
         let config = create_test_cluster_config_with_circuit_breaker(
-            "shared-cb",
+            "shared-cb".into(),
             OriginalDstRoutingMethod::HttpHeader { http_header_name: None },
             1,
         );

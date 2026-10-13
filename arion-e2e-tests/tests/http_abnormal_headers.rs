@@ -19,8 +19,8 @@
 
 use arion_e2e_tests::config_builder::presets;
 use arion_e2e_tests::{
-    assert_rejected, cleanup_config_file, ArionInstance, PreConfiguredResponse, RawHttpRequestBuilder, RawHttpResponse,
-    SpawnOptions, TcpTestClient, TestBackend,
+    ArionInstance, PreConfiguredResponse, RawHttpRequestBuilder, RawHttpResponse, SpawnOptions, TcpTestClient,
+    TestBackend, assert_rejected, cleanup_config_file,
 };
 
 async fn setup() -> (ArionInstance, TestBackend, TcpTestClient, std::path::PathBuf) {

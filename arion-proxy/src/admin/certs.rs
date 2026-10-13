@@ -18,12 +18,12 @@ use arion_configuration::config::{
     listener::TlsConfig as ListenerTlsConfig,
     transport::{CommonTlsValidationContext, Secrets, UpstreamTransportSocketConfig},
 };
-use arion_lib::{clusters::clusters_manager::get_all_clusters, ConfigurationSenders};
-use axum::{extract::State, Json};
-use serde_json::{json, Value};
+use arion_lib::{ConfigurationSenders, clusters::clusters_manager::get_all_clusters};
+use axum::{Json, extract::State};
+use serde_json::{Value, json};
 use smol_str::SmolStr;
 
-use crate::admin::{query_listener_configuration, AdminState};
+use crate::admin::{AdminState, query_listener_configuration};
 
 pub async fn certs_handler(State(admin_state): State<AdminState>) -> Json<Value> {
     let mut cert_names: HashSet<SmolStr> = HashSet::default();

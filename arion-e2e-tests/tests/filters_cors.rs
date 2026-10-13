@@ -14,19 +14,19 @@
 
 use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::cors::v3::CorsPolicy;
 use arion_data_plane_api::envoy_data_plane_api::envoy::r#type::matcher::v3::{
-    string_matcher::MatchPattern, StringMatcher,
+    StringMatcher, string_matcher::MatchPattern,
 };
 use arion_data_plane_api::envoy_data_plane_api::{
+    envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter,
     envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType as HttpFilterConfigType,
-    envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter, google::protobuf::Any,
-    prost::Message,
+    google::protobuf::Any, prost::Message,
 };
 use arion_e2e_tests::config_builder::{
     BootstrapBuilder, ClusterBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, RouteBuilder,
     RouteConfigBuilder, VirtualHostBuilder,
 };
 use arion_e2e_tests::{
-    cleanup_config_file, ArionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient,
+    ArionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient, cleanup_config_file,
 };
 use http::StatusCode;
 

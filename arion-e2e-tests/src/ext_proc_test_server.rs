@@ -19,24 +19,24 @@ use std::time::Duration;
 
 use arion_data_plane_api::envoy_data_plane_api::envoy::{
     config::core::v3::{
-        header_value_option::HeaderAppendAction, HeaderValue as EnvoyHeaderValue, HeaderValueOption, Metadata,
+        HeaderValue as EnvoyHeaderValue, HeaderValueOption, Metadata, header_value_option::HeaderAppendAction,
     },
-    r#type::v3::HttpStatus as EnvoyHttpStatus,
     service::ext_proc::v3::{
+        BodyMutation, BodyResponse, CommonResponse, HeaderMutation, HeadersResponse, ImmediateResponse,
+        ProcessingRequest, ProcessingResponse,
         body_mutation::Mutation,
         common_response::ResponseStatus,
         external_processor_server::{ExternalProcessor, ExternalProcessorServer},
         processing_request::Request as ProcessingRequestType,
         processing_response::Response as ProcessingResponseType,
-        BodyMutation, BodyResponse, CommonResponse, HeaderMutation, HeadersResponse, ImmediateResponse,
-        ProcessingRequest, ProcessingResponse,
     },
+    r#type::v3::HttpStatus as EnvoyHttpStatus,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, Notify};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Server;
-use tonic::{async_trait, Request, Response, Status, Streaming};
+use tonic::{Request, Response, Status, Streaming, async_trait};
 use tracing::{error, info};
 
 use crate::Result;
@@ -163,10 +163,10 @@ impl ExternalProcessor for ExtProcServiceImpl {
                 }
 
                 let response = responses.lock().await.pop_front();
-                if let Some(resp) = response {
-                    if tx.send(Ok(resp)).await.is_err() {
-                        break;
-                    }
+                if let Some(resp) = response
+                    && tx.send(Ok(resp)).await.is_err()
+                {
+                    break;
                 }
             }
         });

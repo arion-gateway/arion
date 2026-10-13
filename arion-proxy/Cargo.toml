@@ -24,6 +24,7 @@ arion-stats.workspace          = true
 arion-metrics = { workspace = true, optional = true }
 arion-tracing.workspace        = true
 arion-xds.workspace            = true
+arion-interner.workspace       = true
 parking_lot.workspace          = true
 pingora-timeout.workspace      = true
 tokio.workspace                = true

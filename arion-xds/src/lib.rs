@@ -41,7 +41,7 @@ use xds::client::{DeltaClientBackgroundWorker, DeltaDiscoverySubscriptionManager
 
 pub mod grpc_deps {
     pub use arion_data_plane_api::envoy_data_plane_api::{
-        tonic::{body::Body as GrpcBody, codegen::StdError as Error, Response, Status},
+        tonic::{Response, Status, body::Body as GrpcBody, codegen::StdError as Error},
         tonic_health,
     };
 }

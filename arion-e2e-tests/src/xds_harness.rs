@@ -28,12 +28,12 @@ use tracing::info;
 
 use tokio::sync::broadcast;
 
+use crate::ArionInstance;
+use crate::SpawnOptions;
 use crate::config_builder::xds::{ConfigPusher, PushResult, ServerEventReceiver, XdsError};
 use crate::config_builder::{BootstrapBuilder, Cluster, Endpoint, Listener, RouteConfig, Secret};
 use crate::port_allocator::PortBlock;
-use crate::xds_server::{start_tracked_aggregate_server, ServerAction, ServerEvent, TrackedXdsServer};
-use crate::ArionInstance;
-use crate::SpawnOptions;
+use crate::xds_server::{ServerAction, ServerEvent, TrackedXdsServer, start_tracked_aggregate_server};
 
 #[derive(Debug, Error)]
 pub enum HarnessError {

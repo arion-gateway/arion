@@ -21,9 +21,9 @@
 use super::access_log::{AccessLog, AccessLogSink};
 
 use super::{
+    GenericError,
     network_filters::{HttpConnectionManager, NetworkRbac, TcpProxy},
     transport::{BindDevice, CommonTlsContext},
-    GenericError,
 };
 use crate::config::network_filters::tracing::{TracingConfig, TracingKey};
 use crate::config::network_filters::{ConnectionLimit as ConnectionLimitConfig, NetworkGlobalRateLimit};
@@ -39,7 +39,7 @@ use std::{
     str::FromStr,
 };
 
-use arion_interner::StringInterner;
+use arion_interner::InternedStr;
 
 const DEFAULT_TCP_BACKLOG_SIZE: UInt32Value = UInt32Value { value: 128 };
 
@@ -62,7 +62,7 @@ pub enum ListenerType {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Listener {
-    pub name: SmolStr,
+    pub name: InternedStr,
     #[serde(flatten)]
     pub listener_type: ListenerType,
     #[serde(with = "serde_filterchains")]
@@ -85,7 +85,7 @@ impl Listener {
     //
     pub fn all_access_log_configs(&self) -> Vec<(AccessLogTarget, Vec<AccessLogSink>)> {
         let listener_logs: Vec<(AccessLogTarget, Vec<AccessLogSink>)> = vec![(
-            AccessLogTarget::Listener(self.name.clone()),
+            AccessLogTarget::Listener(self.name),
             self.access_log.iter().map(|al| al.get_sink().clone()).collect::<Vec<_>>(),
         )];
 
@@ -94,11 +94,11 @@ impl Listener {
             .values()
             .map(|filter_chain| match &filter_chain.terminal_filter {
                 MainFilter::Http(http_connection_manager) => (
-                    AccessLogTarget::ListenerFilterChain(self.name.clone(), filter_chain.id),
+                    AccessLogTarget::ListenerFilterChain(self.name, filter_chain.id),
                     http_connection_manager.access_log.iter().map(AccessLog::get_sink).cloned().collect::<Vec<_>>(),
                 ),
                 MainFilter::Tcp(tcp_proxy) => (
-                    AccessLogTarget::ListenerFilterChain(self.name.clone(), filter_chain.id),
+                    AccessLogTarget::ListenerFilterChain(self.name, filter_chain.id),
                     tcp_proxy.access_log.iter().map(AccessLog::get_sink).cloned().collect::<Vec<_>>(),
                 ),
             })
@@ -115,11 +115,10 @@ impl Listener {
                 filter_chain_match.hash(&mut filter_chain_match_hash);
 
                 match &filter_chain.terminal_filter {
-                    MainFilter::Http(http_connection_manager) => {
-                        http_connection_manager.tracing.as_ref().map(|tracing| {
-                            (TracingKey(self.name.to_static_str(), filter_chain_match_hash.finish()), tracing.clone())
-                        })
-                    },
+                    MainFilter::Http(http_connection_manager) => http_connection_manager
+                        .tracing
+                        .as_ref()
+                        .map(|tracing| (TracingKey(self.name, filter_chain_match_hash.finish()), tracing.clone())),
                     MainFilter::Tcp(_) => None,
                 }
             })
@@ -398,9 +397,9 @@ mod envoy_conversions {
             config::{
                 core::v3::TransportSocket as EnvoyTransportSocket,
                 listener::v3::{
-                    filter::ConfigType as EnvoyConfigType, listener::ListenerSpecifier as EnvoyListenerSpecifier,
                     Filter as EnvoyFilter, FilterChain as EnvoyFilterChain, FilterChainMatch as EnvoyFilterChainMatch,
-                    Listener as EnvoyListener,
+                    Listener as EnvoyListener, filter::ConfigType as EnvoyConfigType,
+                    listener::ListenerSpecifier as EnvoyListenerSpecifier,
                 },
             },
             extensions::{
@@ -549,12 +548,12 @@ mod envoy_conversions {
                 }
                 if !with_tls_inspector {
                     for chain in filter_chains.values() {
-                        if let Some(rl) = &chain.network_global_rate_limit {
-                            if rl.domain.is_none() {
-                                return Err(GenericError::from_msg(
-                                    "network global rate limit: domain is required for listeners without a TLS inspector",
-                                ));
-                            }
+                        if let Some(rl) = &chain.network_global_rate_limit
+                            && rl.domain.is_none()
+                        {
+                            return Err(GenericError::from_msg(
+                                "network global rate limit: domain is required for listeners without a TLS inspector",
+                            ));
                         }
                     }
                 }

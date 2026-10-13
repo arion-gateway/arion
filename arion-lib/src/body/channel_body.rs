@@ -99,10 +99,10 @@ impl ChannelBody {
             let r = Pin::new(&mut self.stream).next().await;
             self.is_end_stream = r.is_none();
 
-            if let Some(Ok(frame)) = &r {
-                if let Some(data) = frame.data_ref() {
-                    self.prefetched_data_len += data.len() as u64;
-                }
+            if let Some(Ok(frame)) = &r
+                && let Some(data) = frame.data_ref()
+            {
+                self.prefetched_data_len += data.len() as u64;
             }
 
             self.prefetch.push_back(r);
@@ -125,10 +125,10 @@ impl Body for ChannelBody {
             if let Poll::Ready(something) = Pin::new(&mut self.stream).poll_next(cx) {
                 self.is_end_stream = something.is_none();
 
-                if let Some(Ok(frame)) = &something {
-                    if let Some(data) = frame.data_ref() {
-                        self.prefetched_data_len += data.len() as u64;
-                    }
+                if let Some(Ok(frame)) = &something
+                    && let Some(data) = frame.data_ref()
+                {
+                    self.prefetched_data_len += data.len() as u64;
                 }
 
                 self.prefetch.push_back(something);
@@ -141,10 +141,10 @@ impl Body for ChannelBody {
         }
 
         if let Some(frame) = self.prefetch.pop_front() {
-            if let Some(Ok(f)) = &frame {
-                if let Some(data) = f.data_ref() {
-                    self.prefetched_data_len -= data.len() as u64;
-                }
+            if let Some(Ok(f)) = &frame
+                && let Some(data) = f.data_ref()
+            {
+                self.prefetched_data_len -= data.len() as u64;
             }
             return Poll::Ready(frame);
         }
@@ -361,10 +361,10 @@ impl FrameBridge {
         };
 
         // Inject the original frame
-        if let Some(injector) = &mut self.injector {
-            if injector.send(frame).await.is_ok() {
-                self.injected_frames += 1;
-            }
+        if let Some(injector) = &mut self.injector
+            && injector.send(frame).await.is_ok()
+        {
+            self.injected_frames += 1;
         }
 
         Some(cloned)

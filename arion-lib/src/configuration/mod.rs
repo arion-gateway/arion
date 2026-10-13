@@ -18,11 +18,11 @@
 //
 //
 
-use arion_configuration::config::{bootstrap::Bootstrap, Listener as ListenerConfig};
+use arion_configuration::config::{Listener as ListenerConfig, bootstrap::Bootstrap};
 
 use crate::{
-    clusters::cluster::PartialClusterType, listeners::listener::ListenerFactory, ConversionContext, Error, Result,
-    SecretManager,
+    ConversionContext, Error, Result, SecretManager, clusters::cluster::PartialClusterType,
+    listeners::listener::ListenerFactory,
 };
 
 pub fn get_listeners_and_clusters(

@@ -17,7 +17,7 @@
 
 use arion_e2e_tests::config_builder::presets;
 use arion_e2e_tests::{
-    cleanup_config_file, ArionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient,
+    ArionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient, cleanup_config_file,
 };
 use http::StatusCode;
 

@@ -70,7 +70,7 @@ mod envoy_conversions {
     use arion_data_plane_api::envoy_data_plane_api::{
         envoy::{
             config::listener::v3::{
-                listener_filter::ConfigType as EnvoyListenerFilterConfigType, ListenerFilter as EnvoyListenerFilter,
+                ListenerFilter as EnvoyListenerFilter, listener_filter::ConfigType as EnvoyListenerFilterConfigType,
             },
             extensions::filters::listener::{
                 local_ratelimit::v3::LocalRateLimit as EnvoyListenerLocalRateLimit,

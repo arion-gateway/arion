@@ -22,21 +22,21 @@ use arion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::{
             cluster::v3::{
+                CircuitBreakers as EnvoyCircuitBreakers, Cluster as EnvoyCluster, LoadBalancingPolicy,
                 circuit_breakers::Thresholds as EnvoyThresholds,
                 cluster::{
                     ClusterDiscoveryType, DiscoveryType, LbConfig, LbPolicy as EnvoyLbPolicy, OriginalDstLbConfig,
                 },
                 load_balancing_policy::Policy,
-                CircuitBreakers as EnvoyCircuitBreakers, Cluster as EnvoyCluster, LoadBalancingPolicy,
             },
             core::v3::{
-                transport_socket::ConfigType as TransportSocketConfigType, HealthCheck as ProtoHealthCheck,
-                Http1ProtocolOptions, Http2ProtocolOptions, TransportSocket, TypedExtensionConfig,
+                HealthCheck as ProtoHealthCheck, Http1ProtocolOptions, Http2ProtocolOptions, TransportSocket,
+                TypedExtensionConfig, transport_socket::ConfigType as TransportSocketConfigType,
             },
             endpoint::v3::{ClusterLoadAssignment, LbEndpoint, LocalityLbEndpoints},
         },
         extensions::load_balancing_policies::{
-            override_host::v3::{override_host::OverrideHostSource, OverrideHost},
+            override_host::v3::{OverrideHost, override_host::OverrideHostSource},
             random::v3::Random as EnvoyRandom,
             round_robin::v3::RoundRobin as EnvoyRoundRobin,
         },
@@ -441,10 +441,10 @@ impl ClusterBuilder {
     fn apply_http_protocol_options(&mut self) {
         use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::HttpProtocolOptions as CoreHttpProtocolOptions;
         use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::upstreams::http::v3::{
-            http_protocol_options::{
-                explicit_http_config::ProtocolConfig, ExplicitHttpConfig, UpstreamProtocolOptions,
-            },
             HttpProtocolOptions,
+            http_protocol_options::{
+                ExplicitHttpConfig, UpstreamProtocolOptions, explicit_http_config::ProtocolConfig,
+            },
         };
 
         let protocol_config = match self.http_version {
@@ -524,8 +524,8 @@ impl UpstreamProxyProtocolBuilder {
 {
         use arion_data_plane_api::envoy_data_plane_api::envoy::{
             config::core::v3::{
-                proxy_protocol_pass_through_tl_vs::PassTlVsMatchType as EnvoyPassTlvsMatchType,
                 ProxyProtocolConfig as EnvoyProxyProtocolConfig, ProxyProtocolPassThroughTlVs as EnvoyPassThroughTlvs,
+                proxy_protocol_pass_through_tl_vs::PassTlVsMatchType as EnvoyPassTlvsMatchType,
             },
             extensions::transport_sockets::proxy_protocol::v3::ProxyProtocolUpstreamTransport,
         };

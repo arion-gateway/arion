@@ -20,25 +20,25 @@ use std::time::Duration;
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::{
-            core::v3::{header_value_option::HeaderAppendAction, HeaderValue, HeaderValueOption},
+            core::v3::{HeaderValue, HeaderValueOption, header_value_option::HeaderAppendAction},
             route::v3::{
+                DirectResponseAction, HeaderMatcher, QueryParameterMatcher, RedirectAction, RetryPolicy,
+                Route as EnvoyRoute, RouteAction, RouteMatch, WeightedCluster,
                 header_matcher::HeaderMatchSpecifier,
                 query_parameter_matcher::QueryParameterMatchSpecifier,
                 redirect_action::{PathRewriteSpecifier, RedirectResponseCode, SchemeRewriteSpecifier},
                 route::Action,
                 route_action::{
-                    hash_policy::{Header as HashPolicyHeader, PolicySpecifier},
                     ClusterSpecifier, HashPolicy,
+                    hash_policy::{Header as HashPolicyHeader, PolicySpecifier},
                 },
                 route_match::PathSpecifier,
                 weighted_cluster::ClusterWeight,
-                DirectResponseAction, HeaderMatcher, QueryParameterMatcher, RedirectAction, RetryPolicy,
-                Route as EnvoyRoute, RouteAction, RouteMatch, WeightedCluster,
             },
         },
         extensions::filters::http::local_ratelimit::v3::LocalRateLimit as EnvoyLocalRateLimit,
         r#type::{
-            matcher::v3::{string_matcher::MatchPattern, RegexMatcher, StringMatcher},
+            matcher::v3::{RegexMatcher, StringMatcher, string_matcher::MatchPattern},
             v3::Int64Range,
         },
     },
@@ -364,7 +364,7 @@ impl RouteBuilder {
 
     #[must_use]
     pub fn direct_response(mut self, status: u32, body: impl Into<String>) -> Self {
-        use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::{data_source::Specifier, DataSource};
+        use arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::{DataSource, data_source::Specifier};
         self.proto.action = Some(Action::DirectResponse(DirectResponseAction {
             status,
             body: Some(DataSource { specifier: Some(Specifier::InlineString(body.into())), watched_directory: None }),

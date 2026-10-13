@@ -19,7 +19,7 @@
 //
 
 use arion_http_header::*;
-use http::{header::InvalidHeaderValue, HeaderMap, HeaderValue};
+use http::{HeaderMap, HeaderValue, header::InvalidHeaderValue};
 use rand::Rng;
 use std::{
     fmt::{self, Display, Write},

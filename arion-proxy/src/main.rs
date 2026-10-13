@@ -25,7 +25,7 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub static _rjem_malloc_conf: &[u8] =
     b"thp:always,metadata_thp:always,narenas:32,tcache_gc_incr_bytes:8388608,lg_tcache_nslots_mul:3\0";
 

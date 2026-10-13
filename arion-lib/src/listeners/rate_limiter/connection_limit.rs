@@ -18,10 +18,11 @@
 //
 //
 
+use arion_interner::InternedStr;
 use std::{
     sync::{
-        atomic::{AtomicU64, Ordering},
         LazyLock,
+        atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -31,7 +32,7 @@ use arion_configuration::config::network_filters::ConnectionLimit as ConnectionL
 use papaya::HashMap as PapayaMap;
 use tracing::debug;
 
-static GLOBAL_CONNECTION_COUNTS: LazyLock<PapayaMap<(&'static str, u64), Arc<AtomicU64>, ahash::RandomState>> =
+static GLOBAL_CONNECTION_COUNTS: LazyLock<PapayaMap<(InternedStr, u64), Arc<AtomicU64>, ahash::RandomState>> =
     LazyLock::new(|| PapayaMap::with_hasher(ahash::RandomState::new()));
 
 #[derive(Debug, Clone)]
@@ -50,8 +51,8 @@ impl Drop for ConnectionGuard {
     }
 }
 
-impl From<(&'static str, u64, ConnectionLimitConfig)> for NetworkConnectionLimit {
-    fn from((listener_name, filterchain_id, config): (&'static str, u64, ConnectionLimitConfig)) -> Self {
+impl From<(InternedStr, u64, ConnectionLimitConfig)> for NetworkConnectionLimit {
+    fn from((listener_name, filterchain_id, config): (InternedStr, u64, ConnectionLimitConfig)) -> Self {
         let active = {
             let map = GLOBAL_CONNECTION_COUNTS.pin();
             Arc::clone(map.get_or_insert_with((listener_name, filterchain_id), || Arc::new(AtomicU64::new(0))))
@@ -86,7 +87,7 @@ impl NetworkConnectionLimit {
 mod tests {
     use super::*;
 
-    fn make_limiter(listener: &'static str, max: u64) -> NetworkConnectionLimit {
+    fn make_limiter(listener: InternedStr, max: u64) -> NetworkConnectionLimit {
         NetworkConnectionLimit::from((
             listener,
             0u64,
@@ -96,7 +97,7 @@ mod tests {
 
     #[tokio::test]
     async fn guard_decrement() {
-        let limiter = make_limiter("test_guard_decrement", 3);
+        let limiter = make_limiter("test_guard_decrement".into(), 3);
 
         assert_eq!(limiter.active.load(Ordering::Acquire), 0);
 
@@ -114,7 +115,7 @@ mod tests {
 
     #[tokio::test]
     async fn limit_enforcement() {
-        let limiter = make_limiter("test_limit_enforcement", 2);
+        let limiter = make_limiter("test_limit_enforcement".into(), 2);
 
         let g1 = limiter.check().await.unwrap();
         let g2 = limiter.check().await.unwrap();
@@ -139,7 +140,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_accepts() {
         let max = 5u64;
-        let limiter = Arc::new(make_limiter("test_concurrent_accepts", max));
+        let limiter = Arc::new(make_limiter("test_concurrent_accepts".into(), max));
         let mut handles = Vec::new();
 
         for _ in 0..20 {

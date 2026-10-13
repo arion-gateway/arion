@@ -70,7 +70,7 @@ impl Default for CorsConfig {
 mod envoy_conversions {
     use super::*;
     use crate::config::common::envoy_conversions::IsUsed;
-    use crate::config::{unsupported_field, GenericError};
+    use crate::config::{GenericError, unsupported_field};
     use std::str::FromStr;
 
     impl TryFrom<EnvoyCors> for CorsConfig {

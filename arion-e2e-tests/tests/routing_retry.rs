@@ -14,9 +14,9 @@
 
 use std::time::Duration;
 
-use arion_e2e_tests::config_builder::{presets, ClusterBuilder, RetryPolicyBuilder, RouteBuilder, VirtualHostBuilder};
+use arion_e2e_tests::config_builder::{ClusterBuilder, RetryPolicyBuilder, RouteBuilder, VirtualHostBuilder, presets};
 use arion_e2e_tests::{
-    cleanup_config_file, ArionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient,
+    ArionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient, cleanup_config_file,
 };
 use http::StatusCode;
 

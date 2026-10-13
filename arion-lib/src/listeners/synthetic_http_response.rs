@@ -23,9 +23,9 @@ use http::{HeaderValue, Response, StatusCode, Version as HttpVersion};
 use http_body_util::Full;
 
 use crate::{
+    ArionResponseBody,
     body::{response_flags::ResponseFlags, timeout_body::TimeoutBody},
     event_error::{EventErrorContext, EventKind},
-    ArionResponseBody,
 };
 
 #[derive(Clone, Debug)]

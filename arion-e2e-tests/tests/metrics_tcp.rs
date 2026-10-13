@@ -25,7 +25,7 @@ use arion_e2e_tests::config_builder::{
     BootstrapBuilder, ClusterBuilder, FilterChainBuilder, ListenerBuilder, TcpProxyBuilder,
 };
 use arion_e2e_tests::{
-    cleanup_config_file, parse_metric_value, ArionInstance, PortBlock, SpawnOptions, TcpTestBackend, TestClient,
+    ArionInstance, PortBlock, SpawnOptions, TcpTestBackend, TestClient, cleanup_config_file, parse_metric_value,
 };
 
 #[tokio::test]

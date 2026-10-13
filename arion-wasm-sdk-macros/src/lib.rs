@@ -48,7 +48,7 @@ pub fn arion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let req_headers_export = if has_req_headers {
         quote! {
-            #[no_mangle]
+            #[unsafe(no_mangle)]
             pub extern "C" fn on_request_headers() -> i32 {
                 let plugin = unsafe {
                     if PLUGIN.is_none() {
@@ -66,7 +66,7 @@ pub fn arion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let req_body_export = if has_req_body {
         quote! {
-            #[no_mangle]
+            #[unsafe(no_mangle)]
             pub extern "C" fn on_request_body(_body_len: u32) -> i32 {
                 let plugin = unsafe {
                     if PLUGIN.is_none() {
@@ -84,7 +84,7 @@ pub fn arion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let resp_headers_export = if has_resp_headers {
         quote! {
-            #[no_mangle]
+            #[unsafe(no_mangle)]
             pub extern "C" fn on_response_headers() -> i32 {
                 let plugin = unsafe {
                     if PLUGIN.is_none() {
@@ -102,7 +102,7 @@ pub fn arion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let resp_body_export = if has_resp_body {
         quote! {
-            #[no_mangle]
+            #[unsafe(no_mangle)]
             pub extern "C" fn on_response_body(_body_len: u32) -> i32 {
                 let plugin = unsafe {
                     if PLUGIN.is_none() {
@@ -120,7 +120,7 @@ pub fn arion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let plugin_start_export = if has_plugin_start {
         quote! {
-            #[no_mangle]
+            #[unsafe(no_mangle)]
             pub extern "C" fn on_plugin_start() {
                 let plugin = unsafe {
                     if PLUGIN.is_none() {
@@ -137,7 +137,7 @@ pub fn arion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let plugin_destroy_export = if has_plugin_destroy {
         quote! {
-            #[no_mangle]
+            #[unsafe(no_mangle)]
             pub extern "C" fn on_plugin_destroy() {
                 let plugin = unsafe {
                     if PLUGIN.is_none() {
@@ -154,7 +154,7 @@ pub fn arion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let transaction_start_export = if has_transaction_start {
         quote! {
-            #[no_mangle]
+            #[unsafe(no_mangle)]
             pub extern "C" fn on_transaction_start() {
                 let plugin = unsafe {
                     if PLUGIN.is_none() {
@@ -171,7 +171,7 @@ pub fn arion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let transaction_complete_export = if has_transaction_complete {
         quote! {
-            #[no_mangle]
+            #[unsafe(no_mangle)]
             pub extern "C" fn on_transaction_complete() {
                 let plugin = unsafe {
                     if PLUGIN.is_none() {

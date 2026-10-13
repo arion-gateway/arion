@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use std::{
-    future::Future,
     pin::Pin,
     task::{Context, Poll},
 };

@@ -20,11 +20,11 @@ use std::net::SocketAddr;
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::config::{
         core::v3::{
+            Address, EnvoyInternalAddress, HealthStatus as ProtoHealthStatus, SocketAddress,
             address::Address as AddressType, envoy_internal_address::AddressNameSpecifier,
-            socket_address::PortSpecifier, Address, EnvoyInternalAddress, HealthStatus as ProtoHealthStatus,
-            SocketAddress,
+            socket_address::PortSpecifier,
         },
-        endpoint::v3::{lb_endpoint::HostIdentifier, Endpoint as EnvoyEndpoint, LbEndpoint},
+        endpoint::v3::{Endpoint as EnvoyEndpoint, LbEndpoint, lb_endpoint::HostIdentifier},
     },
     google::protobuf::UInt32Value,
 };

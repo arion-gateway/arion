@@ -17,14 +17,16 @@ use std::net::SocketAddr;
 use arion_configuration::config::{
     cluster::ClusterSpecifier, network_filters::http_connection_manager::route::HashPolicy,
 };
+use arion_interner::InternedStr;
 use http::Request;
 
 use super::{
+    CircuitBreakerDenial, RoutingPriority,
     balancers::hash_policy::HashState,
     clusters_manager::{self, RoutingContext, RoutingContextError, RoutingRequirement},
-    decrement_requests, try_increment_requests, CircuitBreakerDenial, RoutingPriority,
+    decrement_requests, try_increment_requests,
 };
-use crate::{transport::HttpChannels, ArionRequestBody};
+use crate::{ArionRequestBody, transport::HttpChannels};
 
 #[cfg(feature = "metrics")]
 use {
@@ -41,7 +43,7 @@ use {
 #[derive(Debug)]
 pub struct AcquiredHttpUpstream {
     channels: HttpChannels,
-    cluster_id: &'static str,
+    cluster_name: InternedStr,
     overrides_host: bool,
     _permit: RequestPermit,
 }
@@ -53,8 +55,8 @@ impl AcquiredHttpUpstream {
     }
 
     #[inline]
-    pub fn cluster_id(&self) -> &'static str {
-        self.cluster_id
+    pub fn cluster_name(&self) -> InternedStr {
+        self.cluster_name
     }
 
     /// Whether the cluster selects its endpoint by host override.
@@ -66,13 +68,13 @@ impl AcquiredHttpUpstream {
 
 #[derive(Debug)]
 struct RequestPermit {
-    cluster_id: &'static str,
+    cluster_id: InternedStr,
     priority: RoutingPriority,
 }
 
 impl Drop for RequestPermit {
     fn drop(&mut self) {
-        decrement_requests(self.cluster_id, self.priority);
+        decrement_requests(&self.cluster_id, self.priority);
     }
 }
 
@@ -90,11 +92,11 @@ pub enum AcquireHttpUpstreamError {
     #[error("failed to resolve upstream cluster")]
     ClusterNotFound,
     #[error("upstream request circuit breaker overflow for cluster '{cluster_id}': {denial:?}")]
-    CircuitBreakerOverflow { cluster_id: &'static str, denial: CircuitBreakerDenial },
+    CircuitBreakerOverflow { cluster_id: InternedStr, denial: CircuitBreakerDenial },
     #[error("failed to build routing context for cluster '{cluster_id}': {source}")]
-    RoutingContext { cluster_id: &'static str, source: RoutingContextError },
+    RoutingContext { cluster_id: InternedStr, source: RoutingContextError },
     #[error("failed to acquire an HTTP connection for cluster '{cluster_id}': {source}")]
-    Connection { cluster_id: &'static str, source: crate::Error },
+    Connection { cluster_id: InternedStr, source: crate::Error },
 }
 
 impl AcquireHttpUpstreamError {
@@ -109,12 +111,12 @@ impl AcquireHttpUpstreamError {
     }
 
     #[inline]
-    pub const fn cluster_id(&self) -> Option<&'static str> {
+    pub const fn cluster_id(&self) -> Option<InternedStr> {
         match self {
             Self::ClusterNotFound => None,
             Self::CircuitBreakerOverflow { cluster_id, .. }
             | Self::RoutingContext { cluster_id, .. }
-            | Self::Connection { cluster_id, .. } => Some(cluster_id),
+            | Self::Connection { cluster_id, .. } => Some(*cluster_id),
         }
     }
 }
@@ -132,28 +134,28 @@ pub fn acquire_http_upstream(
         return Err(AcquireHttpUpstreamError::ClusterNotFound);
     };
 
-    if let Err(denial) = try_increment_requests(cluster_id, priority) {
+    if let Err(denial) = try_increment_requests(&cluster_id, priority) {
         record_request_overflow(cluster_id, denial);
         return Err(AcquireHttpUpstreamError::CircuitBreakerOverflow { cluster_id, denial });
     }
     let permit = RequestPermit { cluster_id, priority };
 
-    let routing_requirement = clusters_manager::get_cluster_routing_requirements(cluster_id);
+    let routing_requirement = clusters_manager::get_cluster_routing_requirements(&cluster_id);
     let overrides_host = matches!(routing_requirement, RoutingRequirement::OverrideHost { .. });
     let hash_state = HashState::new(hash_policy, request, source_address);
 
     let routing_context = RoutingContext::try_from((&routing_requirement, request, hash_state))
         .map_err(|source| AcquireHttpUpstreamError::RoutingContext { cluster_id, source })?;
-    let channels = clusters_manager::get_http_connection(cluster_id, routing_context)
+    let channels = clusters_manager::get_http_connection(&cluster_id, routing_context)
         .map_err(|source| AcquireHttpUpstreamError::Connection { cluster_id, source })?;
 
-    Ok(AcquiredHttpUpstream { channels, cluster_id, overrides_host, _permit: permit })
+    Ok(AcquiredHttpUpstream { channels, cluster_name: cluster_id, overrides_host, _permit: permit })
 }
 
 #[cfg(feature = "metrics")]
-fn record_request_overflow(cluster_id: &'static str, denial: CircuitBreakerDenial) {
+fn record_request_overflow(cluster_id: InternedStr, denial: CircuitBreakerDenial) {
     let shard_id = get_shard_id!();
-    let attrs = &[KeyValue::new("cluster", cluster_id.to_owned())];
+    let attrs = &[KeyValue::new("cluster", cluster_id.as_str())];
     match denial {
         CircuitBreakerDenial::MaxConnections => {
             with_metric!(clusters::UPSTREAM_CX_OVERFLOW, add, 1, shard_id, attrs);
@@ -167,7 +169,7 @@ fn record_request_overflow(cluster_id: &'static str, denial: CircuitBreakerDenia
 
 #[cfg(not(feature = "metrics"))]
 #[inline]
-fn record_request_overflow(_cluster_id: &'static str, _denial: CircuitBreakerDenial) {}
+fn record_request_overflow(_cluster_id: InternedStr, _denial: CircuitBreakerDenial) {}
 
 #[cfg(test)]
 mod tests {
@@ -178,14 +180,15 @@ mod tests {
         OriginalDstConfig, OriginalDstRoutingMethod, StandardLbPolicy,
     };
     use arion_data_plane_api::envoy_data_plane_api::envoy::config::cluster::v3::Cluster as EnvoyCluster;
+    use arion_interner::StringInterner;
     use http::header::HOST;
 
     use super::*;
-    use crate::{clusters::cluster::ClusterOps, secrets::SecretManager, PartialClusterType};
+    use crate::{PartialClusterType, clusters::cluster::ClusterOps, secrets::SecretManager};
 
-    fn build_original_dst_cluster(name: &str, max_requests: u32) -> PartialClusterType {
+    fn build_original_dst_cluster(name: InternedStr, max_requests: u32) -> PartialClusterType {
         let config = Cluster {
-            name: name.into(),
+            name,
             discovery_settings: ClusterDiscoveryType::OriginalDst(OriginalDstConfig {
                 routing_method: OriginalDstRoutingMethod::Default,
                 upstream_port_override: None,
@@ -206,11 +209,11 @@ mod tests {
 
     #[test]
     fn request_permit_accounts_for_acquisition_lifetime() {
-        let cluster_name = "http-upstream-permit-test";
+        let cluster_name = "http-upstream-permit-test".to_interned_str();
         let cluster = clusters_manager::add_cluster(build_original_dst_cluster(cluster_name, 1)).unwrap();
         let circuit_breaker = cluster.circuit_breaker().unwrap();
         let request = Request::builder().uri("http://127.0.0.1:18080/tool").body(ArionRequestBody::default()).unwrap();
-        let specifier = ClusterSpecifier::Cluster(cluster_name.into());
+        let specifier = ClusterSpecifier::Cluster(cluster_name);
 
         let acquired = acquire_http_upstream(
             &specifier,
@@ -241,16 +244,16 @@ mod tests {
             circuit_breaker.get_state(RoutingPriority::Default).counters.active_requests.load(Ordering::Relaxed),
             0
         );
-        clusters_manager::remove_cluster(cluster_name).unwrap();
+        clusters_manager::remove_cluster(cluster_name.as_ref()).unwrap();
     }
 
     #[test]
     fn authority_routing_validates_and_accepts_request_authority() {
-        let cluster_name = "http-upstream-missing-authority-test";
+        let cluster_name = "http-upstream-missing-authority-test".to_interned_str();
         let cluster = clusters_manager::add_cluster(build_original_dst_cluster(cluster_name, 1)).unwrap();
         let circuit_breaker = cluster.circuit_breaker().unwrap();
         let request = Request::builder().uri("/tool").body(ArionRequestBody::default()).unwrap();
-        let specifier = ClusterSpecifier::Cluster(cluster_name.into());
+        let specifier = ClusterSpecifier::Cluster(cluster_name);
 
         let error = acquire_http_upstream(
             &specifier,
@@ -304,7 +307,7 @@ mod tests {
             RoutingPriority::Default,
         )
         .unwrap();
-        assert_eq!(acquired.cluster_id(), cluster_name);
+        assert_eq!(acquired.cluster_name(), cluster_name);
         drop(acquired);
 
         // An unresolved cluster fails before routing, so it carries no cluster id.
@@ -320,7 +323,7 @@ mod tests {
         assert_eq!(error.kind(), AcquireHttpUpstreamErrorKind::ClusterNotFound);
         assert_eq!(error.cluster_id(), None);
 
-        clusters_manager::remove_cluster(cluster_name).unwrap();
+        clusters_manager::remove_cluster(cluster_name.as_ref()).unwrap();
     }
 
     #[tokio::test]
@@ -348,14 +351,14 @@ load_balancing_policy:
 "#;
         let envoy: EnvoyCluster = arion_data_plane_api::decode::from_yaml(CLUSTER).unwrap();
         let config = Cluster::try_from(envoy).unwrap();
-        let override_host = config.name.clone();
+        let override_host = config.name;
         clusters_manager::add_cluster(PartialClusterType::try_from((Box::new(config), &SecretManager::new())).unwrap())
             .unwrap();
-        let original_dst = "http-upstream-original-dst-flag-test";
+        let original_dst = "http-upstream-original-dst-flag-test".to_interned_str();
         clusters_manager::add_cluster(build_original_dst_cluster(original_dst, 10)).unwrap();
 
         let acquire = |cluster: &str, request: &Request<ArionRequestBody>| {
-            let specifier = ClusterSpecifier::Cluster(cluster.into());
+            let specifier = ClusterSpecifier::Cluster(cluster.to_interned_str());
             acquire_http_upstream(
                 &specifier,
                 request,
@@ -374,9 +377,9 @@ load_balancing_policy:
         let unpicked = Request::builder().uri("http://127.0.0.1:18081/").body(ArionRequestBody::default()).unwrap();
         assert!(acquire(&override_host, &picked));
         assert!(acquire(&override_host, &unpicked));
-        assert!(!acquire(original_dst, &picked));
+        assert!(!acquire(&original_dst, &picked));
 
         clusters_manager::remove_cluster(&override_host).unwrap();
-        clusters_manager::remove_cluster(original_dst).unwrap();
+        clusters_manager::remove_cluster(original_dst.as_str()).unwrap();
     }
 }

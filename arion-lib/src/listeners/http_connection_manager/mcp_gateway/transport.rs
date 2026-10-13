@@ -95,8 +95,8 @@ impl<B> RequestExt for http::Request<B> {
 pub mod streamable_http {
     use std::{
         sync::{
-            atomic::{AtomicU64, Ordering},
             OnceLock,
+            atomic::{AtomicU64, Ordering},
         },
         time::{SystemTime, UNIX_EPOCH},
     };

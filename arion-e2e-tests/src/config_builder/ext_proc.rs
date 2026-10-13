@@ -17,13 +17,13 @@ use std::time::Duration;
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::core::v3::{
-            grpc_service::{EnvoyGrpc, TargetSpecifier},
             GrpcService,
+            grpc_service::{EnvoyGrpc, TargetSpecifier},
         },
         extensions::filters::http::ext_proc::v3::{
+            ExternalProcessor as EnvoyExternalProcessor, MetadataOptions, ProcessingMode,
             metadata_options::MetadataNamespaces,
             processing_mode::{BodySendMode, HeaderSendMode},
-            ExternalProcessor as EnvoyExternalProcessor, MetadataOptions, ProcessingMode,
         },
     },
     google::protobuf::Duration as ProtoDuration,

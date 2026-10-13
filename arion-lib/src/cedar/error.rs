@@ -72,10 +72,6 @@ impl ValidationError {
         let errors: Vec<String> = result.validation_errors().map(ToString::to_string).collect();
         let warnings: Vec<String> = result.validation_warnings().map(ToString::to_string).collect();
 
-        if errors.is_empty() {
-            None
-        } else {
-            Some(Self { errors, warnings })
-        }
+        if errors.is_empty() { None } else { Some(Self { errors, warnings }) }
     }
 }

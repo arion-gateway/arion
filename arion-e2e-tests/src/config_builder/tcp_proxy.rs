@@ -17,11 +17,11 @@
 
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::{
-        config::accesslog::v3::{access_log::ConfigType as AccessLogConfigType, AccessLog as EnvoyAccessLog},
-        config::core::v3::{substitution_format_string::Format as SubstitutionFormat, SubstitutionFormatString},
+        config::accesslog::v3::{AccessLog as EnvoyAccessLog, access_log::ConfigType as AccessLogConfigType},
+        config::core::v3::{SubstitutionFormatString, substitution_format_string::Format as SubstitutionFormat},
         extensions::{
             access_loggers::file::v3::{
-                file_access_log::AccessLogFormat as FileAccessLogFormat, FileAccessLog as EnvoyFileAccessLog,
+                FileAccessLog as EnvoyFileAccessLog, file_access_log::AccessLogFormat as FileAccessLogFormat,
             },
             filters::network::tcp_proxy::v3::TcpProxy,
         },

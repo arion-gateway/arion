@@ -21,7 +21,7 @@
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::{context::Context, FormatError, LogFormatter};
+use crate::{FormatError, LogFormatter, context::Context};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum UriFormatter {

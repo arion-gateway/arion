@@ -73,7 +73,7 @@ Add `arion-wasm-sdk` and `arion-wasm-types` to your Wasm plugin's `Cargo.toml`:
 [package]
 name = "my-arion-filter"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [lib]
 crate-type = ["cdylib"]

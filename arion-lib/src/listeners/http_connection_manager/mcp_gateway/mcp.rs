@@ -14,50 +14,48 @@
 
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpGateway as McpGatewayConfig;
 use arion_http_header::MCP_SESSION_ID;
+use arion_interner::InternedStr;
 use atomic_time::AtomicInstant;
 use bytes::{Bytes, BytesMut};
 use http::{HeaderName, Method, Response, StatusCode};
 use http_body_util::{BodyExt, Empty, Full};
 use papaya::{HashMap as PapayaMap, HashSet as PapayaSet};
 use parking_lot::Mutex;
-use serde_json::{json, Value};
-use smallvec::{smallvec, SmallVec};
-use smol_str::{format_smolstr, SmolStr, ToSmolStr};
-use std::{
-    future::Future,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc as StdArc,
-    },
+use serde_json::{Value, json};
+use smallvec::{SmallVec, smallvec};
+use smol_str::{SmolStr, ToSmolStr, format_smolstr};
+use std::sync::{
+    Arc as StdArc,
+    atomic::{AtomicBool, Ordering},
 };
 use tracing::{debug, info};
 use uuid::Uuid;
 
 use rmcp::{
+    RoleClient, ServiceError,
     model::{
         self, CallToolRequestMethod, ConstString, Implementation, InitializeRequestParams, InitializeResult,
         InitializeResultMethod, InitializedNotificationMethod, ListToolsRequestMethod, NumberOrString,
         PingRequestMethod, ServerCapabilities, ServerNotification,
     },
     service::{ClientInitializeError, RunningService},
-    RoleClient, ServiceError,
 };
 
 use crate::{
+    ArionRequestBody, ArionResponseBody, PolyBody,
     body::timeout_body::TimeoutBody,
     listeners::{
         http_connection_manager::{
+            RequestCtx,
             mcp_gateway::{
                 embeddings,
                 tools::{CallToolError, ToolBuilderError, ToolsRegistry},
-                transport::{self, AcceptedMime, RequestExt, SessionId, MIME_APPLICATION_JSON, MIME_TEXT_EVENT_STREAM},
+                transport::{self, AcceptedMime, MIME_APPLICATION_JSON, MIME_TEXT_EVENT_STREAM, RequestExt, SessionId},
             },
-            RequestCtx,
         },
         http_filters::{FilterDecision, FilterFactory},
         listener::FilterListenerContext,
     },
-    ArionRequestBody, ArionResponseBody, PolyBody,
 };
 
 const MCP_MESSAGE_ENDPOINT: &str = "/mcp";
@@ -65,7 +63,7 @@ const SESSION_IDLE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_
 
 #[allow(clippy::struct_field_names)]
 pub struct Session {
-    pub listener_name: &'static str,
+    pub listener_name: InternedStr,
     pub session_id: SessionId,
     pub last_activity: AtomicInstant,
     pub mcp_upstreams:
@@ -90,7 +88,7 @@ impl std::fmt::Debug for Session {
 impl Default for Session {
     fn default() -> Self {
         Self {
-            listener_name: "",
+            listener_name: "".into(),
             session_id: SessionId::default(),
             last_activity: AtomicInstant::now(),
             mcp_upstreams: PapayaMap::with_hasher(ahash::RandomState::default()),
@@ -160,7 +158,7 @@ pub enum SessionError {
 impl McpGatewayListenerContext {
     const MAX_SESSIONS_LIMIT: usize = 65536;
 
-    pub fn create_session(&self, listener_name: &'static str) -> Result<StdArc<Session>, SessionError> {
+    pub fn create_session(&self, listener_name: InternedStr) -> Result<StdArc<Session>, SessionError> {
         if self.session_map.len() >= Self::MAX_SESSIONS_LIMIT {
             debug!(target: "mcp_gateway", "create_session: session limit reached");
             return Err(SessionError::CreateLimitReached);
@@ -360,7 +358,7 @@ impl McpGateway {
         ctx: &McpGatewayListenerContext,
         request: &mut http::Request<ArionRequestBody>,
         req_ctx: &RequestCtx,
-        listener_name: &'static str,
+        listener_name: InternedStr,
     ) -> FilterDecision {
         let accept = request.get_mcp_accepted_mime();
         if !matches!(accept, Some(AcceptedMime::EventStreamAndJson)) {
@@ -541,7 +539,7 @@ impl McpGateway {
         req_ctx: &RequestCtx,
         req_version: http::Version,
         json_rpc_message: model::JsonRpcMessage,
-        listener_name: &'static str,
+        listener_name: InternedStr,
         session: Option<&StdArc<Session>>,
     ) -> Result<MessageResult, FilterDecision> {
         debug!(target: "mcp_gateway", "handle_rpc_json_message: session: {session:?}, listener: {listener_name}");
@@ -610,7 +608,7 @@ impl McpGateway {
         req_ctx: &RequestCtx,
         req_version: http::Version,
         rpc: model::JsonRpcRequest,
-        listener_name: &'static str,
+        listener_name: InternedStr,
         session: Option<&StdArc<Session>>,
     ) -> Result<MessageResult, FilterDecision> {
         if matches!(rpc.request.method.as_str(), InitializeResultMethod::VALUE) {
@@ -742,10 +740,10 @@ impl McpGateway {
                             },
                             CallToolError::ClientInitializeError(ref init_err) => match &**init_err {
                                 ClientInitializeError::JsonRpcError(error_data) => error_data.clone(),
-                                ClientInitializeError::ConnectionClosed(ref msg) => {
+                                ClientInitializeError::ConnectionClosed(msg) => {
                                     model::ErrorData::internal_error(format!("Upstream connection closed: {msg}"), None)
                                 },
-                                ClientInitializeError::TransportError { ref error, ref context } => {
+                                ClientInitializeError::TransportError { error, context } => {
                                     model::ErrorData::internal_error(
                                         format!("Upstream transport error ({context}): {error}"),
                                         None,
@@ -765,7 +763,7 @@ impl McpGateway {
                             },
                             CallToolError::ServiceError(ref svc_err) => match &**svc_err {
                                 ServiceError::McpError(error_data) => error_data.clone(),
-                                ServiceError::TransportSend(ref e) => model::ErrorData::internal_error(
+                                ServiceError::TransportSend(e) => model::ErrorData::internal_error(
                                     format!("Upstream transport send error: {e}"),
                                     None,
                                 ),
@@ -775,7 +773,7 @@ impl McpGateway {
                                 ServiceError::UnexpectedResponse => {
                                     model::ErrorData::internal_error("Unexpected response from upstream", None)
                                 },
-                                ServiceError::Cancelled { ref reason } => model::ErrorData::internal_error(
+                                ServiceError::Cancelled { reason } => model::ErrorData::internal_error(
                                     format!("Upstream request cancelled: {}", reason.as_deref().unwrap_or("<unknown>")),
                                     None,
                                 ),

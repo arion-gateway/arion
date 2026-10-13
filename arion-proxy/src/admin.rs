@@ -24,7 +24,7 @@ use triomphe::Arc;
 use anyhow::Result;
 use arion_configuration::config::Bootstrap;
 use arion_lib::{ConfigDump, ConfigurationSenders, ListenerConfigurationChange, SecretManager};
-use axum::{routing::get, Router};
+use axum::{Router, routing::get};
 use parking_lot::RwLock;
 use pingora_timeout::fast_timeout::fast_timeout;
 use tokio::sync::mpsc;
@@ -156,7 +156,7 @@ pub async fn start_admin_server(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arion_stats::{set_proxy_state, ProxyState};
+    use arion_stats::{ProxyState, set_proxy_state};
     use axum_test::TestServer;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

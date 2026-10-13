@@ -17,8 +17,8 @@
 
 use arion_data_plane_api::envoy_data_plane_api::{
     arion::extensions::filters::http::user_rate_limit::v3::{
-        user_rate_limit::Limit as UserLimit, SimpleRateLimit, UserRateLimit as UserRateLimitEntry,
-        UserRateLimiter as ArionUserRateLimiter,
+        SimpleRateLimit, UserRateLimit as UserRateLimitEntry, UserRateLimiter as ArionUserRateLimiter,
+        user_rate_limit::Limit as UserLimit,
     },
     envoy::{
         extensions::filters::http::local_ratelimit::v3::LocalRateLimit as EnvoyLocalRateLimit,

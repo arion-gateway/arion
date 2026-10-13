@@ -260,8 +260,8 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
                                 .entry(type_url)
                                 .or_default()
                                 .insert(resource_id.clone());
-                            if is_new {
-                                if let Err(err) = discovery_requests_tx.send(DeltaDiscoveryRequest {
+                            if is_new &&
+                                let Err(err) = discovery_requests_tx.send(DeltaDiscoveryRequest {
                                     node: Some(self.node.clone()),
                                     type_url: type_url.to_string(),
                                     resource_names_subscribe: vec![resource_id],
@@ -270,7 +270,6 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
                                 .await {
                                     warn!("problems updating subscription: {:?}", err);
                                 }
-                            }
                         }
                         SubscriptionEvent::Unsubscribe(type_url, resource_id) => {
                             debug!(
@@ -282,8 +281,8 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
                                 .entry(type_url)
                                 .or_default()
                                 .remove(resource_id.as_str());
-                            if was_subscribed {
-                                if let Err(err) = discovery_requests_tx.send(DeltaDiscoveryRequest {
+                            if was_subscribed &&
+                                let Err(err) = discovery_requests_tx.send(DeltaDiscoveryRequest {
                                     node: Some(self.node.clone()),
                                     type_url: type_url.to_string(),
                                     resource_names_unsubscribe: vec![resource_id],
@@ -292,7 +291,6 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
                                 .await {
                                     warn!("problems updating subscription: {:?}", err);
                                 }
-                            }
                         }
                     }
                 }

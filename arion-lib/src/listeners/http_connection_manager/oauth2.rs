@@ -20,11 +20,11 @@ use std::{
 
 use aws_lc_rs::{aead, constant_time, digest, hmac};
 use base64::{
-    prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD},
     Engine,
+    prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD},
 };
-use http::{header, uri::PathAndQuery, HeaderMap, HeaderValue, Request, StatusCode, Version};
-use oauth2::{basic::BasicClient, AuthUrl, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge, RedirectUrl, Scope};
+use http::{HeaderMap, HeaderValue, Request, StatusCode, Version, header, uri::PathAndQuery};
+use oauth2::{AuthUrl, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge, RedirectUrl, Scope, basic::BasicClient};
 use rand::RngCore;
 use serde::Deserialize;
 use smol_str::SmolStr;
@@ -33,13 +33,13 @@ use triomphe::Arc;
 use url::Url;
 
 use crate::{
+    ArionRequestBody,
     body::response_flags::ResponseFlags,
     event_error::EventFailure,
     listeners::{
         http_filters::{FilterDecision, FilterFactory},
         synthetic_http_response::SyntheticHttpResponse,
     },
-    ArionRequestBody,
 };
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::oauth2::{
     AuthType, CookieConfig, CookieNames, CookieSameSite, OAuth2Config,
@@ -540,11 +540,7 @@ impl OAuth2Filter {
         let now_secs = unix_timestamp_secs();
         let expires_in = token_resp.expires_in.unwrap_or_else(|| {
             let configured = config.default_expires_in.as_secs();
-            if configured == 0 {
-                3600
-            } else {
-                configured
-            }
+            if configured == 0 { 3600 } else { configured }
         });
         let Some(expires_at) = now_secs.checked_add(expires_in) else {
             error!(target: "oauth2", "OAuth token expiration overflows Unix timestamp");
@@ -701,11 +697,7 @@ fn local_redirect_target(target: Option<&str>) -> &str {
         && !target.contains('\\')
         && PathAndQuery::from_str(target).is_ok();
 
-    if is_local_path {
-        target
-    } else {
-        "/"
-    }
+    if is_local_path { target } else { "/" }
 }
 
 const TRANSACTION_COOKIE_VERSION: &str = "v1";
@@ -1148,11 +1140,11 @@ fn format_cookie(
         buf.push_str("; Secure");
     }
 
-    if let Some(d) = domain {
-        if !d.is_empty() {
-            buf.push_str("; Domain=");
-            buf.push_str(d);
-        }
+    if let Some(d) = domain
+        && !d.is_empty()
+    {
+        buf.push_str("; Domain=");
+        buf.push_str(d);
     }
 
     if let Some(age) = max_age {
@@ -1479,9 +1471,9 @@ mod tests {
 
         let tag = hmac::sign(&key, b"gateway.example.com:8443\n1234567890\naccess-token\nid-token\nrefresh-token");
         let mut legacy_hex = [0_u8; 64];
-        for (byte, hex) in tag.as_ref().iter().zip(legacy_hex.chunks_exact_mut(2)) {
-            hex[0] = HEX_LOWER[(byte >> 4) as usize];
-            hex[1] = HEX_LOWER[(byte & 0x0f) as usize];
+        for (byte, [hi, lo]) in tag.as_ref().iter().zip(legacy_hex.as_chunks_mut::<2>().0) {
+            *hi = *HEX_LOWER.get((byte >> 4) as usize).expect("high nibble is always < 16");
+            *lo = *HEX_LOWER.get((byte & 0x0f) as usize).expect("low nibble is always < 16");
         }
         let legacy = BASE64_STANDARD.encode(legacy_hex);
         assert!(verify_session_hmac(

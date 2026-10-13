@@ -27,7 +27,7 @@ use arion_configuration::config::log::AccessLogConfig;
 use arion_e2e_tests::config_builder::{
     BootstrapBuilder, ClusterBuilder, EndpointBuilder, FilterChainBuilder, ListenerBuilder, TcpProxyBuilder,
 };
-use arion_e2e_tests::{cleanup_config_file, ArionInstance, SpawnOptions, TcpTestBackend};
+use arion_e2e_tests::{ArionInstance, SpawnOptions, TcpTestBackend, cleanup_config_file};
 
 /// All access-log operators supported at the `TCPProxy` (connection) level.
 const TCP_LOG_FORMAT: &str = "\
@@ -75,10 +75,10 @@ fn parse_log_line(line: &str) -> HashMap<String, String> {
 async fn read_log_file(path: &std::path::Path, timeout: Duration) -> String {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            if !content.trim().is_empty() {
-                return content;
-            }
+        if let Ok(content) = std::fs::read_to_string(path)
+            && !content.trim().is_empty()
+        {
+            return content;
         }
         if tokio::time::Instant::now() >= deadline {
             break;

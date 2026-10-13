@@ -19,12 +19,12 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use arion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::ext_proc::v3::{
+    ExtProcOverrides, ExtProcPerRoute,
     ext_proc_per_route::Override,
     processing_mode::{BodySendMode, HeaderSendMode},
-    ExtProcOverrides, ExtProcPerRoute,
 };
 use arion_data_plane_api::envoy_data_plane_api::{
-    google::protobuf::{value::Kind, Any, BoolValue},
+    google::protobuf::{Any, BoolValue, value::Kind},
     prost::Message,
 };
 use arion_e2e_tests::config_builder::presets;
@@ -33,8 +33,8 @@ use arion_e2e_tests::config_builder::{
     ListenerBuilder, Route, RouteBuilder, RouteConfigBuilder, VirtualHostBuilder,
 };
 use arion_e2e_tests::{
-    ext_proc_responses, ArionInstance, CapturedProcessingRequest, ExtProcTestServer, ExtProcTestServerBuilder,
-    PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient,
+    ArionInstance, CapturedProcessingRequest, ExtProcTestServer, ExtProcTestServerBuilder, PreConfiguredResponse,
+    RequestBuilder, SpawnOptions, TestBackend, TestClient, ext_proc_responses,
 };
 use http::StatusCode;
 

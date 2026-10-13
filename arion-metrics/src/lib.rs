@@ -24,7 +24,7 @@ pub mod metrics;
 pub mod sharded;
 pub mod str_pair;
 
-use arion_configuration::config::{metrics::StatsSink, Bootstrap};
+use arion_configuration::config::{Bootstrap, metrics::StatsSink};
 use serde::{Deserialize, Serialize};
 
 use {

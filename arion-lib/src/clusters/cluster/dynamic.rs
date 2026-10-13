@@ -18,6 +18,7 @@
 //
 //
 
+use arion_interner::InternedStr;
 use http::uri::Authority;
 
 use arion_configuration::config::{
@@ -32,22 +33,22 @@ use arion_configuration::config::{
 use triomphe::Arc;
 
 use crate::{
+    Result,
     clusters::{
+        GrpcService,
         circuit_breaker::{CircuitBreakerCounters, ClusterCircuitBreaker},
         clusters_manager::{RoutingContext, RoutingRequirement},
         load_assignment::ClusterLoadAssignment,
-        GrpcService,
     },
     secrets::TransportSecret,
     transport::{HttpChannel, HttpChannels, TcpChannelConnector, UpstreamTransportSocketConfigurator},
-    Result,
 };
 
 use super::{ClusterOps, ClusterType};
 
 #[derive(Debug, Clone)]
 pub struct DynamicClusterBuilder {
-    pub name: &'static str,
+    pub name: InternedStr,
     pub bind_device: Option<BindDevice>,
     pub transport_socket: UpstreamTransportSocketConfigurator,
     pub health_check: Option<HealthCheck>,
@@ -93,7 +94,7 @@ impl DynamicClusterBuilder {
 
 #[derive(Debug, Clone)]
 pub struct GlobalDynamicCluster {
-    pub name: &'static str,
+    pub name: InternedStr,
     pub bind_device: Option<BindDevice>,
     pub health_check: Option<HealthCheck>,
     pub load_balancing_policy: LbPolicy,
@@ -115,7 +116,7 @@ impl DynamicCluster {
 }
 
 impl ClusterOps for DynamicCluster {
-    fn get_name(&self) -> &'static str {
+    fn get_name(&self) -> InternedStr {
         self.global.name
     }
 
@@ -218,6 +219,6 @@ impl TryFrom<&DynamicCluster> for ClusterLoadAssignmentConfig {
                 Ok(LocalityLbEndpointsConfig { priority: lep.priority, lb_endpoints })
             })
             .collect::<crate::Result<Vec<_>>>()?;
-        Ok(ClusterLoadAssignmentConfig { cluster_name: cluster.global.name.into(), endpoints })
+        Ok(ClusterLoadAssignmentConfig { cluster_name: cluster.global.name, endpoints })
     }
 }

@@ -14,7 +14,7 @@
 
 #[cfg(feature = "instrumentation")]
 use {
-    contatori::counters::{average::Average, monotone::Monotone, Observable},
+    contatori::counters::{Observable, average::Average, monotone::Monotone},
     tracing::info,
 };
 

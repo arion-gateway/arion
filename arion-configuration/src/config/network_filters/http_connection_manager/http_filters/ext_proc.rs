@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use arion_interner::InternedStr;
 use serde::{Deserialize, Serialize};
-use smol_str::SmolStr;
 use std::time::Duration;
 
 use crate::config::core::{StringMatcher, StringMatcherPattern};
@@ -99,7 +99,7 @@ pub enum GrpcServiceSpecifier {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClusterGrpc {
-    pub cluster_name: SmolStr,
+    pub cluster_name: InternedStr,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub max_receive_message_length: Option<u32>,
 }
@@ -258,22 +258,22 @@ mod envoy_conversions {
     use super::*;
     use crate::config::{
         common::*,
-        core::{regex_from_envoy, RustType},
+        core::{RustType, regex_from_envoy},
     };
     use arion_data_plane_api::envoy_data_plane_api::envoy::{
         config::{
             common::mutation_rules::v3::HeaderMutationRules as EnvoyHeaderMutationRules,
             core::v3::{
-                grpc_service::{GoogleGrpc as EnvoyGoogleGrpc, TargetSpecifier},
                 GrpcService as EnvoyGrpcService,
+                grpc_service::{GoogleGrpc as EnvoyGoogleGrpc, TargetSpecifier},
             },
         },
         extensions::filters::http::ext_proc::v3::{
-            metadata_options::MetadataNamespaces as EnvoyMetadataNamespaces,
-            processing_mode::{BodySendMode as EnvoyBodySendMode, HeaderSendMode as EnvoyHeaderSendMode},
             ExtProcOverrides as EnvoyExtProcOverrides, ExtProcPerRoute as EnvoyExtProcPerRoute,
             ExternalProcessor as EnvoyExternalProcessor, HeaderForwardingRules as EnvoyHeaderForwardingRules,
             MetadataOptions as EnvoyMetadataOptions, ProcessingMode as EnvoyProcessingMode,
+            metadata_options::MetadataNamespaces as EnvoyMetadataNamespaces,
+            processing_mode::{BodySendMode as EnvoyBodySendMode, HeaderSendMode as EnvoyHeaderSendMode},
         },
     };
 

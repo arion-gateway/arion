@@ -22,6 +22,7 @@ use crate::clusters::cached_watch::{CachedWatch, CachedWatcher};
 use crate::listeners::metadata::DownstreamConnectionMetadata;
 use crate::runtime_context::get_runtime_id;
 use crate::transport::AsyncInstrumentedStream;
+use arion_interner::InternedStr;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -35,7 +36,7 @@ pub struct InternalConnection {
     pub start_instant: Instant,
 }
 
-type ListenersMap = BTreeMap<usize, BTreeMap<&'static str, mpsc::Sender<InternalConnection>>>;
+type ListenersMap = BTreeMap<usize, BTreeMap<InternedStr, mpsc::Sender<InternalConnection>>>;
 
 static INTERNAL_LISTENERS_MAP: CachedWatch<ListenersMap> = CachedWatch::new(ListenersMap::new());
 
@@ -44,7 +45,7 @@ thread_local! {
         RefCell::new(INTERNAL_LISTENERS_MAP.watcher());
 }
 
-pub fn register(name: &'static str, sender: mpsc::Sender<InternalConnection>) {
+pub fn register(name: InternedStr, sender: mpsc::Sender<InternalConnection>) {
     let runtime_id = get_runtime_id();
     INTERNAL_LISTENERS_MAP.update(|listeners| {
         let runtime_listeners = listeners.entry(runtime_id).or_default();
@@ -58,11 +59,11 @@ pub fn register(name: &'static str, sender: mpsc::Sender<InternalConnection>) {
 pub fn unregister(name: &str) {
     let runtime_id = get_runtime_id();
     INTERNAL_LISTENERS_MAP.update(|listeners| {
-        if let Some(runtime_listeners) = listeners.get_mut(&runtime_id) {
-            if runtime_listeners.remove(name).is_some() {
-                debug!("Unregistered internal listener '{name}' for runtime {runtime_id}");
-                return;
-            }
+        if let Some(runtime_listeners) = listeners.get_mut(&runtime_id)
+            && runtime_listeners.remove(name).is_some()
+        {
+            debug!("Unregistered internal listener '{name}' for runtime {runtime_id}");
+            return;
         }
         warn!("Attempted to unregister non-existent internal listener '{name}' for runtime {runtime_id}");
     });

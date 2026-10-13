@@ -67,11 +67,7 @@ impl HttpConnection {
 impl Connection for HttpConnection {
     fn connected(&self) -> Connected {
         let conn = Connected::new();
-        if self.is_http2 {
-            conn.negotiated_h2()
-        } else {
-            conn
-        }
+        if self.is_http2 { conn.negotiated_h2() } else { conn }
     }
 }
 

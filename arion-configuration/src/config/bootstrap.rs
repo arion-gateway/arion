@@ -95,13 +95,12 @@ mod envoy_conversions {
     use crate::config::{common::*, core::RustType, metrics::StatsSink};
     use arion_data_plane_api::envoy_data_plane_api::envoy::config::{
         bootstrap::v3::{
-            bootstrap::{DynamicResources as EnvoyDynamicResources, StaticResources as EnvoyStaticResources},
             Admin as EnvoyAdmin, Bootstrap as EnvoyBootstrap,
+            bootstrap::{DynamicResources as EnvoyDynamicResources, StaticResources as EnvoyStaticResources},
         },
         core::v3::{
-            address,
+            ApiConfigSource as EnvoyApiConfigSource, GrpcService as EnvoyGrpcService, Node as EnvoyNode, address,
             grpc_service::{EnvoyGrpc, TargetSpecifier as EnvoyGrpcTargetSpecifier},
-            ApiConfigSource as EnvoyApiConfigSource, GrpcService as EnvoyGrpcService, Node as EnvoyNode,
         },
         metrics::v3::stats_sink::ConfigType,
     };

@@ -39,12 +39,12 @@ use arion_data_plane_api::envoy_data_plane_api::{
     google::protobuf::{Duration as ProstDuration, UInt32Value},
 };
 use arion_e2e_tests::config_builder::{
-    inline_string_data_source, ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder,
-    McpRestBackendBuilder, McpServerBackendBuilder, McpToolBuilder, McpToolRbacBuilder,
+    ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder, McpRestBackendBuilder,
+    McpServerBackendBuilder, McpToolBuilder, McpToolRbacBuilder, inline_string_data_source,
 };
 use arion_e2e_tests::{
-    generate_jwt_token, ArionInstance, JwtKeyPair, McpTestClient, MockMcpServer, PreConfiguredResponse, SpawnOptions,
-    TestBackend, TestJwtClaims,
+    ArionInstance, JwtKeyPair, McpTestClient, MockMcpServer, PreConfiguredResponse, SpawnOptions, TestBackend,
+    TestJwtClaims, generate_jwt_token,
 };
 use http::StatusCode;
 use serde_json::json;
@@ -84,7 +84,7 @@ async fn test_mcp_gateway_initialize_and_ping() {
     let tool = rest_tool("test_tool", "A simple test tool", "test_cluster", "GET", "/api/test");
 
     let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![
-        ClusterBuilder::new("test_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+        ClusterBuilder::new("test_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
     ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
@@ -157,7 +157,7 @@ async fn test_mcp_gateway_rest_path_templating() {
         .build();
 
     let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![
-        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
     ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
@@ -208,7 +208,7 @@ async fn test_mcp_gateway_rest_query_params() {
         .build();
 
     let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![
-        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
     ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
@@ -266,7 +266,7 @@ async fn test_mcp_gateway_rest_body_templating() {
         .build();
 
     let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![
-        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
     ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
@@ -329,7 +329,7 @@ async fn test_mcp_gateway_rest_full_transcoding() {
         .build();
 
     let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![
-        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
     ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
@@ -386,11 +386,9 @@ async fn test_mcp_gateway_rest_authority_override() {
     let default_tool =
         rest_tool("authority_default", "Use the endpoint authority", "backend_cluster", "GET", "/authority");
 
-    let bootstrap =
-        mcp_gateway_test_config(vec![override_tool, default_tool])
-            .build_bootstrap(vec![
-                ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
-            ]);
+    let bootstrap = mcp_gateway_test_config(vec![override_tool, default_tool]).build_bootstrap(vec![
+        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
+    ]);
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
     let arion = ArionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
         .await
@@ -487,9 +485,11 @@ async fn test_mcp_gateway_rest_retry_503_then_200() {
                 HttpUpstreamPolicy { authority: None, timeout: None, retry_policy: Some(retry_policy) },
             ))
             .build();
-    let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![ClusterBuilder::new("backend_cluster")
-        .endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
-        .circuit_breaker_max_retries(2)]);
+    let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![
+        ClusterBuilder::new("backend_cluster")
+            .endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+            .circuit_breaker_max_retries(2),
+    ]);
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
     let arion = ArionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
         .await
@@ -520,10 +520,9 @@ async fn test_mcp_gateway_tool_timeout() {
     let gateway = McpGatewayBuilder::new(SERVER_NAME, SERVER_VERSION)
         .upstream_timeout(ProstDuration { seconds: 0, nanos: 50_000_000 })
         .tool(tool);
-    let bootstrap = McpGatewayHttpConfigBuilder::new(gateway)
-        .build_bootstrap(vec![
-            ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
-        ]);
+    let bootstrap = McpGatewayHttpConfigBuilder::new(gateway).build_bootstrap(vec![
+        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
+    ]);
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
     let arion = ArionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
         .await
@@ -563,10 +562,9 @@ async fn test_mcp_gateway_rest_policy_timeout_overrides_global_timeout() {
     let gateway = McpGatewayBuilder::new(SERVER_NAME, SERVER_VERSION)
         .upstream_timeout(ProstDuration { seconds: 0, nanos: 50_000_000 })
         .tool(tool);
-    let bootstrap = McpGatewayHttpConfigBuilder::new(gateway)
-        .build_bootstrap(vec![
-            ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
-        ]);
+    let bootstrap = McpGatewayHttpConfigBuilder::new(gateway).build_bootstrap(vec![
+        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
+    ]);
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
     let arion = ArionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
         .await
@@ -590,10 +588,9 @@ async fn test_mcp_gateway_mcp_backend() {
 
     let tool = mcp_server_tool("mock_echo", "Call remote echo tool", format!("http://{}/mcp", mock_mcp.addr()));
 
-    let bootstrap = mcp_gateway_test_config(vec![tool])
-        .build_bootstrap(vec![
-            ClusterBuilder::new("mcp_backend_cluster").endpoint(EndpointBuilder::from_socket_addr(mock_mcp.addr()))
-        ]);
+    let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![
+        ClusterBuilder::new("mcp_backend_cluster").endpoint(EndpointBuilder::from_socket_addr(mock_mcp.addr())),
+    ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -878,7 +875,7 @@ async fn test_mcp_gateway_tool_not_found() {
     let tool = rest_tool("existing_tool", "An existing tool", "backend_cluster", "GET", "/api/existing");
 
     let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![
-        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
     ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
@@ -918,7 +915,7 @@ async fn test_mcp_gateway_invalid_arguments() {
         .build();
 
     let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![
-        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
     ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");

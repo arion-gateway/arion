@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use std::{
-    future::Future,
     pin::Pin,
     sync::{Arc as StdArc, Once, OnceLock, Weak},
 };
@@ -330,7 +329,7 @@ mod tests {
     use super::*;
     use crate::listeners::http_connection_manager::mcp_gateway::embeddings;
     use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        tool::UpstreamBackend as ArionUpstreamBackend, RestBackend as ArionRestBackend,
+        RestBackend as ArionRestBackend, tool::UpstreamBackend as ArionUpstreamBackend,
     };
     use arion_xds::xds::client::SubscriptionEvent;
     use tokio::sync::mpsc;

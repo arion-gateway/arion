@@ -19,7 +19,6 @@
 //
 
 use std::{
-    future::Future,
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     pin::Pin,
@@ -30,7 +29,7 @@ use triomphe::Arc;
 
 use arion_configuration::config::core::Address;
 use arion_format::types::ResponseFlags;
-use arion_interner::StringInterner;
+use arion_interner::{InternedStr, StringInterner};
 use http::uri::Authority;
 use hyper::Uri;
 use hyper_util::rt::TokioIo;
@@ -45,7 +44,7 @@ use crate::listeners::metadata::DownstreamConnectionMetadata;
 use crate::transport::http_channel::DEFAULT_IDLE_TIMEOUT;
 use crate::transport::{AsyncInstrumentedStream, HttpConnection};
 use crate::{
-    event_error::{elapsed, UpstreamError},
+    event_error::{UpstreamError, elapsed},
     utils::instrumented_stream::InstrumentedStream,
 };
 
@@ -64,7 +63,7 @@ pub enum ConnectUsing {
         idle_timeout: Option<Duration>,
     },
     InternalListener {
-        listener_name: &'static str,
+        listener_name: InternedStr,
         synthetic_authority: Authority,
     },
 }
@@ -116,9 +115,9 @@ impl ConnectUsing {
                 Ok(ConnectUsing::Socket { authority, bind_device, connect_timeout, idle_timeout })
             },
             Address::Internal(internal) => {
-                let static_listener_name = internal.server_listener_name.to_static_str();
-                let synthetic_authority = Authority::try_from(format!("{static_listener_name}.listener.internal:80"))?;
-                Ok(ConnectUsing::InternalListener { listener_name: static_listener_name, synthetic_authority })
+                let listener_name = internal.server_listener_name.to_interned_str();
+                let synthetic_authority = Authority::try_from(format!("{listener_name}.listener.internal:80"))?;
+                Ok(ConnectUsing::InternalListener { listener_name, synthetic_authority })
             },
             Address::Pipe(path, _) => {
                 Err(format!("Pipe addresses are not supported for upstream connections: {path}").into())
@@ -131,7 +130,7 @@ impl ConnectUsing {
 pub struct TcpErrorContext {
     pub upstream_addr: Option<SocketAddr>,
     pub response_flags: ResponseFlags,
-    pub cluster_name: &'static str,
+    pub cluster_name: InternedStr,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -204,7 +203,7 @@ impl ConnectError {
 }
 
 struct ContextBuilder {
-    cluster_name: &'static str,
+    cluster_name: InternedStr,
 }
 
 impl ContextBuilder {
@@ -220,7 +219,7 @@ impl ContextBuilder {
 #[derive(Clone, Debug)]
 pub struct LocalConnectorWithDNSResolver {
     pub addr: Authority,
-    pub cluster_name: &'static str,
+    pub cluster_name: InternedStr,
     pub bind_device: Option<BindDevice>,
     pub connect_timeout: Option<Duration>,
     pub idle_timeout: Option<Duration>,
@@ -228,7 +227,7 @@ pub struct LocalConnectorWithDNSResolver {
 
 impl LocalConnectorWithDNSResolver {
     #[allow(clippy::too_many_lines)]
-    pub fn connect(&self) -> impl Future<Output = crate::Result<(TcpStream, &'static str)>> + 'static {
+    pub fn connect(&self) -> impl Future<Output = crate::Result<(TcpStream, InternedStr)>> + 'static {
         let addr = self.addr.clone();
         let device = self.bind_device.clone();
         let cluster_name = self.cluster_name;
@@ -325,8 +324,8 @@ impl Service<Uri> for LocalConnectorWithDNSResolver {
 
 #[derive(Debug, Clone)]
 pub struct InternalConnector {
-    pub listener_name: &'static str,
-    pub cluster_name: &'static str,
+    pub listener_name: InternedStr,
+    pub cluster_name: InternedStr,
     pub is_http2: bool,
 }
 
@@ -334,20 +333,21 @@ impl InternalConnector {
     pub async fn connect(
         &self,
         downstream_metadata: Option<Arc<DownstreamConnectionMetadata>>,
-    ) -> crate::Result<(AsyncInstrumentedStream, &'static str)> {
+    ) -> crate::Result<(AsyncInstrumentedStream, InternedStr)> {
         debug!("Connecting to internal listener '{}' from cluster '{}'", self.listener_name, self.cluster_name);
 
         let ctx = ContextBuilder { cluster_name: self.cluster_name };
-        let sender = internal_registry::get_connection_sender_for_listener(self.listener_name).ok_or_else(|| {
-            ctx.error(
-                None,
-                ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
-                ConnectErrorKind::InternalListener(format!(
-                    "Internal listener '{}' not found or not ready",
-                    self.listener_name
-                )),
-            )
-        })?;
+        let sender =
+            internal_registry::get_connection_sender_for_listener(self.listener_name.as_str()).ok_or_else(|| {
+                ctx.error(
+                    None,
+                    ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
+                    ConnectErrorKind::InternalListener(format!(
+                        "Internal listener '{}' not found or not ready",
+                        self.listener_name
+                    )),
+                )
+            })?;
         let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
         let downstream_metadata = downstream_metadata.unwrap_or_else(|| {
             Arc::new(DownstreamConnectionMetadata::FromSocket {
@@ -382,8 +382,8 @@ pub enum UnifiedConnector {
     Internal(InternalConnector),
 }
 
-impl From<(&ConnectUsing, &'static str, bool)> for UnifiedConnector {
-    fn from((target, cluster_name, is_http2): (&ConnectUsing, &'static str, bool)) -> Self {
+impl From<(&ConnectUsing, InternedStr, bool)> for UnifiedConnector {
+    fn from((target, cluster_name, is_http2): (&ConnectUsing, InternedStr, bool)) -> Self {
         match target {
             ConnectUsing::Socket { authority, bind_device, connect_timeout, idle_timeout } => {
                 UnifiedConnector::Socket(LocalConnectorWithDNSResolver {
@@ -396,14 +396,14 @@ impl From<(&ConnectUsing, &'static str, bool)> for UnifiedConnector {
             },
             ConnectUsing::InternalListener { listener_name, .. } => {
                 debug!("Creating InternalConnector for listener '{}' with is_http2={})", listener_name, is_http2,);
-                UnifiedConnector::Internal(InternalConnector { listener_name, cluster_name, is_http2 })
+                UnifiedConnector::Internal(InternalConnector { listener_name: *listener_name, cluster_name, is_http2 })
             },
         }
     }
 }
 
-impl From<(&ConnectUsing, &'static str)> for UnifiedConnector {
-    fn from((target, cluster_name): (&ConnectUsing, &'static str)) -> Self {
+impl From<(&ConnectUsing, InternedStr)> for UnifiedConnector {
+    fn from((target, cluster_name): (&ConnectUsing, InternedStr)) -> Self {
         Self::from((target, cluster_name, false))
     }
 }
@@ -426,7 +426,7 @@ impl Service<Uri> for UnifiedConnector {
         match self {
             UnifiedConnector::Socket(c) => {
                 #[allow(unused_variables)]
-                let cluster_name = c.cluster_name;
+                let cluster_name = c.cluster_name.as_str();
 
                 // Check and increment circuit breaker connections
                 if let Err(_denial) =
@@ -437,7 +437,7 @@ impl Service<Uri> for UnifiedConnector {
                             context: TcpErrorContext {
                                 upstream_addr: None,
                                 response_flags: ResponseFlags::UPSTREAM_OVERFLOW,
-                                cluster_name,
+                                cluster_name: cluster_name.into(),
                             },
                             kind: ConnectErrorKind::CircuitBreaker,
                         }))))

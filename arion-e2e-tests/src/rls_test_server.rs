@@ -14,19 +14,18 @@
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use arion_data_plane_api::envoy_data_plane_api::envoy::service::ratelimit::v3::{
-    rate_limit_response,
+    RateLimitRequest, RateLimitResponse, rate_limit_response,
     rate_limit_service_server::{RateLimitService, RateLimitServiceServer},
-    RateLimitRequest, RateLimitResponse,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, Notify};
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
-use tonic::{async_trait, Request, Response, Status};
+use tonic::{Request, Response, Status, async_trait};
 use tracing::{error, info};
 
 use crate::Result;
@@ -151,7 +150,7 @@ pub mod rls_responses {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use arion_data_plane_api::envoy_data_plane_api::{
-        envoy::service::ratelimit::v3::{rate_limit_response, RateLimitResponse},
+        envoy::service::ratelimit::v3::{RateLimitResponse, rate_limit_response},
         google::protobuf::Timestamp,
     };
 

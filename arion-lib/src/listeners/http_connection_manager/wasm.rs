@@ -13,17 +13,16 @@
 // limitations under the License.
 
 use crate::{
+    ArionRequestBody, ArionResponseBody,
     body::poly_body::PolyBody,
     listeners::{
         http_connection_manager::RequestCtx,
         http_filters::{FilterDecision, FilterFactory},
     },
-    ArionRequestBody, ArionResponseBody,
 };
 use arion_configuration::config::{
     core::DataSource, network_filters::http_connection_manager::http_filters::wasm::WasmConfig,
 };
-use arion_interner::StringInterner;
 use arion_wasm_types::FilterAction;
 use bitflags::bitflags;
 use bytes::Bytes;
@@ -134,17 +133,13 @@ fn resolve_hook<Params, Results>(
     store: &mut Store<hostcalls::WasmState>,
     flags: HookFlags,
     flag: HookFlags,
-    name: &'static str,
+    name: &str,
 ) -> Option<TypedFunc<Params, Results>>
 where
     Params: wasmtime::WasmParams,
     Results: wasmtime::WasmResults,
 {
-    if flags.contains(flag) {
-        instance.get_typed_func(store, name).ok()
-    } else {
-        None
-    }
+    if flags.contains(flag) { instance.get_typed_func(store, name).ok() } else { None }
 }
 
 impl InstanceHooks {
@@ -205,12 +200,12 @@ impl Drop for WasmFilterState {
         // We use ManuallyDrop::take to safely move the Store out of `self` into the spawned task
         // or drop it immediately on the current thread if we can't spawn.
         let mut store = unsafe { std::mem::ManuallyDrop::take(&mut self.store) };
-        if let Some(on_destroy) = self.hooks.on_plugin_destroy.clone() {
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(async move {
-                    _ = on_destroy.call_async(&mut store, ()).await;
-                });
-            }
+        if let Some(on_destroy) = self.hooks.on_plugin_destroy.clone()
+            && let Ok(handle) = tokio::runtime::Handle::try_current()
+        {
+            handle.spawn(async move {
+                _ = on_destroy.call_async(&mut store, ()).await;
+            });
         }
     }
 }
@@ -313,7 +308,7 @@ impl WasmFilter {
                 let mut store = Store::new(
                     engine,
                     hostcalls::WasmState {
-                        name: self.inner.config.name.to_static_str(),
+                        name: self.inner.config.name,
                         plugin_config,
                         direct_response: None,
                         buffered_request_body: None,
@@ -382,10 +377,10 @@ impl WasmFilter {
         }
 
         // Ensure state exists once (no-op if on_transaction_start already created it).
-        if self.state.get_mut().is_none() {
-            if let Err(e) = self.get_state().await {
-                return FilterDecision::internal_server_error(&e.to_string(), req.version());
-            }
+        if self.state.get_mut().is_none()
+            && let Err(e) = self.get_state().await
+        {
+            return FilterDecision::internal_server_error(&e.to_string(), req.version());
         }
 
         let req_handle = std::ptr::from_mut::<Request<ArionRequestBody>>(req) as u64;
@@ -558,7 +553,7 @@ impl WasmFilter {
                     for (k, v) in &ops {
                         kv.insert(k.as_str(), v.as_str());
                     }
-                    req_ctx.tx.with_loggers(|loggers| {
+                    req_ctx.txn.with_loggers(|loggers| {
                         _ = crate::access_log::evaluate_plain_access_log_hook(
                             crate::access_log::AccessLogHook::Wasm,
                             &kv,
@@ -582,10 +577,10 @@ impl WasmFilter {
         }
 
         // Ensure state exists once (typically already created during apply_request).
-        if self.state.get_mut().is_none() {
-            if let Err(e) = self.get_state().await {
-                return FilterDecision::internal_server_error(&e.to_string(), response.version());
-            }
+        if self.state.get_mut().is_none()
+            && let Err(e) = self.get_state().await
+        {
+            return FilterDecision::internal_server_error(&e.to_string(), response.version());
         }
 
         let resp_handle = std::ptr::from_mut::<Response<ArionResponseBody>>(response) as u64;
@@ -755,16 +750,16 @@ impl WasmFilter {
 impl Drop for WasmFilter {
     fn drop(&mut self) {
         if let Some(mut state) = self.state.get_mut().take() {
-            if let Some(on_tx_comp) = state.hooks.on_transaction_complete.clone() {
-                if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                    let pool = Arc::clone(&self.inner.instance_pool);
-                    handle.spawn(async move {
-                        _ = on_tx_comp.call_async(&mut *state.store, ()).await;
-                        state.store.data_mut().reset_ephemeral();
-                        _ = pool.push(state);
-                    });
-                    return;
-                }
+            if let Some(on_tx_comp) = state.hooks.on_transaction_complete.clone()
+                && let Ok(handle) = tokio::runtime::Handle::try_current()
+            {
+                let pool = Arc::clone(&self.inner.instance_pool);
+                handle.spawn(async move {
+                    _ = on_tx_comp.call_async(&mut *state.store, ()).await;
+                    state.store.data_mut().reset_ephemeral();
+                    _ = pool.push(state);
+                });
+                return;
             }
             state.store.data_mut().reset_ephemeral();
             _ = self.inner.instance_pool.push(state);

@@ -17,12 +17,12 @@
 
 use arion_data_plane_api::envoy_data_plane_api::{
     envoy::{
-        config::core::v3::{data_source::Specifier, DataSource},
+        config::core::v3::{DataSource, data_source::Specifier},
         extensions::transport_sockets::tls::v3::{
-            certificate_validation_context::TrustChainVerification, common_tls_context::ValidationContextType,
             CertificateValidationContext, CommonTlsContext, DownstreamTlsContext as EnvoyDownstreamTlsContext,
             SdsSecretConfig, TlsCertificate, TlsParameters as EnvoyTlsParameters,
-            UpstreamTlsContext as EnvoyUpstreamTlsContext,
+            UpstreamTlsContext as EnvoyUpstreamTlsContext, certificate_validation_context::TrustChainVerification,
+            common_tls_context::ValidationContextType,
         },
     },
     google::protobuf::BoolValue,
@@ -127,10 +127,10 @@ impl DownstreamTlsBuilder {
     #[must_use]
     pub fn tls_minimum_version(mut self, version: TlsVersion) -> Self {
         self.ensure_tls_params();
-        if let Some(ref mut ctx) = self.proto.common_tls_context {
-            if let Some(ref mut params) = ctx.tls_params {
-                params.tls_minimum_protocol_version = version.to_envoy();
-            }
+        if let Some(ref mut ctx) = self.proto.common_tls_context
+            && let Some(ref mut params) = ctx.tls_params
+        {
+            params.tls_minimum_protocol_version = version.to_envoy();
         }
         self
     }
@@ -138,10 +138,10 @@ impl DownstreamTlsBuilder {
     #[must_use]
     pub fn tls_maximum_version(mut self, version: TlsVersion) -> Self {
         self.ensure_tls_params();
-        if let Some(ref mut ctx) = self.proto.common_tls_context {
-            if let Some(ref mut params) = ctx.tls_params {
-                params.tls_maximum_protocol_version = version.to_envoy();
-            }
+        if let Some(ref mut ctx) = self.proto.common_tls_context
+            && let Some(ref mut params) = ctx.tls_params
+        {
+            params.tls_maximum_protocol_version = version.to_envoy();
         }
         self
     }
@@ -175,10 +175,10 @@ impl DownstreamTlsBuilder {
 
     fn ensure_tls_params(&mut self) {
         self.ensure_common_tls_context();
-        if let Some(ref mut ctx) = self.proto.common_tls_context {
-            if ctx.tls_params.is_none() {
-                ctx.tls_params = Some(EnvoyTlsParameters::default());
-            }
+        if let Some(ref mut ctx) = self.proto.common_tls_context
+            && ctx.tls_params.is_none()
+        {
+            ctx.tls_params = Some(EnvoyTlsParameters::default());
         }
     }
 }
@@ -267,10 +267,10 @@ impl UpstreamTlsBuilder {
     #[must_use]
     pub fn tls_minimum_version(mut self, version: TlsVersion) -> Self {
         self.ensure_tls_params();
-        if let Some(ref mut ctx) = self.proto.common_tls_context {
-            if let Some(ref mut params) = ctx.tls_params {
-                params.tls_minimum_protocol_version = version.to_envoy();
-            }
+        if let Some(ref mut ctx) = self.proto.common_tls_context
+            && let Some(ref mut params) = ctx.tls_params
+        {
+            params.tls_minimum_protocol_version = version.to_envoy();
         }
         self
     }
@@ -278,10 +278,10 @@ impl UpstreamTlsBuilder {
     #[must_use]
     pub fn tls_maximum_version(mut self, version: TlsVersion) -> Self {
         self.ensure_tls_params();
-        if let Some(ref mut ctx) = self.proto.common_tls_context {
-            if let Some(ref mut params) = ctx.tls_params {
-                params.tls_maximum_protocol_version = version.to_envoy();
-            }
+        if let Some(ref mut ctx) = self.proto.common_tls_context
+            && let Some(ref mut params) = ctx.tls_params
+        {
+            params.tls_maximum_protocol_version = version.to_envoy();
         }
         self
     }
@@ -315,10 +315,10 @@ impl UpstreamTlsBuilder {
 
     fn ensure_tls_params(&mut self) {
         self.ensure_common_tls_context();
-        if let Some(ref mut ctx) = self.proto.common_tls_context {
-            if ctx.tls_params.is_none() {
-                ctx.tls_params = Some(EnvoyTlsParameters::default());
-            }
+        if let Some(ref mut ctx) = self.proto.common_tls_context
+            && ctx.tls_params.is_none()
+        {
+            ctx.tls_params = Some(EnvoyTlsParameters::default());
         }
     }
 }

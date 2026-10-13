@@ -56,14 +56,12 @@ async fn test_dynamic_xds_config() {
 
     fast_timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(response) = client.get("/test").await {
-                if response.status == StatusCode::OK {
-                    if let Some(body) = response.body_str() {
-                        if body == "Hello from xDS backend!" {
-                            break;
-                        }
-                    }
-                }
+            if let Ok(response) = client.get("/test").await
+                && response.status == StatusCode::OK
+                && let Some(body) = response.body_str()
+                && body == "Hello from xDS backend!"
+            {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -124,14 +122,12 @@ async fn test_dynamic_config_update() {
 
     fast_timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(response) = client.get("/api/test").await {
-                if response.status == StatusCode::OK {
-                    if let Some(body) = response.body_str() {
-                        if body == "Response from backend1" {
-                            break;
-                        }
-                    }
-                }
+            if let Ok(response) = client.get("/api/test").await
+                && response.status == StatusCode::OK
+                && let Some(body) = response.body_str()
+                && body == "Response from backend1"
+            {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -154,10 +150,10 @@ async fn test_dynamic_config_update() {
     // have applied it yet by the time push_cluster returns.
     fast_timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(response) = client.get("/service/test").await {
-                if response.status == StatusCode::OK {
-                    break;
-                }
+            if let Ok(response) = client.get("/service/test").await
+                && response.status == StatusCode::OK
+            {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

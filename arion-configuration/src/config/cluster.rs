@@ -19,6 +19,7 @@
 //
 
 pub mod health_check;
+use arion_interner::InternedStr;
 pub use health_check::HealthCheck;
 pub mod http_protocol_options;
 pub use http_protocol_options::HttpProtocolOptions;
@@ -28,7 +29,7 @@ pub use cluster_specifier::ClusterSpecifier;
 use crate::config::core::Address;
 
 use super::{
-    common::{is_default, MetadataKey},
+    common::{MetadataKey, is_default},
     secret::TlsCertificate,
     transport::{BindDevice, CommonTlsValidationContext, TlsParameters, UpstreamTransportSocketConfig},
 };
@@ -39,7 +40,7 @@ use smol_str::SmolStr;
 use std::{fmt::Display, num::NonZeroU32, time::Duration};
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct Cluster {
-    pub name: SmolStr,
+    pub name: InternedStr,
     #[serde(flatten)]
     pub discovery_settings: ClusterDiscoveryType,
     #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
@@ -69,7 +70,7 @@ pub struct ClusterLoadAssignment {
         deserialize_with = "deser_through::<LocalityLbEndpointsDeser,_,_>"
     )]
     pub endpoints: Vec<LocalityLbEndpoints>,
-    pub cluster_name: SmolStr,
+    pub cluster_name: InternedStr,
 }
 
 fn simplify_locality_lb_endpoints<S: Serializer>(
@@ -365,11 +366,11 @@ pub struct CircuitBreakers {
 mod envoy_conversions {
     #![allow(deprecated)]
     use super::{
-        health_check::{ClusterHostnameError, HealthCheck, HealthCheckProtocol},
         CircuitBreakerThresholds, CircuitBreakers, Cluster, ClusterDiscoveryType, ClusterLoadAssignment,
-        ExtendedLbPolicy, HealthStatus, HttpProtocolOptions, LbEndpoint, LbPolicy, LocalityLbEndpoints,
-        OriginalDstConfig, OriginalDstRoutingMethod, OverrideHostConfig, OverrideHostSource, RoutingPriority,
-        StandardLbPolicy, TlsConfig, TlsSecret, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_REQUESTS, DEFAULT_MAX_RETRIES,
+        DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_REQUESTS, DEFAULT_MAX_RETRIES, ExtendedLbPolicy, HealthStatus,
+        HttpProtocolOptions, LbEndpoint, LbPolicy, LocalityLbEndpoints, OriginalDstConfig, OriginalDstRoutingMethod,
+        OverrideHostConfig, OverrideHostSource, RoutingPriority, StandardLbPolicy, TlsConfig, TlsSecret,
+        health_check::{ClusterHostnameError, HealthCheck, HealthCheckProtocol},
     };
     use crate::config::{
         common::*,
@@ -383,30 +384,31 @@ mod envoy_conversions {
         envoy::{
             config::{
                 cluster::v3::{
+                    CircuitBreakers as EnvoyCircuitBreakers, Cluster as EnvoyCluster, LoadBalancingPolicy,
                     circuit_breakers::Thresholds as EnvoyThresholds,
                     cluster::{
                         ClusterDiscoveryType as EnvoyClusterDiscoveryType, DiscoveryType as EnvoyDiscoveryType,
                         LbConfig as EnvoyLbConfig, LbPolicy as EnvoyLbPolicy,
                     },
                     load_balancing_policy::Policy,
-                    CircuitBreakers as EnvoyCircuitBreakers, Cluster as EnvoyCluster, LoadBalancingPolicy,
                 },
                 core::v3::{
                     BindConfig as EnvoyBindConfig, HealthStatus as EnvoyHealthStatus,
                     RoutingPriority as EnvoyRoutingPriority, TransportSocket as EnvoyTransportSocket,
                 },
                 endpoint::v3::{
-                    lb_endpoint::HostIdentifier as EnvoyHostIdentifier,
                     ClusterLoadAssignment as EnvoyClusterLoadAssignment, Endpoint as EnvoyEndpoint,
                     LbEndpoint as EnvoyLbEndpoint, LocalityLbEndpoints as EnvoyLocalityLbEndpoints,
+                    lb_endpoint::HostIdentifier as EnvoyHostIdentifier,
                 },
             },
             extensions::{
                 load_balancing_policies::{
                     least_request::v3::LeastRequest as EnvoyLeastRequest, maglev::v3::Maglev as EnvoyMaglev,
+                    override_host::v3::OverrideHost as EnvoyOverrideHost,
                     override_host::v3::override_host::OverrideHostSource as EnvoyOverrideHostSource,
-                    override_host::v3::OverrideHost as EnvoyOverrideHost, random::v3::Random as EnvoyRandom,
-                    ring_hash::v3::RingHash as EnvoyRingHash, round_robin::v3::RoundRobin as EnvoyRoundRobin,
+                    random::v3::Random as EnvoyRandom, ring_hash::v3::RingHash as EnvoyRingHash,
+                    round_robin::v3::RoundRobin as EnvoyRoundRobin,
                 },
                 transport_sockets::tls::v3::UpstreamTlsContext,
             },
@@ -414,6 +416,7 @@ mod envoy_conversions {
         },
         google::protobuf::Any,
     };
+    use arion_interner::StringInterner;
     use http::HeaderName;
     use smol_str::SmolStr;
 
@@ -708,7 +711,7 @@ mod envoy_conversions {
                     .transpose()
                     .with_node("circuit_breakers")?;
                 Ok(Self {
-                    name: SmolStr::from(&name),
+                    name: name.to_interned_str(),
                     discovery_settings,
                     bind_device,
                     transport_socket,
@@ -1049,7 +1052,7 @@ mod envoy_conversions {
                 EnvoyLbPolicy::LoadBalancingPolicyConfig => {
                     return Err(GenericError::unsupported_variant(
                         "LoadBalancingPolicyConfig - use load_balancing_policy field instead",
-                    ))
+                    ));
                 },
             })
         }

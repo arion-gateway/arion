@@ -16,8 +16,8 @@ use std::fmt::{self, Write as _};
 
 use arion_configuration::config::{
     cluster::{
-        CircuitBreakerThresholds, Cluster as ClusterConfig, ClusterDiscoveryType, HealthStatus, LocalityLbEndpoints,
-        RoutingPriority, DEFAULT_MAX_REQUESTS,
+        CircuitBreakerThresholds, Cluster as ClusterConfig, ClusterDiscoveryType, DEFAULT_MAX_REQUESTS, HealthStatus,
+        LocalityLbEndpoints, RoutingPriority,
     },
     core::Address,
 };
@@ -41,10 +41,11 @@ struct EndpointMetrics {
 
 #[cfg(feature = "metrics")]
 fn cluster_metrics(cluster_name: &str) -> EndpointMetrics {
+    use arion_interner::StringInterner;
     use arion_metrics::metrics::clusters;
     use opentelemetry::KeyValue;
 
-    let key = [KeyValue::new("cluster", cluster_name.to_owned())];
+    let key = [KeyValue::new("cluster", cluster_name.to_static_str())];
     let cx_active = clusters::UPSTREAM_CX_ACTIVE.get().and_then(|m| m.value.load(&key)).unwrap_or(0);
     let cx_connect_fail = clusters::UPSTREAM_CX_CONNECT_FAIL.get().and_then(|m| m.value.load(&key)).unwrap_or(0);
     let cx_total = clusters::UPSTREAM_CX_TOTAL.get().and_then(|m| m.value.load(&key)).unwrap_or(0);
@@ -172,13 +173,12 @@ mod tests {
     use super::*;
     use crate::admin::build_admin_router;
     use arion_configuration::config::{
-        cluster::{Cluster, ClusterLoadAssignment, HttpProtocolOptions, LbEndpoint, LbPolicy, OriginalDstConfig},
         Bootstrap,
+        cluster::{Cluster, ClusterLoadAssignment, HttpProtocolOptions, LbEndpoint, LbPolicy, OriginalDstConfig},
     };
     use arion_lib::clusters::{add_cluster, cluster::PartialClusterType};
     use axum_test::TestServer;
     use parking_lot::RwLock;
-    use smol_str::SmolStr;
     use std::{num::NonZeroU32, time::Instant};
     use triomphe::Arc;
 
@@ -191,9 +191,9 @@ mod tests {
         }
     }
 
-    fn make_cluster(name: &str, discovery_settings: ClusterDiscoveryType) -> Cluster {
+    fn make_cluster(name: &'static str, discovery_settings: ClusterDiscoveryType) -> Cluster {
         Cluster {
-            name: SmolStr::new(name),
+            name: name.into(),
             discovery_settings,
             transport_socket: None,
             bind_device: None,

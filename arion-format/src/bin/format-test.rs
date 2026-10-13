@@ -19,9 +19,9 @@
 //
 
 use arion_format::{
+    LogFormatter,
     context::{Context, DownstreamContext, DownstreamResponseContext, FinishContext, InitContext, SocketAddrContext},
     types::ResponseFlags,
-    LogFormatter,
 };
 use criterion::black_box;
 use http::{Request, Response, StatusCode};

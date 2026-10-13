@@ -24,7 +24,6 @@ use arion_xds::{
     xds::model::{XdsResourcePayload, XdsResourceUpdate},
 };
 use futures::future::select;
-use std::future::IntoFuture;
 use tracing::{debug, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
