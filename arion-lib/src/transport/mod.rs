@@ -30,6 +30,7 @@ mod grpc_channel;
 pub(crate) mod http1_pool;
 pub(crate) mod http2_pool;
 pub(crate) mod http_channel;
+pub(crate) mod pool_permit;
 mod resolver;
 pub mod tcp_channel;
 pub use resolver::resolve;
