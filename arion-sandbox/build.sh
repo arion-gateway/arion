@@ -143,9 +143,11 @@ cargo_args=(
   --locked
 )
 ${OFFLINE} && cargo_args+=(--offline)
-# Select the sandbox's pinned toolchain and target flags without changing how
-# caller-relative paths are resolved by the remaining build steps.
+# Select the sandbox's pinned toolchain, target flags, and target directory,
+# independent of the proxy build environment. Preserve caller-relative paths
+# for the remaining build steps.
 (
+  unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS RUSTUP_TOOLCHAIN CARGO_TARGET_DIR
   cd -- "${SCRIPT_DIR}"
   cargo "${cargo_args[@]}"
 )
@@ -162,9 +164,18 @@ install -m 0644 "${component}" "${ARTIFACT_DIR}/codemode_sandbox.wasm"
 artifact_hash="$(sha256sum "${ARTIFACT_DIR}/codemode_sandbox.wasm")"
 echo "${artifact_hash%% *}  codemode_sandbox.wasm" > "${ARTIFACT_DIR}/codemode_sandbox.wasm.sha256"
 
+guest_lock_hash="$(sha256sum "${SCRIPT_DIR}/Cargo.lock")"
+sandbox_rustc="$(
+  unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS RUSTUP_TOOLCHAIN CARGO_TARGET_DIR
+  cd -- "${SCRIPT_DIR}"
+  rustc --version
+)"
+
 {
   echo "sandbox=arion-codemode-sandbox@0.1.0"
   echo "component=arion:codemode/sandbox@0.1.0"
+  echo "edition=2024"
+  echo "guest-lock-sha256=${guest_lock_hash%% *}"
   echo "rquickjs=${RQUICKJS_VERSION}"
   echo "wit-bindgen=${WIT_BINDGEN_VERSION}"
   echo "target=${TARGET}"
@@ -172,7 +183,7 @@ echo "${artifact_hash%% *}  codemode_sandbox.wasm" > "${ARTIFACT_DIR}/codemode_s
   echo "wizer=${WIZER_VERSION}"
   echo "wasm-tools=${WASM_TOOLS_VERSION}"
   echo "wasi-adapter=wasmtime-${WASMTIME_VERSION}"
-  echo "rustc=$(cd -- "${SCRIPT_DIR}" && rustc --version)"
+  echo "rustc=${sandbox_rustc}"
 } > "${ARTIFACT_DIR}/BUILD_INFO"
 
 echo "Built ${ARTIFACT_DIR}/codemode_sandbox.wasm"

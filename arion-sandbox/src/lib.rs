@@ -21,8 +21,8 @@ wit_bindgen::generate!({
     world: "sandbox",
 });
 
-use exports::arion::codemode::runner::{ExecutionError, Guest};
 use arion::codemode::host;
+use exports::arion::codemode::runner::{ExecutionError, Guest};
 
 const QUICKJS_HEAP_BYTES: usize = 32 * 1024 * 1024;
 const QUICKJS_STACK_BYTES: usize = 1024 * 1024;
@@ -37,7 +37,7 @@ thread_local! {
 }
 
 /// Create the QuickJS runtime before Wizer snapshots the module.
-#[export_name = "wizer.initialize"]
+#[unsafe(export_name = "wizer.initialize")]
 pub extern "C" fn initialize() {
     let runtime = Runtime::new().expect("create QuickJS runtime");
     runtime.set_memory_limit(QUICKJS_HEAP_BYTES);
