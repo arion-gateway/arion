@@ -15,20 +15,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::connector::{UnifiedConnector, map_tls_connect_error};
+use super::{
+    connector::{UnifiedConnector, map_tls_connect_error},
+    pool_permit::{BodyEndPermit, pooled_response},
+};
 use crate::{
     ArionRequestBody, ArionResponseBody, Error, Result,
-    body::{
-        on_end_body::{BodyEndPermit, OnEndBody},
-        poly_body::PolyBody,
-        timeout_body::TimeoutBody,
-    },
+    body::{poly_body::PolyBody, timeout_body::TimeoutBody},
     event_error::UpstreamError,
     thread_local::{LocalBuilder, ThreadLocalObject},
 };
 use http::{Request, Response, StatusCode, Uri, uri::Authority};
 use hyper::{
-    body::Incoming,
     client::conn::http1::{Builder as Http1Builder, SendRequest},
     rt::{Read, Write},
 };
@@ -244,7 +242,12 @@ impl Http1Pool {
     pub async fn send(&self, req: Request<ArionRequestBody>) -> Result<Response<ArionResponseBody>> {
         let mut tx = self.checkout().await?;
         let response = tx.send_request(req).await.map_err(UpstreamError::from)?;
-        Ok(attach_permit(&self.inner, tx, response))
+        if response.status() == StatusCode::SWITCHING_PROTOCOLS {
+            // The connection is taken over by the upgrade and must not be recycled.
+            let (parts, body) = response.into_parts();
+            return Ok(Response::from_parts(parts, TimeoutBody::new(None, PolyBody::from(body)).into()));
+        }
+        Ok(pooled_response(response, BodyEndPermit::Http1(Http1Permit::new(StdArc::clone(&self.inner), tx))))
     }
 
     async fn checkout(&self) -> Result<SendRequest<ArionRequestBody>> {
@@ -287,29 +290,6 @@ impl Http1Pool {
     }
 }
 
-fn attach_permit(
-    inner: &StdArc<Http1PoolInner>,
-    tx: SendRequest<ArionRequestBody>,
-    response: Response<Incoming>,
-) -> Response<ArionResponseBody> {
-    let (parts, body) = response.into_parts();
-    if parts.status == StatusCode::SWITCHING_PROTOCOLS {
-        return Response::from_parts(parts, TimeoutBody::new(None, PolyBody::from(body)).into());
-    }
-    // Empty bodies are often never polled (`is_end_stream` already true). Recycle now.
-    if http_body::Body::is_end_stream(&body) {
-        if !tx.is_closed() {
-            inner.release(tx);
-        }
-        return Response::from_parts(parts, TimeoutBody::new(None, PolyBody::from(body)).into());
-    }
-    Response::from_parts(
-        parts,
-        OnEndBody::new(TimeoutBody::new(None, PolyBody::from(body)))
-            .with_on_end(BodyEndPermit::Http1(Http1Permit::new(StdArc::clone(inner), tx))),
-    )
-}
-
 async fn handshake<T>(io: T) -> Result<SendRequest<ArionRequestBody>>
 where
     T: Read + Write + Unpin + Send + 'static,
@@ -333,4 +313,127 @@ fn dst_uri(authority: &Authority, tls: bool) -> Result<Uri> {
         .path_and_query(http::uri::PathAndQuery::from_static("/"))
         .build()
         .map_err(Error::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transport::connector::ConnectUsing;
+    use arion_interner::StringInterner;
+    use bytes::Bytes;
+
+    use http_body_util::{BodyExt, Empty, StreamBody, combinators::BoxBody};
+    use hyper::{body::Frame, service::service_fn};
+    use hyper_util::rt::TokioIo;
+    use std::{
+        convert::Infallible,
+        net::SocketAddr,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    /// `/empty` answers with no body, `/partial` sends one chunk then stalls, anything else
+    /// answers `hello`. Counts accepted connections.
+    async fn spawn_h1_server() -> (SocketAddr, StdArc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let connections = StdArc::new(AtomicUsize::new(0));
+        let counter = StdArc::clone(&connections);
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                counter.fetch_add(1, Ordering::Relaxed);
+                tokio::spawn(async move {
+                    let service = service_fn(|req: Request<hyper::body::Incoming>| async move {
+                        let body: BoxBody<Bytes, Infallible> = match req.uri().path() {
+                            "/empty" => Empty::new().boxed(),
+                            "/partial" => {
+                                let chunks = futures::StreamExt::chain(
+                                    futures::stream::iter([Ok::<_, Infallible>(Frame::data(Bytes::from_static(
+                                        b"part",
+                                    )))]),
+                                    futures::stream::pending(),
+                                );
+                                StreamBody::new(chunks).boxed()
+                            },
+                            _ => http_body_util::Full::new(Bytes::from_static(b"hello")).boxed(),
+                        };
+                        Ok::<_, Infallible>(Response::new(body))
+                    });
+                    if let Err(err) =
+                        hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(stream), service).await
+                    {
+                        debug!("test h1 server connection closed: {err}");
+                    }
+                });
+            }
+        });
+        (addr, connections)
+    }
+
+    fn pool_for(addr: SocketAddr) -> StdArc<Http1Pool> {
+        let authority = Authority::try_from(addr.to_string()).unwrap();
+        let connect_using = ConnectUsing::Socket {
+            authority: authority.clone(),
+            bind_device: None,
+            connect_timeout: None,
+            idle_timeout: None,
+        };
+        let connector = UnifiedConnector::from((&connect_using, "h1-pool-test".to_interned_str()));
+        Http1PoolBuilder.build(Http1PoolArg {
+            connect: Http1Connect::Plain(connector),
+            dst: dst_uri(&authority, false).unwrap(),
+            idle_timeout: Duration::from_secs(60),
+            is_tls: false,
+        })
+    }
+
+    fn request(addr: SocketAddr, path: &str) -> Request<ArionRequestBody> {
+        Request::builder()
+            .uri(path)
+            .header(http::header::HOST, addr.to_string())
+            .body(ArionRequestBody::default())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn connection_is_reused_after_body_is_consumed() {
+        let (addr, connections) = spawn_h1_server().await;
+        let pool = pool_for(addr);
+
+        for _ in 0..3 {
+            let response = pool.send(request(addr, "/")).await.unwrap();
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(&*body, b"hello");
+        }
+        assert_eq!(connections.load(Ordering::Relaxed), 1, "sequential requests must reuse one connection");
+        assert_eq!(pool.inner.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn empty_body_releases_connection_without_polling() {
+        let (addr, connections) = spawn_h1_server().await;
+        let pool = pool_for(addr);
+
+        let response = pool.send(request(addr, "/empty")).await.unwrap();
+        assert_eq!(pool.inner.len(), 1, "an empty body must recycle the connection immediately");
+        drop(response);
+
+        pool.send(request(addr, "/")).await.unwrap().into_body().collect().await.unwrap();
+        assert_eq!(connections.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn abandoned_body_does_not_recycle_a_busy_connection() {
+        let (addr, connections) = spawn_h1_server().await;
+        let pool = pool_for(addr);
+
+        let mut response = pool.send(request(addr, "/partial")).await.unwrap();
+        let first = response.body_mut().frame().await.unwrap().unwrap();
+        assert_eq!(first.into_data().unwrap(), Bytes::from_static(b"part"));
+        drop(response);
+        assert_eq!(pool.inner.len(), 0, "a connection with an unread body must not go back to the pool");
+
+        pool.send(request(addr, "/")).await.unwrap().into_body().collect().await.unwrap();
+        assert_eq!(connections.load(Ordering::Relaxed), 2, "a fresh connection must be opened");
+    }
 }
