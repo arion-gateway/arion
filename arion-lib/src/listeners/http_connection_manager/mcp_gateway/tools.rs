@@ -25,6 +25,7 @@ use crate::listeners::http_connection_manager::{
         },
         transcoder::{FunctionGraphTranscoder, RestTranscoder, Transcoder, TranscoderType, rest::DEFAULT_USER_AGENT},
         upstream::{self, ToolInvocationFailure, ToolInvocationOutcome},
+        upstream_client::McpHttpClient,
     },
 };
 use crate::with_metric;
@@ -66,40 +67,19 @@ const DYNAMIC_TOOL_SEPARATOR: &str = "__";
 const INDEFINITE_CACHE_LIFETIME: Duration = Duration::from_secs(100 * 365 * 24 * 3600);
 
 const SEMANTIC_SEARCH_TOOL_NAME: &str = "semantic_search";
-thread_local! {
-    /// One HTTP client per OS thread for upstream MCP transports.
-    ///
-    /// `rmcp`'s `StreamableHttpClientTransport::from_uri`/`from_config` build a private
-    /// `reqwest::Client` with `pool_max_idle_per_host(0)`, so each POST opens a fresh
-    /// TCP (+TLS) connection even when the `RunningService` is reused. Each thread-local
-    /// client keeps its own keep-alive pool, while each transport keeps its own MCP
-    /// session state (session id, protocol version) in its worker.
-    static UPSTREAM_REQWEST_CLIENT: Result<reqwest::Client, StdArc<reqwest::Error>> = reqwest::Client::builder()
-        // Keep-alive pool enabled (rmcp's default disables it with
-        // `pool_max_idle_per_host(0)`; omitting that call restores reuse).
-        // Values below mirror reqwest defaults; written out so the intent
-        // is visible instead of relying on the bypassed rmcp default.
-        .pool_max_idle_per_host(usize::MAX)
-        .pool_idle_timeout(Duration::from_secs(90))
-        // Same as rmcp's default: never replay caller headers to a redirect target.
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(StdArc::new);
-}
-
-/// Clone the calling thread's HTTP client. Clones share that thread's keep-alive
-/// pool; pools are never shared across OS threads.
-fn upstream_http_client() -> Result<reqwest::Client, Box<ClientInitializeError>> {
-    UPSTREAM_REQWEST_CLIENT.with(|res| match res {
-        Ok(client) => Ok(client.clone()),
-        Err(err) => Err(Box::new(ClientInitializeError::TransportError {
+/// Build the upstream MCP HTTP client for `url`, sending through the `HttpChannel` of `cluster`
+/// (endpoints, TLS, HTTP/1 or HTTP/2 and connection pools come from the cluster). Each transport
+/// keeps its own MCP session state (session id, protocol version) in its worker.
+fn upstream_http_client(cluster: &str, url: &str) -> Result<McpHttpClient, Box<ClientInitializeError>> {
+    McpHttpClient::try_new(cluster, url).map_err(|err| {
+        Box::new(ClientInitializeError::TransportError {
             error: DynamicTransportError::from_parts(
-                "reqwest",
-                std::any::TypeId::of::<reqwest::Client>(),
-                Box::new(StdArc::clone(err)),
+                "arion-cluster",
+                std::any::TypeId::of::<McpHttpClient>(),
+                Box::new(err),
             ),
-            context: "failed to build upstream reqwest client".into(),
-        })),
+            context: "failed to build upstream MCP http client".into(),
+        })
     })
 }
 
@@ -623,7 +603,8 @@ impl ToolsRegistry {
 
     async fn fetch_dynamic_server_tools(server: &DynamicMcpServerEntry) -> Result<Vec<ToolEntry>, ListToolsError> {
         let server_name = server.conf.name.clone();
-        let upstream_tools = Self::list_upstream_tools(&server.conf.transport, &server.conf.url).await?;
+        let upstream_tools =
+            Self::list_upstream_tools(&server.conf.transport, &server.conf.cluster, &server.conf.url).await?;
 
         let entries = upstream_tools
             .into_iter()
@@ -640,6 +621,7 @@ impl ToolsRegistry {
                     backend: UpstreamBackend::McpServer {
                         transport: server.conf.transport.clone(),
                         url: server.conf.url.clone(),
+                        cluster: server.conf.cluster.clone(),
                     },
                     rbac: server.conf.rbac.clone(),
                     embedding: EmbeddingVector::default(),
@@ -663,12 +645,13 @@ impl ToolsRegistry {
 
     async fn list_upstream_tools(
         transport: &McpBackendTransportUpstream,
+        cluster: &str,
         url: &str,
     ) -> Result<Vec<Tool>, ListToolsError> {
-        debug!(target: "mcp_gateway", "Listing tools from upstream with transport {transport:?} at {url}");
+        debug!(target: "mcp_gateway", "Listing tools from upstream with transport {transport:?} at {url} (cluster {cluster})");
         match transport {
             McpBackendTransportUpstream::StreamableHttp => {
-                let client = Self::get_mcp_client(url).await?;
+                let client = Self::get_mcp_client(cluster, url).await?;
                 let tools = client.list_tools(Option::default()).await?;
                 Ok(tools.tools)
             },
@@ -677,11 +660,12 @@ impl ToolsRegistry {
     }
 
     async fn get_mcp_client(
+        cluster: &str,
         url: &str,
     ) -> Result<RunningService<RoleClient, InitializeRequestParams>, Box<ClientInitializeError>> {
-        debug!(target: "mcp_gateway", "Creating MCP client for URL: {url}...");
+        debug!(target: "mcp_gateway", "Creating MCP client for URL: {url} (cluster {cluster})...");
         let transport = StreamableHttpClientTransport::with_client(
-            upstream_http_client()?,
+            upstream_http_client(cluster, url)?,
             StreamableHttpClientTransportConfig::with_uri(url),
         );
         let client_info =
@@ -916,7 +900,7 @@ impl ToolsRegistry {
                     result,
                 }))
             },
-            (UpstreamBackend::McpServer { url, .. }, TranscoderType::NoTranscoder) => {
+            (UpstreamBackend::McpServer { url, cluster, .. }, TranscoderType::NoTranscoder) => {
                 // For dynamic tools the upstream expects the original tool
                 // name (pre-namespacing). For static McpServer-backed tools
                 // the exposed name IS the upstream name.
@@ -930,7 +914,7 @@ impl ToolsRegistry {
                     let client = if let Some(client) = cached {
                         client
                     } else {
-                        let new_client = StdArc::new(Self::get_mcp_client(url).await?);
+                        let new_client = StdArc::new(Self::get_mcp_client(cluster, url).await?);
                         StdArc::clone(session.mcp_upstreams.pin().get_or_insert(url.to_owned(), new_client))
                     };
 
@@ -1441,6 +1425,7 @@ mod tests {
             backend: UpstreamBackend::McpServer {
                 transport: McpBackendTransportUpstream::StreamableHttp,
                 url: "http://localhost/mcp".into(),
+                cluster: "mcp".into(),
             },
             rbac: None,
             embedding: EmbeddingVector::default(),
@@ -1474,6 +1459,7 @@ mod tests {
             description: String::new(),
             transport: McpBackendTransportUpstream::StreamableHttp,
             url: "http://localhost/mcp".into(),
+            cluster: "mcp".into(),
             cache_duration: None,
             rbac: None,
         };
@@ -1489,6 +1475,7 @@ mod tests {
                 backend: UpstreamBackend::McpServer {
                     transport: McpBackendTransportUpstream::StreamableHttp,
                     url: "http://localhost/mcp".into(),
+                    cluster: "mcp".into(),
                 },
                 rbac: None,
                 embedding: EmbeddingVector::default(),
@@ -1796,11 +1783,12 @@ mod tests {
 
     #[test]
     fn test_upstream_http_client_initialization() {
-        let client_res = upstream_http_client();
-        assert!(client_res.is_ok(), "upstream_http_client should initialize without error: {client_res:?}");
-        let client_a = client_res.unwrap();
-        let client_b = upstream_http_client().unwrap();
-        drop(client_a);
-        drop(client_b);
+        upstream_http_client("mcp", "http://127.0.0.1:9/mcp").expect("valid url must build a client");
+    }
+
+    #[test]
+    fn test_upstream_http_client_rejects_invalid_url() {
+        assert!(upstream_http_client("mcp", "not a url").is_err());
+        assert!(upstream_http_client("mcp", "ftp://example.com/mcp").is_err());
     }
 }

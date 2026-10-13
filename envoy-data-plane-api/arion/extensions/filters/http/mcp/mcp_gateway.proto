@@ -82,6 +82,10 @@ message McpServerBackend {
   }
   TransportUpstream transport = 1;
   string url = 2 [(validate.rules).string = {min_bytes: 1}];
+  // Cluster used to reach the MCP server. The cluster endpoints, TLS context
+  // and HTTP protocol options (HTTP/1 or HTTP/2) are taken from its
+  // configuration; `url` only provides the request path (and query).
+  string cluster = 3 [(validate.rules).string = {min_bytes: 1}];
 }
 
 // Source of dynamically discovered tools. The gateway calls tools/list on the
@@ -96,6 +100,8 @@ message DynamicMcpServer {
   google.protobuf.Duration cache_duration = 5;
   // Applied to every tool materialised from this server.
   optional ToolRbac rbac = 6;
+  // Cluster used to reach the MCP server, see McpServerBackend.cluster.
+  string cluster = 7 [(validate.rules).string = {min_bytes: 1}];
 }
 
 // Tool Discovery Service binding. config_name selects which TDS stream's

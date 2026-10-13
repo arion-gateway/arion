@@ -451,6 +451,7 @@ dependencies = [
  "serde_yaml",
  "smallvec",
  "smol_str",
+ "sse-stream",
  "str-utils",
  "test-log",
  "thiserror 2.0.21",
