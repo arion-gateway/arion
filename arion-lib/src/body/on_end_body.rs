@@ -15,8 +15,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::transport::http1_pool::Http1Permit;
-use crate::transport::http2_pool::Http2StreamPermit;
 use http_body::{Body, SizeHint};
 use pin_project::pin_project;
 use std::{
@@ -25,115 +23,117 @@ use std::{
     task::{Context, Poll},
 };
 
-/// Recycles an HTTP/1 connection or releases an HTTP/2 stream slot when the body ends.
-pub enum BodyEndPermit {
-    Http1(Http1Permit),
-    Http2(Http2StreamPermit),
+/// Action run once when the wrapped body ends.
+///
+/// `completed` is `true` when the body reached its end, `false` when it failed or was dropped
+/// before the end.
+pub trait OnBodyEnd {
+    fn on_body_end(self, completed: bool);
 }
 
-impl BodyEndPermit {
-    fn on_body_end(self, completed: bool) {
-        match self {
-            Self::Http1(permit) => permit.on_body_end(completed),
-            Self::Http2(permit) => permit.on_body_end(completed),
-        }
-    }
+/// No action.
+impl OnBodyEnd for () {
+    #[inline]
+    fn on_body_end(self, _completed: bool) {}
 }
 
-/// Dropping the hook without `notify_complete` treats the body as aborted.
-struct BodyEndHook {
-    inner: Option<Box<BodyEndPermit>>,
-}
+/// Holds the hook inline and runs it at most once. Dropping it without [`Self::complete`]
+/// treats the body as aborted.
+struct HookSlot<H: OnBodyEnd>(Option<H>);
 
-impl BodyEndHook {
-    fn none() -> Self {
-        Self { inner: None }
-    }
-
-    fn set(&mut self, hook: BodyEndPermit) {
-        self.inner = Some(Box::new(hook));
-    }
-
-    fn notify_complete(&mut self) {
-        if let Some(hook) = self.inner.take() {
+impl<H: OnBodyEnd> HookSlot<H> {
+    #[inline]
+    fn complete(&mut self) {
+        if let Some(hook) = self.0.take() {
             hook.on_body_end(true);
         }
     }
 
-    fn notify_abort(&mut self) {
-        if let Some(hook) = self.inner.take() {
+    #[inline]
+    fn abort(&mut self) {
+        if let Some(hook) = self.0.take() {
             hook.on_body_end(false);
         }
     }
 }
 
-impl Drop for BodyEndHook {
+impl<H: OnBodyEnd> Drop for HookSlot<H> {
     fn drop(&mut self) {
-        self.notify_abort();
+        self.abort();
     }
 }
 
-/// Wraps a response body and runs a pool permit when the stream ends or is dropped.
+/// Wraps a body and runs an [`OnBodyEnd`] hook when the stream ends, fails or is dropped.
 #[pin_project]
-pub struct OnEndBody<B> {
+pub struct OnEndBody<B, H: OnBodyEnd> {
     #[pin]
     body: B,
-    on_end: BodyEndHook,
+    hook: HookSlot<H>,
 }
 
-impl<B> std::fmt::Debug for OnEndBody<B>
+impl<B, H> std::fmt::Debug for OnEndBody<B, H>
 where
     B: std::fmt::Debug,
+    H: OnBodyEnd,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OnEndBody").field("body", &self.body).finish_non_exhaustive()
     }
 }
 
-impl<B> Default for OnEndBody<B>
+impl<B, H> Default for OnEndBody<B, H>
 where
     B: Default,
+    H: OnBodyEnd,
 {
     fn default() -> Self {
         Self::new(B::default())
     }
 }
 
-impl<B> OnEndBody<B> {
+impl<B, H: OnBodyEnd> OnEndBody<B, H> {
     #[inline]
     pub fn new(inner: B) -> Self {
-        Self { body: inner, on_end: BodyEndHook::none() }
+        Self { body: inner, hook: HookSlot(None) }
     }
 
+    /// Attaches the hook. When the body is already at end of stream (empty bodies are often
+    /// never polled) the hook runs right away.
     #[must_use]
-    pub fn with_on_end(mut self, hook: BodyEndPermit) -> Self {
-        self.on_end.set(hook);
+    pub fn with_on_end(mut self, hook: H) -> Self
+    where
+        B: Body,
+    {
+        self.hook.0 = Some(hook);
+        if self.body.is_end_stream() {
+            self.hook.complete();
+        }
         self
     }
 
-    pub fn map_into<B2>(self) -> OnEndBody<B2>
+    pub fn map_into<B2>(self) -> OnEndBody<B2, H>
     where
         B: Into<B2>,
     {
         self.map_inner(Into::into)
     }
 
-    pub fn map_inner<B2, F>(self, f: F) -> OnEndBody<B2>
+    pub fn map_inner<B2, F>(self, f: F) -> OnEndBody<B2, H>
     where
         F: FnOnce(B) -> B2,
     {
-        OnEndBody { body: f(self.body), on_end: self.on_end }
+        OnEndBody { body: f(self.body), hook: self.hook }
     }
 }
 
-impl<B> From<B> for OnEndBody<B> {
+impl<B, H: OnBodyEnd> From<B> for OnEndBody<B, H> {
     #[inline]
     fn from(inner: B) -> Self {
         Self::new(inner)
     }
 }
 
-impl<B> Deref for OnEndBody<B> {
+impl<B, H: OnBodyEnd> Deref for OnEndBody<B, H> {
     type Target = B;
 
     #[inline]
@@ -142,16 +142,17 @@ impl<B> Deref for OnEndBody<B> {
     }
 }
 
-impl<B> DerefMut for OnEndBody<B> {
+impl<B, H: OnBodyEnd> DerefMut for OnEndBody<B, H> {
     #[inline]
     fn deref_mut(&mut self) -> &mut B {
         &mut self.body
     }
 }
 
-impl<B> Body for OnEndBody<B>
+impl<B, H> Body for OnEndBody<B, H>
 where
     B: Body,
+    H: OnBodyEnd,
 {
     type Data = B::Data;
     type Error = B::Error;
@@ -161,24 +162,24 @@ where
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
         let mut this = self.project();
-        if this.on_end.inner.is_none() {
+        if this.hook.0.is_none() {
             return this.body.poll_frame(cx);
         }
         match this.body.as_mut().poll_frame(cx) {
             Poll::Ready(None) => {
-                this.on_end.notify_complete();
+                this.hook.complete();
                 Poll::Ready(None)
             },
             Poll::Ready(Some(Ok(frame))) => {
                 // Consumers often stop after the last data frame when `is_end_stream` is true
-                // and never poll `None`. Recycle now or Drop would treat the body as aborted.
+                // and never poll `None`. Run the hook now or Drop would treat the body as aborted.
                 if this.body.as_ref().is_end_stream() {
-                    this.on_end.notify_complete();
+                    this.hook.complete();
                 }
                 Poll::Ready(Some(Ok(frame)))
             },
             Poll::Ready(Some(Err(err))) => {
-                this.on_end.notify_abort();
+                this.hook.abort();
                 Poll::Ready(Some(Err(err)))
             },
             Poll::Pending => Poll::Pending,
@@ -193,5 +194,60 @@ where
     #[inline]
     fn size_hint(&self) -> SizeHint {
         self.body.size_hint()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Empty, Full};
+    use std::{cell::Cell, rc::Rc};
+
+    struct Record(Rc<Cell<Option<bool>>>);
+
+    impl OnBodyEnd for Record {
+        fn on_body_end(self, completed: bool) {
+            assert!(self.0.replace(Some(completed)).is_none(), "hook must run once");
+        }
+    }
+
+    fn recorded() -> (Record, Rc<Cell<Option<bool>>>) {
+        let cell = Rc::new(Cell::new(None));
+        (Record(Rc::clone(&cell)), cell)
+    }
+
+    #[tokio::test]
+    async fn hook_reports_completion_when_body_is_consumed() {
+        let (hook, seen) = recorded();
+        let body = OnEndBody::new(Full::new(Bytes::from_static(b"data"))).with_on_end(hook);
+        body.collect().await.unwrap();
+        assert_eq!(seen.get(), Some(true));
+    }
+
+    #[test]
+    fn hook_reports_completion_immediately_for_empty_body() {
+        let (hook, seen) = recorded();
+        let body = OnEndBody::new(Empty::<Bytes>::new()).with_on_end(hook);
+        assert_eq!(seen.get(), Some(true));
+        drop(body);
+        assert_eq!(seen.get(), Some(true));
+    }
+
+    #[test]
+    fn hook_reports_abort_when_body_is_dropped_unread() {
+        let (hook, seen) = recorded();
+        drop(OnEndBody::new(Full::new(Bytes::from_static(b"data"))).with_on_end(hook));
+        assert_eq!(seen.get(), Some(false));
+    }
+
+    #[test]
+    fn map_inner_keeps_the_hook() {
+        let (hook, seen) = recorded();
+        let body = OnEndBody::new(Full::new(Bytes::from_static(b"data"))).with_on_end(hook);
+        let mapped: OnEndBody<Option<()>, Record> = body.map_inner(|_| None);
+        assert_eq!(seen.get(), None);
+        drop(mapped);
+        assert_eq!(seen.get(), Some(false));
     }
 }
