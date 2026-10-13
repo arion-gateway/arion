@@ -147,10 +147,11 @@ envoy_bootstrap:
                               path: "/v1/admin/user"
                           # --- tools served by an upstream MCP server ---
                           # Pinned by name rather than discovered: the gateway
-                          # dials `url` directly with its own MCP client (no
-                          # cluster involved) and sends `name` upstream verbatim
-                          # in tools/call, so it must match the upstream tool
-                          # name exactly. Set `transport` explicitly, the proto
+                          # reaches the upstream through `cluster` (endpoints,
+                          # TLS and HTTP/1 or HTTP/2 come from the cluster; `url`
+                          # only provides the path and Host header) and sends
+                          # `name` upstream verbatim in tools/call, so it must
+                          # match the upstream tool name exactly. Set `transport` explicitly, the proto
                           # default is Sse and only StreamableHttp is
                           # implemented. Schemas are optional here: omitted,
                           # tools/list advertises an empty input schema;
@@ -164,11 +165,13 @@ envoy_bootstrap:
                             mcp_server_backend:
                               transport: StreamableHttp
                               url: http://127.0.0.1:3001/mcp
+                              cluster: mcp_upstream_cluster
                           - name: "add"
                             description: "Add two numbers"
                             mcp_server_backend:
                               transport: StreamableHttp
                               url: http://127.0.0.1:3001/mcp
+                              cluster: mcp_upstream_cluster
                         # Upstream MCP servers whose tools are discovered at
                         # runtime. Each server materialises one registry entry
                         # per tool it exposes, namespaced as `{name}__{tool}`.
@@ -177,6 +180,7 @@ envoy_bootstrap:
                             description: "everything mcp server"
                             transport: StreamableHttp
                             url: http://127.0.0.1:3001/mcp
+                            cluster: mcp_upstream_cluster
                             cache_duration: 10s
                         # Uncomment to bind this filter to an xDS Tool Discovery
                         # Service stream. Tool and DynamicMcpServer resources
@@ -226,3 +230,18 @@ envoy_bootstrap:
                       socket_address:
                         address: 127.0.0.1
                         port_value: 4002
+
+      # Upstream MCP server used by the mcp_server_backend tools and by the
+      # `everything` dynamic MCP server.
+      - name: mcp_upstream_cluster
+        connect_timeout: 0.25s
+        type: STATIC
+        lb_policy: ROUND_ROBIN
+        load_assignment:
+          endpoints:
+            - lb_endpoints:
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 3001
