@@ -791,10 +791,9 @@ impl TransactionContext {
             let listener_attr = [KeyValue::new("listener", listener_name.as_str())];
 
             #[cfg(feature = "metrics")]
-            let user_attrs = self
-                .user_partition_key
-                .as_ref()
-                .map(|key| [KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), key.as_str())]);
+            let user_attrs = self.user_partition_key.map(|user_key| {
+                [KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_key.as_str())]
+            });
 
             #[cfg(feature = "metrics")]
             if let Some(ref attrs) = user_attrs {
@@ -921,25 +920,25 @@ impl HttpPipelineSvc {
 
         if ctx.conn.stream_metrics.inc_requests() == 0 {
             #[cfg(feature = "metrics")]
-            if let Some(user_partition_key) = ctx.txn.user_partition_key {
+            if let Some(user_key) = ctx.txn.user_partition_key {
                 let user_attr_name = metrics::USER_KEY.attribute_name().unwrap_or("user");
                 with_metric!(
                     user::CONNECTIONS,
                     add,
                     1,
                     ctx.txn.shard_id,
-                    &[KeyValue::new(user_attr_name, user_partition_key.as_str())]
+                    &[KeyValue::new(user_attr_name, user_key.as_str())]
                 );
                 with_metric!(
                     user::CONNECTIONS_ACTIVE,
                     add,
                     1,
                     ctx.txn.shard_id,
-                    &[KeyValue::new(user_attr_name, user_partition_key.as_str())]
+                    &[KeyValue::new(user_attr_name, user_key.as_str())]
                 );
 
                 // store the user_partition_key to decrement CONNECTIONS_ACTIVE later, when the stream is closed.
-                ctx.conn.stream_metrics.set_user_partition_key(user_partition_key);
+                ctx.conn.stream_metrics.set_user_partition_key(user_key);
             }
         }
 
@@ -1020,7 +1019,7 @@ impl HttpPipelineSvc {
                                         shard_id,
                                         &[opentelemetry::KeyValue::new("cluster", cluster.as_str())]
                                     );
-                                    if let Some(user_key) = trans_ctx.user_partition_key.as_ref() {
+                                    if let Some(user_key) = trans_ctx.user_partition_key {
                                         let user_attr_name =
                                             crate::metrics::USER_KEY.attribute_name().unwrap_or("user");
                                         crate::with_histogram!(
@@ -1260,10 +1259,13 @@ impl RequestHandler<Request<ArionRequestBody>, &HttpConnectionManager> for &Rout
                         if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
                             for key in custom_keys {
                                 if let Some(source) = key.source()
-                                    && let Some(id) =
+                                    && let Some(custom_id) =
                                         metrics::extract_custom_partition_key(response.headers(), Some(source))
                                 {
-                                    attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id.as_str()));
+                                    attrs.push(KeyValue::new(
+                                        key.attribute_name().unwrap_or("custom"),
+                                        custom_id.as_str(),
+                                    ));
                                 }
                             }
                         }
@@ -1613,9 +1615,9 @@ impl TransactionSvc<HttpPipelineSvc> {
             if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
                 for key in custom_keys {
                     if let Some(source) = key.source()
-                        && let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source))
+                        && let Some(custom_id) = metrics::extract_custom_partition_key(request.headers(), Some(source))
                     {
-                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id.as_str()));
+                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), custom_id.as_str()));
                     }
                 }
             }
@@ -1736,9 +1738,9 @@ impl TransactionSvc<HttpPipelineSvc> {
             if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
                 for key in custom_keys {
                     if let Some(source) = key.source()
-                        && let Some(id) = metrics::extract_custom_partition_key(response.headers(), Some(source))
+                        && let Some(custom_id) = metrics::extract_custom_partition_key(response.headers(), Some(source))
                     {
-                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id.as_str()));
+                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), custom_id.as_str()));
                     }
                 }
             }
@@ -1894,7 +1896,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
     let latency = params.trans_start_time.elapsed();
 
     #[cfg(feature = "metrics")]
-    if let Some(user_partition_key) = params.user_partition_key {
+    if let Some(user_key) = params.user_partition_key {
         let user_attr_name = metrics::USER_KEY.attribute_name().unwrap_or("user");
         with_histogram!(
             user::LATENCY,
@@ -1904,7 +1906,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
                 latency.as_millis() as u64
             },
             params.m_ctx.shard_id,
-            &[KeyValue::new(user_attr_name, user_partition_key.as_str())]
+            &[KeyValue::new(user_attr_name, user_key.as_str())]
         );
     }
 
@@ -1971,7 +1973,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
     );
 
     #[cfg(feature = "metrics")]
-    if let Some(user_partition_key) = user_partition_key {
+    if let Some(user_key) = user_partition_key {
         let user_attr_name = metrics::USER_KEY.attribute_name().unwrap_or("user");
         with_metric!(
             user::BYTES_TX,
@@ -1979,7 +1981,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
             wire_bytes_received,
             shard_id,
             &[
-                KeyValue::new(user_attr_name, user_partition_key.as_str()),
+                KeyValue::new(user_attr_name, user_key.as_str()),
                 KeyValue::new("listener", params.listener_name.as_str())
             ]
         );
@@ -1989,7 +1991,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
             wire_bytes_sent,
             shard_id,
             &[
-                KeyValue::new(user_attr_name, user_partition_key.as_str()),
+                KeyValue::new(user_attr_name, user_key.as_str()),
                 KeyValue::new("listener", params.listener_name.as_str())
             ]
         );

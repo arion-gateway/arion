@@ -142,13 +142,13 @@ impl<C: OnFlush> Drop for StreamMetrics<C> {
         }
 
         #[cfg(feature = "metrics")]
-        if let Some(user_partition_key) = self.user_partition_key.as_ref(Ordering::Relaxed) {
+        if let Some(user_key) = self.user_partition_key.as_ref(Ordering::Relaxed) {
             with_metric!(
                 user::CONNECTIONS_ACTIVE,
                 sub,
                 1,
                 get_shard_id!(),
-                &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key.as_str())]
+                &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_key.as_str())]
             );
         }
     }

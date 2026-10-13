@@ -278,9 +278,8 @@ impl CustomMetrics {
         base_attributes.extend(extra_attributes.iter().cloned());
 
         for counter in &counters.counters {
-            if let Some(val_str) = get_value(&counter.header_name) {
-                let val_static = val_str.to_static_str();
-                let kv = KeyValue::new(counter.attr_name, val_static);
+            if let Some(header_name_str) = get_value(&counter.header_name) {
+                let kv = KeyValue::new(counter.attr_name, header_name_str.to_static_str());
                 base_attributes.push(kv);
                 counter.metric.value.add(1, shard_id, &base_attributes);
                 base_attributes.pop();

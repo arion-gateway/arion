@@ -422,8 +422,8 @@ pub(crate) fn outcome_failure_code(outcome: &ToolInvocationOutcome) -> Option<&'
 pub(crate) fn record_tool_invocation(tool_name: &str, started: Instant, outcome: &ToolInvocationOutcome) {
     let shard_id = get_shard_id!();
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let static_tool_name = tool_name.to_static_str();
-    let tool_attrs = &[KeyValue::new("tool", static_tool_name)];
+    let tool_name = tool_name.to_static_str();
+    let tool_attrs = &[KeyValue::new("tool", tool_name)];
     with_metric!(mcp_metrics::TOOL_RQ_TOTAL, add, 1, shard_id, tool_attrs);
     with_histogram!(mcp_metrics::TOOL_RQ_TIME, record, elapsed_ms, shard_id, tool_attrs);
     if let Some(error_code) = outcome_failure_code(outcome) {
@@ -432,7 +432,7 @@ pub(crate) fn record_tool_invocation(tool_name: &str, started: Instant, outcome:
             add,
             1,
             shard_id,
-            &[KeyValue::new("tool", static_tool_name), KeyValue::new("error", error_code)]
+            &[KeyValue::new("tool", tool_name), KeyValue::new("error", error_code)]
         );
     }
 }

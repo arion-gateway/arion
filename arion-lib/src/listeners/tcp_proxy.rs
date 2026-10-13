@@ -212,7 +212,7 @@ impl TcpProxy {
                                 crate::metrics::USER_KEY.source(),
                             );
 
-                            if let Some(user_partition_key) = user_partition_key {
+                            if let Some(user_key) = user_partition_key {
                                 with_metric!(
                                     user::BYTES_RX,
                                     add,
@@ -221,7 +221,7 @@ impl TcpProxy {
                                     &[
                                         KeyValue::new(
                                             crate::metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                            user_partition_key.as_str()
+                                            user_key.as_str()
                                         ),
                                         KeyValue::new("listener", metadata.listener_name.as_str())
                                     ]
@@ -234,7 +234,7 @@ impl TcpProxy {
                                     &[
                                         KeyValue::new(
                                             crate::metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                            user_partition_key.as_str()
+                                            user_key.as_str()
                                         ),
                                         KeyValue::new("listener", metadata.listener_name.as_str())
                                     ]

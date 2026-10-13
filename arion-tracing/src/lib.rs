@@ -39,6 +39,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use arc_swap::ArcSwap;
 use arion_configuration::config::network_filters::tracing::{SupportedTracingProvider, TracingConfig, TracingKey};
+use arion_interner::InternedStr;
 use opentelemetry::global::BoxedTracer;
 use parking_lot::Mutex;
 use smol_str::{SmolStr, ToSmolStr};
@@ -47,7 +48,7 @@ use thiserror::Error;
 
 #[allow(dead_code)]
 struct OtelConfig {
-    service_name: SmolStr,
+    service_name: InternedStr,
     target_uri: String,
 }
 
@@ -98,10 +99,7 @@ impl TryFrom<&TracingConfig> for OtelConfig {
         let google_grpc = grpc_service.google_grpc.as_ref().ok_or(OtelConfigError::MissingGrpcService)?;
 
         // Build the final configuration
-        Ok(OtelConfig {
-            service_name: opentelemetry_config.service_name.clone(),
-            target_uri: google_grpc.target_uri.clone(),
-        })
+        Ok(OtelConfig { service_name: opentelemetry_config.service_name, target_uri: google_grpc.target_uri.clone() })
     }
 }
 
@@ -169,7 +167,7 @@ fn insert_tracer(
     //
 
     let resource = Resource::builder()
-        .with_attribute(KeyValue::new("service.name", config.service_name.to_string()))
+        .with_attribute(KeyValue::new("service.name", config.service_name.as_str()))
         .with_attribute(KeyValue::new("service.version", env!("CARGO_PKG_VERSION")))
         .build();
 

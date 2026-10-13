@@ -115,9 +115,9 @@ impl ConnectUsing {
                 Ok(ConnectUsing::Socket { authority, bind_device, connect_timeout, idle_timeout })
             },
             Address::Internal(internal) => {
-                let static_listener_name = internal.server_listener_name.to_interned_str();
-                let synthetic_authority = Authority::try_from(format!("{static_listener_name}.listener.internal:80"))?;
-                Ok(ConnectUsing::InternalListener { listener_name: static_listener_name, synthetic_authority })
+                let listener_name = internal.server_listener_name.to_interned_str();
+                let synthetic_authority = Authority::try_from(format!("{listener_name}.listener.internal:80"))?;
+                Ok(ConnectUsing::InternalListener { listener_name, synthetic_authority })
             },
             Address::Pipe(path, _) => {
                 Err(format!("Pipe addresses are not supported for upstream connections: {path}").into())
@@ -426,19 +426,18 @@ impl Service<Uri> for UnifiedConnector {
         match self {
             UnifiedConnector::Socket(c) => {
                 #[allow(unused_variables)]
-                let static_cluster_name = c.cluster_name.as_str();
+                let cluster_name = c.cluster_name.as_str();
 
                 // Check and increment circuit breaker connections
-                if let Err(_denial) = crate::clusters::try_increment_connections(
-                    static_cluster_name,
-                    crate::clusters::RoutingPriority::Default,
-                ) {
+                if let Err(_denial) =
+                    crate::clusters::try_increment_connections(cluster_name, crate::clusters::RoutingPriority::Default)
+                {
                     return Box::pin(async move {
                         Err(crate::Error::upstream(UpstreamError::Connect(Box::new(ConnectError {
                             context: TcpErrorContext {
                                 upstream_addr: None,
                                 response_flags: ResponseFlags::UPSTREAM_OVERFLOW,
-                                cluster_name: static_cluster_name.into(),
+                                cluster_name: cluster_name.into(),
                             },
                             kind: ConnectErrorKind::CircuitBreaker,
                         }))))
@@ -454,10 +453,7 @@ impl Service<Uri> for UnifiedConnector {
                     let stream = fut.await;
                     let stream = stream.inspect_err(|e| {
                         // Decrement circuit breaker connections since connection failed
-                        crate::clusters::decrement_connections(
-                            static_cluster_name,
-                            crate::clusters::RoutingPriority::Default,
-                        );
+                        crate::clusters::decrement_connections(cluster_name, crate::clusters::RoutingPriority::Default);
 
                         let is_timeout = e
                             .find_source::<UpstreamError>()
@@ -469,7 +465,7 @@ impl Service<Uri> for UnifiedConnector {
                                 add,
                                 1,
                                 shard_id,
-                                &[KeyValue::new("cluster", static_cluster_name)]
+                                &[KeyValue::new("cluster", cluster_name)]
                             );
                         } else {
                             // Record generic connection failure metric
@@ -478,7 +474,7 @@ impl Service<Uri> for UnifiedConnector {
                                 add,
                                 1,
                                 shard_id,
-                                &[KeyValue::new("cluster", static_cluster_name)]
+                                &[KeyValue::new("cluster", cluster_name)]
                             );
                         }
                     })?;
@@ -495,20 +491,20 @@ impl Service<Uri> for UnifiedConnector {
                             add,
                             1,
                             shard_id,
-                            &[KeyValue::new("cluster", static_cluster_name)]
+                            &[KeyValue::new("cluster", cluster_name)]
                         );
                         with_metric!(
                             clusters::UPSTREAM_CX_ACTIVE,
                             add,
                             1,
                             shard_id,
-                            &[KeyValue::new("cluster", static_cluster_name)]
+                            &[KeyValue::new("cluster", cluster_name)]
                         );
 
                         instrumented.metrics().with_drop_fn(Box::new(move |metrics, idle| {
                             // Decrement circuit breaker connections on connection drop
                             crate::clusters::decrement_connections(
-                                static_cluster_name,
+                                cluster_name,
                                 crate::clusters::RoutingPriority::Default,
                             );
 
@@ -517,14 +513,14 @@ impl Service<Uri> for UnifiedConnector {
                                 add,
                                 metrics.bytes_read(),
                                 shard_id,
-                                &[KeyValue::new("cluster", static_cluster_name)]
+                                &[KeyValue::new("cluster", cluster_name)]
                             );
                             with_metric!(
                                 clusters::UPSTREAM_CX_TX_BYTES_TOTAL,
                                 add,
                                 metrics.bytes_written(),
                                 shard_id,
-                                &[KeyValue::new("cluster", static_cluster_name)]
+                                &[KeyValue::new("cluster", cluster_name)]
                             );
 
                             with_metric!(
@@ -532,14 +528,14 @@ impl Service<Uri> for UnifiedConnector {
                                 add,
                                 1,
                                 shard_id,
-                                &[KeyValue::new("cluster", static_cluster_name)]
+                                &[KeyValue::new("cluster", cluster_name)]
                             );
                             with_metric!(
                                 clusters::UPSTREAM_CX_ACTIVE,
                                 sub,
                                 1,
                                 shard_id,
-                                &[KeyValue::new("cluster", static_cluster_name)]
+                                &[KeyValue::new("cluster", cluster_name)]
                             );
 
                             if idle > idle_timeout {
@@ -548,7 +544,7 @@ impl Service<Uri> for UnifiedConnector {
                                     add,
                                     1,
                                     shard_id,
-                                    &[KeyValue::new("cluster", static_cluster_name)]
+                                    &[KeyValue::new("cluster", cluster_name)]
                                 );
                             }
                         }))
@@ -558,7 +554,7 @@ impl Service<Uri> for UnifiedConnector {
                         instrumented.metrics().with_drop_fn(Box::new(move |_metrics, _idle| {
                             // Decrement circuit breaker connections on connection drop even if metrics are disabled
                             crate::clusters::decrement_connections(
-                                static_cluster_name,
+                                cluster_name,
                                 crate::clusters::RoutingPriority::Default,
                             );
                         }))

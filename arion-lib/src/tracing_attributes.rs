@@ -109,6 +109,6 @@ pub fn set_attributes_from_request<B>(span: &mut BoxedSpan, request: &Request<B>
         ),
     ]);
 
-    request.uri().query().inspect(|q| span.set_attribute(KeyValue::new(URL_QUERY, q.to_string())));
-    request.uri().scheme().inspect(|s| span.set_attribute(KeyValue::new(URL_SCHEME, s.to_static_str())));
+    request.uri().query().inspect(|query| span.set_attribute(KeyValue::new(URL_QUERY, query.to_string())));
+    request.uri().scheme().inspect(|scheme| span.set_attribute(KeyValue::new(URL_SCHEME, scheme.to_static_str())));
 }

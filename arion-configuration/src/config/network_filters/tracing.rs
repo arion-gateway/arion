@@ -21,7 +21,6 @@
 use ::bounded_integer::BoundedU16;
 use arion_interner::InternedStr;
 use serde::{Deserialize, Serialize};
-use smol_str::SmolStr;
 
 use arion_data_plane_api::envoy_data_plane_api::envoy::{
     extensions::filters::network::http_connection_manager::v3::http_connection_manager::Tracing as EnvoyTracing,
@@ -43,7 +42,7 @@ pub enum SupportedTracingProvider {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct OpenTelemetryConfig {
     pub grpc_service: Option<GrpcService>,
-    pub service_name: SmolStr,
+    pub service_name: InternedStr,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -74,7 +73,7 @@ pub struct TracingKey(pub ListenerName, pub FilterChainMatchHash);
 mod envoy_conversions {
     use crate::config::{GenericError, common::envoy_conversions::IsUsed, unsupported_field};
     use arion_data_plane_api::envoy_data_plane_api::prost::Message;
-    use smol_str::ToSmolStr;
+    use arion_interner::StringInterner;
 
     use super::*;
 
@@ -162,7 +161,7 @@ mod envoy_conversions {
 
             Ok(SupportedTracingProvider::OpenTelemetry(OpenTelemetryConfig {
                 grpc_service,
-                service_name: service_name.to_smolstr(),
+                service_name: service_name.to_interned_str(),
             }))
         }
     }

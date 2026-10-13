@@ -52,7 +52,8 @@ pub const MAX_ENTRIES_ENV_VAR: &str = "ARION_INTERNER_MAX_ENTRIES";
 static INTERNER: LazyLock<Map> =
     LazyLock::new(|| HashMap::with_capacity_and_hasher(INITIAL_CAPACITY, ahash::RandomState::new()));
 
-static MAX_ENTRIES: LazyLock<usize> = LazyLock::new(|| parse_max_entries(std::env::var(MAX_ENTRIES_ENV_VAR).ok().as_deref()));
+static MAX_ENTRIES: LazyLock<usize> =
+    LazyLock::new(|| parse_max_entries(std::env::var(MAX_ENTRIES_ENV_VAR).ok().as_deref()));
 
 /// Maximum number of distinct strings the global interner accepts.
 #[inline]

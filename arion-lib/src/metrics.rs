@@ -16,7 +16,7 @@ use arion_configuration::config::metrics::{PartitionKeySource, SourceHeaderName,
 use arion_interner::{InternedStr, StringInterner};
 use atomicoption::AtomicOption;
 use http::HeaderMap;
-use smol_str::{SmolStr};
+use smol_str::SmolStr;
 use std::sync::{OnceLock, atomic::Ordering};
 
 #[macro_export]
@@ -114,7 +114,9 @@ pub fn extract_user_partition_key(
             .and_then(|value| value.to_str().ok())
             .filter(|s| !s.is_empty() && s.len() <= MAX_PARTITION_KEY_LENGTH)
             .map(StringInterner::to_interned_str),
-        SourceHeaderNameOrSni::Sni => sni.filter(|s| !s.is_empty() && s.len() <= MAX_PARTITION_KEY_LENGTH).map(StringInterner::to_interned_str),
+        SourceHeaderNameOrSni::Sni => {
+            sni.filter(|s| !s.is_empty() && s.len() <= MAX_PARTITION_KEY_LENGTH).map(StringInterner::to_interned_str)
+        },
     })
 }
 
@@ -126,7 +128,12 @@ pub const MAX_CUSTOM_KEY_LENGTH: usize = 256;
 pub fn extract_custom_partition_key(headers: &HeaderMap, source: Option<&SourceHeaderName>) -> Option<InternedStr> {
     // Extracts the custom partition key from headers based on the provided source name.
     let SourceHeaderName::HeaderName(keym) = source?;
-    headers.get(keym)?.to_str().ok().filter(|s| !s.is_empty() && s.len() <= MAX_CUSTOM_KEY_LENGTH).map(StringInterner::to_interned_str)
+    headers
+        .get(keym)?
+        .to_str()
+        .ok()
+        .filter(|s| !s.is_empty() && s.len() <= MAX_CUSTOM_KEY_LENGTH)
+        .map(StringInterner::to_interned_str)
 }
 
 #[cfg(test)]

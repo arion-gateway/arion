@@ -218,8 +218,6 @@ impl FilterchainType {
         let Some(rate_limit) = &self.config.network_global_rate_limit else {
             return Ok(());
         };
-        #[cfg(feature = "metrics")]
-        let static_stat_prefix = rate_limit.stat_prefix.as_str();
         match rate_limit.check(sni).await {
             Ok(()) => {
                 #[cfg(feature = "metrics")]
@@ -230,7 +228,7 @@ impl FilterchainType {
                     get_shard_id!(),
                     &[
                         KeyValue::new("listener", listener_name.as_str()),
-                        KeyValue::new("filter", static_stat_prefix),
+                        KeyValue::new("filter", rate_limit.stat_prefix.as_str()),
                         KeyValue::new("result", filters::EVENT_OK)
                     ]
                 );
@@ -245,7 +243,7 @@ impl FilterchainType {
                     get_shard_id!(),
                     &[
                         KeyValue::new("listener", listener_name.as_str()),
-                        KeyValue::new("filter", static_stat_prefix),
+                        KeyValue::new("filter", rate_limit.stat_prefix.as_str()),
                         KeyValue::new("result", filters::EVENT_RATE_LIMITED)
                     ]
                 );

@@ -168,12 +168,14 @@ impl<'a> RequestHandler<Request<ArionRequestBody>, (RouteContext<'a>, &HttpConne
                 #[cfg(feature = "tracing")]
                 if let Some(ref mut client_span) = client_span {
                     // set default attributes to span, using upstream request information...
+
+                    use arion_interner::StringInterner;
                     set_attributes_from_request(client_span, &upstream_request);
 
                     // set additional attributes for client span...
                     client_span.set_attributes([
                         KeyValue::new(UPSTREAM_CLUSTER_NAME, svc_channel.cluster_name().as_str()),
-                        KeyValue::new(UPSTREAM_ADDRESS, svc_channel.upstream_authority().to_string()),
+                        KeyValue::new(UPSTREAM_ADDRESS, svc_channel.upstream_authority().as_str().to_static_str()),
                     ]);
                 }
 
