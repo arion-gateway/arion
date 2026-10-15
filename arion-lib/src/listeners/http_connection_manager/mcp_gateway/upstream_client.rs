@@ -49,12 +49,12 @@ use rmcp::{
     model::{
         CallToolRequestMethod, CallToolRequestParams, CallToolResult, CancelTaskParams, ClientJsonRpcMessage,
         ClientNotification, ClientRequest, CompleteRequestMethod, CompleteRequestParams, CompleteResult, ConstString,
-        DiscoverRequestMethod, DiscoverResult, EmptyResult, ErrorData, GetPromptRequestMethod, GetPromptRequestParams,
-        GetPromptResult, GetTaskParams, GetTaskResult, InitializeRequestParams, InitializeResult,
-        InitializeResultMethod, InitializedNotificationMethod, JsonObject, JsonRpcMessage, JsonRpcVersion2_0,
-        ListPromptsRequestMethod, ListPromptsResult, ListResourceTemplatesRequestMethod, ListResourceTemplatesResult,
-        ListResourcesRequestMethod, ListResourcesResult, ListToolsRequestMethod, ListToolsResult,
-        PaginatedRequestParams, PingRequestMethod, Prompt, ProtocolVersion, ReadResourceRequestMethod,
+        DiscoverRequestMethod, DiscoverResult, EmptyResult, ErrorCode, ErrorData, GetPromptRequestMethod,
+        GetPromptRequestParams, GetPromptResult, GetTaskParams, GetTaskResult, InitializeRequestParams,
+        InitializeResult, InitializeResultMethod, InitializedNotificationMethod, JsonObject, JsonRpcMessage,
+        JsonRpcVersion2_0, ListPromptsRequestMethod, ListPromptsResult, ListResourceTemplatesRequestMethod,
+        ListResourceTemplatesResult, ListResourcesRequestMethod, ListResourcesResult, ListToolsRequestMethod,
+        ListToolsResult, PaginatedRequestParams, PingRequestMethod, Prompt, ProtocolVersion, ReadResourceRequestMethod,
         ReadResourceRequestParams, ReadResourceResult, RequestId, Resource, ResourceTemplate, ServerJsonRpcMessage,
         ServerResult, SetLevelRequestMethod, SubscribeRequestMethod, SubscribeRequestParams,
         SubscriptionsListenRequestMethod, SubscriptionsListenResult, TaskAckResult, Tool, UnsubscribeRequestMethod,
@@ -305,6 +305,20 @@ struct OutboundJsonRpcNotification<'a, P: Serialize> {
 }
 
 #[derive(Serialize)]
+struct OutboundJsonRpcResponse<'a, R: Serialize> {
+    jsonrpc: JsonRpcVersion2_0,
+    id: &'a DirectResponseId,
+    result: R,
+}
+
+#[derive(Serialize)]
+struct OutboundJsonRpcErrorResponse<'a> {
+    jsonrpc: JsonRpcVersion2_0,
+    id: &'a DirectResponseId,
+    error: ErrorData,
+}
+
+#[derive(Serialize)]
 struct BorrowedCallToolParams<'a> {
     name: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -325,6 +339,16 @@ impl DirectResponseId {
         match self {
             Self::Number(n) => *n == expected,
             Self::String(s) => s.parse::<i64>() == Ok(expected),
+        }
+    }
+}
+
+impl Serialize for DirectResponseId {
+    #[inline]
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Number(n) => serializer.serialize_i64(*n),
+            Self::String(s) => serializer.serialize_str(s.as_str()),
         }
     }
 }
@@ -380,6 +404,22 @@ impl<'de> Deserialize<'de> for DirectResponseId {
 struct DirectJsonRpcEnvelope<R> {
     #[serde(default)]
     id: Option<DirectResponseId>,
+    #[serde(default)]
+    result: Option<R>,
+    #[serde(default)]
+    error: Option<ErrorData>,
+}
+
+/// Single-pass JSON-RPC envelope used on `text/event-stream` (SSE) responses, where the server
+/// may interleave notifications (`method` without `id`) or server-to-client requests (`method`
+/// with `id`, e.g. `ping`) before sending the final response (`result` or `error` without `method`).
+#[derive(Deserialize)]
+#[serde(bound(deserialize = "R: Deserialize<'de>"))]
+struct SseJsonRpcEnvelope<'a, R> {
+    #[serde(default)]
+    id: Option<DirectResponseId>,
+    #[serde(default, borrow)]
+    method: Option<Cow<'a, str>>,
     #[serde(default)]
     result: Option<R>,
     #[serde(default)]
@@ -507,9 +547,10 @@ impl McpUpstreamClient {
         }
 
         let session_id = response.headers().get(MCP_SESSION_ID).cloned();
-        let outcome = Self::decode_response_body::<InitializeResult>(response, init_id)
-            .await
-            .map_err(|e| Self::into_init_transport_error(e, "process initialize response"))?;
+        let outcome =
+            Self::decode_response_body::<InitializeResult>(http, session_id.as_ref(), None, response, init_id)
+                .await
+                .map_err(|e| Self::into_init_transport_error(e, "process initialize response"))?;
 
         let init_result = match outcome {
             DirectRpcOutcome::Result(res) => res,
@@ -604,6 +645,9 @@ impl McpUpstreamClient {
     }
 
     async fn decode_response_body<R: DeserializeOwned>(
+        http: &McpHttpClient,
+        session_id: Option<&HeaderValue>,
+        protocol_version: Option<&HeaderValue>,
         response: Response<ArionResponseBody>,
         expected_id: i64,
     ) -> Result<DirectRpcOutcome<R>, ClientError> {
@@ -620,15 +664,79 @@ impl McpUpstreamClient {
                 return Self::extract_envelope_outcome(envelope, expected_id);
             }
             if ct.starts_with(EVENT_STREAM_MIME_TYPE) {
-                return Self::decode_sse_response_body::<R>(response.into_body(), expected_id).await;
+                return Self::decode_sse_response_body::<R>(
+                    http,
+                    session_id,
+                    protocol_version,
+                    response.into_body(),
+                    expected_id,
+                )
+                .await;
             }
         }
         Err(StreamableHttpError::UnexpectedContentType(content_type.map(str::to_owned)))
     }
 
+    /// Replies to a server-to-client JSON-RPC request received on an SSE stream:
+    /// - `ping` -> `{"jsonrpc": "2.0", "id": <id>, "result": {}}`
+    /// - any other method -> `{"jsonrpc": "2.0", "id": <id>, "error": {"code": -32601, "message": "<method>"}}`
+    #[cold]
+    #[inline(never)]
+    async fn reply_to_server_request(
+        http: &McpHttpClient,
+        session_id: Option<&HeaderValue>,
+        protocol_version: Option<&HeaderValue>,
+        server_req_id: &DirectResponseId,
+        method: &str,
+    ) {
+        let mut buf = Vec::with_capacity(128);
+        let encode_res = if method == PingRequestMethod::VALUE {
+            serde_json::to_writer(
+                &mut buf,
+                &OutboundJsonRpcResponse {
+                    jsonrpc: JsonRpcVersion2_0,
+                    id: server_req_id,
+                    result: EmptyResult {},
+                },
+            )
+        } else {
+            serde_json::to_writer(
+                &mut buf,
+                &OutboundJsonRpcErrorResponse {
+                    jsonrpc: JsonRpcVersion2_0,
+                    id: server_req_id,
+                    error: ErrorData::new(ErrorCode::METHOD_NOT_FOUND, method.to_owned(), None),
+                },
+            )
+        };
+        if encode_res.is_err() {
+            return;
+        }
+        let req = http.build_direct_post_request(session_id, protocol_version, Bytes::from(buf));
+        match http.send(req).await {
+            Ok(resp) => {
+                if let Err(err) = Self::expect_notification_response(resp).await {
+                    tracing::debug!(
+                        target: "mcp_gateway",
+                        "server-initiated request reply was not accepted cleanly: {err}"
+                    );
+                }
+            },
+            Err(err) => {
+                tracing::debug!(
+                    target: "mcp_gateway",
+                    "failed to send reply for server-initiated request '{method}': {err}"
+                );
+            },
+        }
+    }
+
     /// Reads an SSE response stream directly on the current task's stack (without `BoxStream`
     /// allocation or `tokio::spawn`) until the response or error matching `expected_id` arrives.
     async fn decode_sse_response_body<R: DeserializeOwned>(
+        http: &McpHttpClient,
+        session_id: Option<&HeaderValue>,
+        protocol_version: Option<&HeaderValue>,
         body: ArionResponseBody,
         expected_id: i64,
     ) -> Result<DirectRpcOutcome<R>, ClientError> {
@@ -651,15 +759,29 @@ impl McpUpstreamClient {
             if data.trim().is_empty() {
                 continue;
             }
-            let envelope = match serde_json::from_str::<DirectJsonRpcEnvelope<R>>(&data) {
+            let envelope = match serde_json::from_str::<SseJsonRpcEnvelope<'_, R>>(&data) {
                 Ok(env) => env,
                 Err(e) => {
                     tracing::debug!(target: "mcp_gateway", "ignoring non-matching or malformed SSE JSON frame: {e}");
                     continue;
                 },
             };
+            if let Some(method) = envelope.method {
+                // Frame has a `"method"` field: it is a server-to-client request (if `id` is Some)
+                // or a server notification (if `id` is None), never a response to our request.
+                if let Some(ref server_req_id) = envelope.id {
+                    Box::pin(Self::reply_to_server_request(
+                        http,
+                        session_id,
+                        protocol_version,
+                        server_req_id,
+                        method.as_ref(),
+                    ))
+                    .await;
+                }
+                continue;
+            }
             if envelope.result.is_none() && envelope.error.is_none() {
-                // Intermediate server notification or server-initiated request on the SSE stream.
                 continue;
             }
             if let Some(ref got_id) = envelope.id
@@ -667,7 +789,10 @@ impl McpUpstreamClient {
             {
                 continue;
             }
-            return Self::extract_envelope_outcome(envelope, expected_id);
+            return Self::extract_envelope_outcome(
+                DirectJsonRpcEnvelope { id: envelope.id, result: envelope.result, error: envelope.error },
+                expected_id,
+            );
         }
 
         Err(StreamableHttpError::UnexpectedEndOfStream)
@@ -719,7 +844,14 @@ impl McpUpstreamClient {
         if !status.is_success() {
             return Self::read_error_response(response, status).await.map(DirectRpcOutcome::RpcError);
         }
-        Self::decode_response_body::<R>(response, id).await
+        Self::decode_response_body::<R>(
+            &self.http,
+            state.session_id.as_ref(),
+            Some(&state.protocol_version),
+            response,
+            id,
+        )
+        .await
     }
 
     async fn send_raw_request<R: DeserializeOwned>(&self, id: i64, payload: Bytes) -> Result<R, ServiceError> {
@@ -1624,6 +1756,8 @@ mod tests {
         struct Stats {
             connections: AtomicUsize,
             requests: AtomicUsize,
+            ping_replies: AtomicUsize,
+            method_not_found_replies: AtomicUsize,
         }
 
         fn json_response(status: u16, body: &Value, session: bool) -> Response<Full<Bytes>> {
@@ -1643,6 +1777,15 @@ mod tests {
             let session_attached = req.headers().contains_key(MCP_SESSION_ID);
             let body = req.into_body().collect().await.unwrap().to_bytes();
             let msg: Value = serde_json::from_slice(&body).unwrap();
+            // Client JSON-RPC Response / Error to a server-initiated request has no `method`.
+            if msg.get("method").is_none() {
+                if msg.get("result").is_some() {
+                    stats.ping_replies.fetch_add(1, Ordering::Relaxed);
+                } else if msg["error"]["code"].as_i64() == Some(i64::from(ErrorCode::METHOD_NOT_FOUND.0)) {
+                    stats.method_not_found_replies.fetch_add(1, Ordering::Relaxed);
+                }
+                return Response::builder().status(202).body(Full::new(Bytes::new())).unwrap();
+            }
             let id = msg["id"].clone();
             match msg["method"].as_str().unwrap_or_default() {
                 "initialize" => json_response(
@@ -1674,6 +1817,36 @@ mod tests {
                         "content": [{"type": "text", "text": format!("called:{name}")}],
                         "isError": false,
                     }});
+                    if name == "sse_interactive" {
+                        // Interleave:
+                        // 1) a server notification
+                        // 2) a server-to-client `ping` using the SAME `id` as the client's request
+                        // 3) a server-to-client `roots/list` request
+                        // 4) the final `CallToolResult`
+                        let progress = json!({
+                            "jsonrpc": "2.0",
+                            "method": "notifications/progress",
+                            "params": {"progressToken": 1, "progress": 50}
+                        });
+                        let server_ping = json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "method": "ping"
+                        });
+                        let server_roots = json!({
+                            "jsonrpc": "2.0",
+                            "id": "srv-roots-1",
+                            "method": "roots/list"
+                        });
+                        let sse_body = format!(
+                            "data: {progress}\n\ndata: {server_ping}\n\ndata: {server_roots}\n\ndata: {reply}\n\n"
+                        );
+                        return Response::builder()
+                            .status(200)
+                            .header(CONTENT_TYPE, EVENT_STREAM_MIME_TYPE)
+                            .body(Full::new(Bytes::from(sse_body)))
+                            .unwrap();
+                    }
                     json_response(200, &reply, false)
                 },
                 m if m.starts_with("notifications/") => {
@@ -1758,12 +1931,23 @@ load_assignment:
             let call_res = client.call_tool_borrowed("echo", None).await.expect("tools/call must succeed");
             assert_eq!(call_res.is_error, Some(false));
 
+            let sse_call_res = client
+                .call_tool_borrowed("sse_interactive", None)
+                .await
+                .expect("SSE interactive tools/call must succeed");
+            assert_eq!(sse_call_res.is_error, Some(false));
+            assert_eq!(stats.ping_replies.load(Ordering::Relaxed), 1);
+            assert_eq!(stats.method_not_found_replies.load(Ordering::Relaxed), 1);
+
             drop(client);
             remove_cluster(cluster).unwrap();
 
             let requests = stats.requests.load(Ordering::Relaxed);
             let connections = stats.connections.load(Ordering::Relaxed);
-            assert_eq!(requests, 6, "expected initialize, initialized, 3 tools/list and 1 tools/call, got {requests}");
+            assert_eq!(
+                requests, 9,
+                "expected initialize, initialized, 3 tools/list, 2 tools/call, and 2 server-request replies, got {requests}"
+            );
             assert!(
                 connections < requests,
                 "connections must be reused: {connections} connections for {requests} requests"
