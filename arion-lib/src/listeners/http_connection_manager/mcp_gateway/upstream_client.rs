@@ -34,7 +34,7 @@ use arc_swap::ArcSwap;
 use arion_http_header::{LAST_EVENT_ID, MCP_PROTOCOL_VERSION, MCP_SESSION_ID};
 use arion_interner::{InternedStr, StringInterner};
 use bytes::{BufMut, Bytes, BytesMut};
-use futures::{FutureExt, Stream, StreamExt, stream::BoxStream};
+use futures::{Stream, StreamExt, stream::BoxStream};
 use http::{
     HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri,
     header::{ACCEPT, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HOST, WWW_AUTHENTICATE},
@@ -777,10 +777,11 @@ impl McpUpstreamClient {
     /// Reads an SSE response stream directly on the current task's stack:
     /// 1. **Zero-copy fast path**: if the first HTTP body chunk contains one or more complete
     ///    single-line SSE events (`data: {...}\n\n`), parses the JSON slice directly in-place
-    ///    without allocating `SseStream` buffers or `String`s, and drains any immediately ready
-    ///    EOF frame (`now_or_never`) so Hyper returns the HTTP/1.1 connection to the pool!
+    ///    without allocating `SseStream` buffers or `String`s, and awaits the terminating EOF
+    ///    frame (`0\r\n\r\n`) so Hyper's `Connection` task marks the HTTP/1.1 connection as clean
+    ///    and recycles it into the connection pool!
     /// 2. **Streaming fallback**: if an event spans multiple TCP chunks or uses multi-line `data:`,
-    ///    falls back to `SseStream` and drains ready EOF on completion.
+    ///    falls back to `SseStream` and awaits EOF on completion.
     async fn decode_sse_response_body<R: DeserializeOwned>(
         http: &McpHttpClient,
         session_id: Option<&HeaderValue>,
@@ -809,51 +810,61 @@ impl McpUpstreamClient {
                 ))
                 .await;
             }
-            // Drain ready EOF (e.g. HTTP/1.1 chunked `0\r\n\r\n` or completed `Content-Length`)
-            // so `hyper` marks the connection as clean and recycles it into the connection pool!
-            drain_ready_eof(&mut data_stream);
+            // Await the terminating EOF (`0\r\n\r\n` on HTTP/1.1 chunked) so Hyper's connection
+            // driver finishes decoding the response body and returns the socket to the pool!
+            drain_body_eof(&mut data_stream).await;
             return Ok(outcome);
         }
 
         // Slow path: the response spans multiple chunks, exceeds the fast-path size check, or uses
         // multi-line `data:` fields; `BoundedSseByteStream` enforces `DEFAULT_MAX_SSE_EVENT_SIZE`.
-        let chained = futures::stream::once(std::future::ready(Ok(first_chunk))).chain(&mut data_stream);
-        let bounded = BoundedSseByteStream {
-            inner: chained,
-            limiter: SseEventSizeLimiter::new(DEFAULT_MAX_SSE_EVENT_SIZE),
-            failed: false,
-        };
-        let mut sse_stream = std::pin::pin!(SseStream::from_bytes_stream(bounded));
-
-        while let Some(event) = sse_stream.next().await {
-            let sse = event?;
-            let is_message_event = matches!(sse.event.as_deref(), None | Some("" | "message"));
-            if !is_message_event {
-                continue;
-            }
-            let Some(data) = sse.data else {
-                continue;
+        let outcome = {
+            let chained = futures::stream::once(std::future::ready(Ok(first_chunk))).chain(&mut data_stream);
+            let bounded = BoundedSseByteStream {
+                inner: chained,
+                limiter: SseEventSizeLimiter::new(DEFAULT_MAX_SSE_EVENT_SIZE),
+                failed: false,
             };
-            let trimmed = data.trim().as_bytes();
-            if trimmed.is_empty() {
-                continue;
+            let mut sse_stream = std::pin::pin!(SseStream::from_bytes_stream(bounded));
+
+            let mut found = None;
+            while let Some(event) = sse_stream.next().await {
+                let sse = event?;
+                let is_message_event = matches!(sse.event.as_deref(), None | Some("" | "message"));
+                if !is_message_event {
+                    continue;
+                }
+                let Some(data) = sse.data else {
+                    continue;
+                };
+                let trimmed = data.trim().as_bytes();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                match Self::evaluate_sse_json_slice::<R>(trimmed, expected_id)? {
+                    SseFrameAction::Continue => {},
+                    SseFrameAction::ServerRequest { id, method } => {
+                        Box::pin(Self::reply_to_server_request(
+                            http,
+                            session_id,
+                            protocol_version,
+                            &id,
+                            method.as_str(),
+                        ))
+                        .await;
+                    },
+                    SseFrameAction::Done(res) => {
+                        found = Some(res);
+                        break;
+                    },
+                }
             }
-            match Self::evaluate_sse_json_slice::<R>(trimmed, expected_id)? {
-                SseFrameAction::Continue => {},
-                SseFrameAction::ServerRequest { id, method } => {
-                    Box::pin(Self::reply_to_server_request(
-                        http,
-                        session_id,
-                        protocol_version,
-                        &id,
-                        method.as_str(),
-                    ))
-                    .await;
-                },
-                SseFrameAction::Done(outcome) => {
-                    return Ok(outcome);
-                },
-            }
+            found
+        };
+
+        if let Some(outcome) = outcome {
+            drain_body_eof(&mut data_stream).await;
+            return Ok(outcome);
         }
 
         Err(StreamableHttpError::UnexpectedEndOfStream)
@@ -1253,12 +1264,15 @@ impl McpUpstreamClient {
     }
 }
 
-/// Non-blockingly drains any already-buffered EOF (`None`) from the response body stream so that
-/// Hyper's HTTP/1.1 connection state machine sees the response body as fully consumed and returns
-/// the underlying socket to the connection pool instead of closing it.
+/// Drains the remaining EOF frame (`0\r\n\r\n` for HTTP/1.1 chunked encoding) from the response
+/// body stream so that Hyper's HTTP/1.1 connection driver sees the response body as completed and
+/// returns the socket to the connection pool instead of closing the TCP connection.
 #[inline]
-fn drain_ready_eof<S: Stream + Unpin>(stream: &mut S) {
-    while let Some(Some(_)) = stream.next().now_or_never() {}
+async fn drain_body_eof<S, T, E>(stream: &mut S)
+where
+    S: Stream<Item = Result<T, E>> + Unpin,
+{
+    while let Some(Ok(_)) = stream.next().await {}
 }
 
 type FastSseParseResult<R> = Option<(DirectRpcOutcome<R>, Vec<(DirectResponseId, SmolStr)>)>;
