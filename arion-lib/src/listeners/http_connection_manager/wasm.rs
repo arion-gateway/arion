@@ -365,7 +365,7 @@ impl WasmFilter {
         if self.inner.hooks.contains(HookFlags::ON_TRANSACTION_START) {
             let state = match self.get_state().await {
                 Ok(s) => s,
-                Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
+                Err(e) => return FilterDecision::internal_server_error(e.to_string(), req.version()),
             };
             if let Some(on_tx_start) = state.hooks.on_transaction_start.clone() {
                 _ = on_tx_start.call_async(&mut *state.store, ()).await;
@@ -380,7 +380,7 @@ impl WasmFilter {
         if self.state.get_mut().is_none()
             && let Err(e) = self.get_state().await
         {
-            return FilterDecision::internal_server_error(&e.to_string(), req.version());
+            return FilterDecision::internal_server_error(e.to_string(), req.version());
         }
 
         let req_handle = std::ptr::from_mut::<Request<ArionRequestBody>>(req) as u64;
@@ -391,14 +391,14 @@ impl WasmFilter {
                 state.store.data_mut().active_request_handle = Some(req_handle);
                 state.store.data_mut().active_request_ctx = Some(ctx_handle);
             },
-            Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
+            Err(e) => return FilterDecision::internal_server_error(e.to_string(), req.version()),
         }
 
         // PHASE 1: headers evaluation
         let action_code: Result<FilterAction, WasmError> = if self.inner.hooks.contains(HookFlags::ON_REQUEST_HEADERS) {
             let state = match self.require_state() {
                 Ok(s) => s,
-                Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
+                Err(e) => return FilterDecision::internal_server_error(e.to_string(), req.version()),
             };
 
             if let Some(on_headers) = state.hooks.on_request_headers.clone() {
@@ -436,7 +436,7 @@ impl WasmFilter {
                     if self.inner.hooks.contains(HookFlags::ON_REQUEST_BODY) {
                         let state = match self.require_state() {
                             Ok(s) => s,
-                            Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
+                            Err(e) => return FilterDecision::internal_server_error(e.to_string(), req.version()),
                         };
 
                         if let Some(on_body) = state.hooks.on_request_body.clone() {
@@ -487,7 +487,7 @@ impl WasmFilter {
                         // DirectResponse
                         let state = match self.require_state() {
                             Ok(s) => s,
-                            Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
+                            Err(e) => return FilterDecision::internal_server_error(e.to_string(), req.version()),
                         };
                         let direct_resp = state.store.data_mut().direct_response.take();
                         if let Some(mut response) = direct_resp {
@@ -506,10 +506,10 @@ impl WasmFilter {
                         }
                     },
                     Ok(action) => FilterDecision::internal_server_error(
-                        &format!("Invalid body action code: {action:?}"),
+                        format!("Invalid body action code: {action:?}"),
                         req.version(),
                     ),
-                    Err(e) => FilterDecision::internal_server_error(&e.to_string(), req.version()),
+                    Err(e) => FilterDecision::internal_server_error(e.to_string(), req.version()),
                 }
             },
 
@@ -517,7 +517,7 @@ impl WasmFilter {
                 // DirectResponse
                 let state = match self.require_state() {
                     Ok(s) => s,
-                    Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
+                    Err(e) => return FilterDecision::internal_server_error(e.to_string(), req.version()),
                 };
                 let direct_resp = state.store.data_mut().direct_response.take();
 
@@ -534,7 +534,7 @@ impl WasmFilter {
                 }
             },
 
-            Err(e) => FilterDecision::internal_server_error(&e.to_string(), req.version()),
+            Err(e) => FilterDecision::internal_server_error(e.to_string(), req.version()),
         };
 
         self.extract_and_apply_access_log_operators(req_ctx);
@@ -580,7 +580,7 @@ impl WasmFilter {
         if self.state.get_mut().is_none()
             && let Err(e) = self.get_state().await
         {
-            return FilterDecision::internal_server_error(&e.to_string(), response.version());
+            return FilterDecision::internal_server_error(e.to_string(), response.version());
         }
 
         let resp_handle = std::ptr::from_mut::<Response<ArionResponseBody>>(response) as u64;
@@ -591,7 +591,7 @@ impl WasmFilter {
                 s.store.data_mut().active_response_handle = Some(resp_handle);
                 s.store.data_mut().active_request_ctx = Some(ctx_handle);
             },
-            Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
+            Err(e) => return FilterDecision::internal_server_error(e.to_string(), response.version()),
         }
 
         // PHASE 1: headers evaluation
@@ -599,7 +599,7 @@ impl WasmFilter {
         {
             let state = match self.require_state() {
                 Ok(s) => s,
-                Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
+                Err(e) => return FilterDecision::internal_server_error(e.to_string(), response.version()),
             };
 
             if let Some(on_response_headers) = state.hooks.on_response_headers.clone() {
@@ -641,7 +641,7 @@ impl WasmFilter {
                         let state = match self.require_state() {
                             Ok(s) => s,
                             Err(e) => {
-                                return FilterDecision::internal_server_error(&e.to_string(), response.version());
+                                return FilterDecision::internal_server_error(e.to_string(), response.version());
                             },
                         };
 
@@ -688,7 +688,7 @@ impl WasmFilter {
                         // DirectResponse
                         let state = match self.require_state() {
                             Ok(s) => s,
-                            Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
+                            Err(e) => return FilterDecision::internal_server_error(e.to_string(), response.version()),
                         };
                         let direct_resp = state.store.data_mut().direct_response.take();
                         if let Some(mut direct) = direct_resp {
@@ -707,10 +707,10 @@ impl WasmFilter {
                         }
                     },
                     Ok(action) => FilterDecision::internal_server_error(
-                        &format!("Invalid response body action code: {action:?}"),
+                        format!("Invalid response body action code: {action:?}"),
                         response.version(),
                     ),
-                    Err(e) => FilterDecision::internal_server_error(&e.to_string(), response.version()),
+                    Err(e) => FilterDecision::internal_server_error(e.to_string(), response.version()),
                 }
             },
 
@@ -718,7 +718,7 @@ impl WasmFilter {
                 // DirectResponse
                 let state = match self.require_state() {
                     Ok(s) => s,
-                    Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
+                    Err(e) => return FilterDecision::internal_server_error(e.to_string(), response.version()),
                 };
                 let direct_resp = state.store.data_mut().direct_response.take();
 
@@ -738,7 +738,7 @@ impl WasmFilter {
                 }
             },
 
-            Err(e) => FilterDecision::internal_server_error(&e.to_string(), response.version()),
+            Err(e) => FilterDecision::internal_server_error(e.to_string(), response.version()),
         };
 
         self.extract_and_apply_access_log_operators(req_ctx);
