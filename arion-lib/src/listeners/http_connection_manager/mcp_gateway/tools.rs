@@ -14,6 +14,8 @@
 
 #[cfg(feature = "metrics")]
 use crate::get_shard_id;
+#[cfg(test)]
+use crate::listeners::http_connection_manager::mcp_gateway::upstream_client::McpHttpClient;
 use crate::listeners::http_connection_manager::{
     RequestCtx,
     mcp_gateway::{
@@ -25,7 +27,7 @@ use crate::listeners::http_connection_manager::{
         },
         transcoder::{FunctionGraphTranscoder, RestTranscoder, Transcoder, TranscoderType, rest::DEFAULT_USER_AGENT},
         upstream::{self, ToolInvocationFailure, ToolInvocationOutcome},
-        upstream_client::McpHttpClient,
+        upstream_client::McpUpstreamClient,
     },
 };
 use crate::with_metric;
@@ -39,20 +41,19 @@ use jsonschema::Validator;
 use opentelemetry::KeyValue;
 use papaya::HashMap as PapayaMap;
 use pingora_timeout::fast_timeout::fast_timeout;
-use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-use rmcp::transport::{DynamicTransportError, StreamableHttpClientTransport};
+#[cfg(test)]
+use rmcp::transport::DynamicTransportError;
 use rmcp::{
-    ServiceError, ServiceExt,
+    ServiceError,
     model::{
-        CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, ContentBlock, Implementation,
-        InitializeRequestParams, JsonRpcNotification, ServerNotification, ToolListChangedNotification,
+        CallToolResult, ClientCapabilities, ClientConfig, ContentBlock, Implementation, JsonRpcNotification,
+        ServerNotification, ToolListChangedNotification,
     },
     service::ClientInitializeError,
 };
 
 use rmcp::model;
 use rmcp::model::{ListToolsResult, Tool};
-use rmcp::service::{RoleClient, RunningService};
 use scopeguard::defer;
 use serde_json::{Value, json};
 use smol_str::{SmolStr, format_smolstr};
@@ -68,8 +69,8 @@ const INDEFINITE_CACHE_LIFETIME: Duration = Duration::from_secs(100 * 365 * 24 *
 
 const SEMANTIC_SEARCH_TOOL_NAME: &str = "semantic_search";
 /// Build the upstream MCP HTTP client for `url`, sending through the `HttpChannel` of `cluster`
-/// (endpoints, TLS, HTTP/1 or HTTP/2 and connection pools come from the cluster). Each transport
-/// keeps its own MCP session state (session id, protocol version) in its worker.
+/// (endpoints, TLS, HTTP/1 or HTTP/2 and connection pools come from the cluster).
+#[cfg(test)]
 fn upstream_http_client(cluster: &str, url: &str) -> Result<McpHttpClient, Box<ClientInitializeError>> {
     McpHttpClient::try_new(cluster, url).map_err(|err| {
         Box::new(ClientInitializeError::TransportError {
@@ -691,21 +692,13 @@ impl ToolsRegistry {
     async fn get_mcp_client(
         cluster: &str,
         url: &str,
-    ) -> Result<RunningService<RoleClient, InitializeRequestParams>, Box<ClientInitializeError>> {
+    ) -> Result<McpUpstreamClient, Box<ClientInitializeError>> {
         debug!(target: "mcp_gateway", "Creating MCP client for URL: {url} (cluster {cluster})...");
-        let transport = StreamableHttpClientTransport::with_client(
-            upstream_http_client(cluster, url)?,
-            StreamableHttpClientTransportConfig::with_uri(url),
-        );
         let client_info =
             ClientConfig::new(ClientCapabilities::default(), Implementation::new(DEFAULT_USER_AGENT, "0.1.0"));
-        client_info
-            .serve(transport)
-            .await
-            .inspect_err(|e| {
-                info!(target: "mcp_gateway", "get_mcp_client error: {}!", e);
-            })
-            .map_err(Box::new)
+        McpUpstreamClient::connect(cluster, url, client_info).await.inspect_err(|e| {
+            info!(target: "mcp_gateway", "get_mcp_client error: {}!", e);
+        })
     }
 
     pub async fn call_semantic_search_tool(
@@ -876,7 +869,7 @@ impl ToolsRegistry {
         req_ext: &http::Extensions,
         req_headers: &http::HeaderMap,
         req_ctx: &RequestCtx,
-        mut rpc: model::JsonRpcRequest,
+        rpc: model::JsonRpcRequest,
         upstream_limits: &UpstreamLimits,
         session: &StdArc<Session>,
     ) -> Result<MessageResult, CallToolError> {
@@ -924,12 +917,9 @@ impl ToolsRegistry {
                 Ok(MessageResult::JsonRpcResponse(bytes))
             },
             (UpstreamBackend::McpServer { url, cluster, .. }, TranscoderType::NoTranscoder) => {
-                let upstream_tool_name = entry.upstream_tool_name.clone();
+                let upstream_tool_name = entry.upstream_tool_name.as_ref();
                 let upstream_key = entry.upstream_target;
-                let arguments = match rpc.request.params.remove("arguments") {
-                    Some(Value::Object(args)) => Some(args),
-                    _ => None,
-                };
+                let arguments = rpc.request.params.get("arguments").and_then(Value::as_object);
 
                 let invocation = async {
                     let cached = session.mcp_upstreams.pin().get(&upstream_key).map(StdArc::clone);
@@ -940,12 +930,7 @@ impl ToolsRegistry {
                         StdArc::clone(session.mcp_upstreams.pin().get_or_insert_with(upstream_key, || new_client))
                     };
 
-                    let call_params = match arguments {
-                        Some(args) => CallToolRequestParams::new(upstream_tool_name).with_arguments(args),
-                        None => CallToolRequestParams::new(upstream_tool_name),
-                    };
-
-                    match client.call_tool(call_params).await {
+                    match client.call_tool_borrowed(upstream_tool_name, arguments).await {
                         Ok(result) => Ok::<_, CallToolError>(result),
                         Err(err) => {
                             if matches!(&err, ServiceError::TransportSend(_) | ServiceError::TransportClosed) {
