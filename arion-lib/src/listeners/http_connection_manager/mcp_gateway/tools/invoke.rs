@@ -20,10 +20,7 @@ use arion_tracing::http_tracer::ScopedClientSpan;
 use bytes::Bytes;
 use opentelemetry::{KeyValue, StringValue};
 use pingora_timeout::fast_timeout::fast_timeout;
-use rmcp::{
-    ServiceError,
-    model::{CallToolRequestParams, CallToolResult},
-};
+use rmcp::{ServiceError, model::CallToolResult};
 use serde::Serialize;
 use serde_json::Value;
 use tracing::{debug, info};
@@ -91,7 +88,7 @@ impl ToolsRegistry {
 
         match &entry.backend {
             ToolBackend::Rest(backend) => backend.invoke(&entry, arguments, cx).await,
-            ToolBackend::McpServer(backend) => invoke_mcp_server(&entry, backend, arguments, cx).await,
+            ToolBackend::McpServer(backend) => invoke_mcp_server(&entry, backend, &arguments, cx).await,
             ToolBackend::FunctionGraph => Err(CallToolError::FunctionGraphNotImplemented),
         }
     }
@@ -100,12 +97,14 @@ impl ToolsRegistry {
 async fn invoke_mcp_server(
     entry: &ToolEntry,
     backend: &McpServerBackend,
-    arguments: Value,
+    arguments: &Value,
     cx: ToolCallContext<'_>,
 ) -> Result<CallToolResult, CallToolError> {
     let url = &backend.url;
     let cluster = &backend.cluster;
     let session = cx.session;
+    let arguments = arguments.as_object();
+    let upstream_tool_name = backend.upstream_tool_name.as_ref();
     let upstream_call = async {
         let cached = session.mcp_upstreams.pin().get(url.as_str()).map(StdArc::clone);
         let client = if let Some(client) = cached {
@@ -115,14 +114,7 @@ async fn invoke_mcp_server(
             StdArc::clone(session.mcp_upstreams.pin().get_or_insert_with(url.clone(), || new_client))
         };
 
-        let call_params = match arguments {
-            Value::Object(args) => {
-                CallToolRequestParams::new(backend.upstream_tool_name.clone()).with_arguments(args)
-            },
-            _ => CallToolRequestParams::new(backend.upstream_tool_name.clone()),
-        };
-
-        match client.call_tool(call_params).await {
+        match client.call_tool_borrowed(upstream_tool_name, arguments).await {
             Ok(result) => Ok::<_, CallToolError>(result),
             Err(error) => {
                 if matches!(&error, ServiceError::TransportSend(_) | ServiceError::TransportClosed) {

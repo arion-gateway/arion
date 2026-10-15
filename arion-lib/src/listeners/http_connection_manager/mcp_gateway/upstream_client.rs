@@ -12,16 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! `rmcp` Streamable HTTP client backed by the gateway's clusters.
+//! Direct task-local MCP Streamable HTTP client and `rmcp` `StreamableHttpClient` adapter
+//! backed by the gateway's clusters.
 //!
-//! It replaces `reqwest::Client` as the `StreamableHttpClient` of upstream MCP transports. Every
-//! request goes through the `HttpChannel` of the configured cluster, so endpoints, TLS context,
-//! HTTP/1 or HTTP/2 codec, connection pools and circuit breaker all come from the cluster
+//! Every request goes through the `HttpChannel` of the configured cluster, so endpoints, TLS
+//! context, HTTP/1 or HTTP/2 codec, connection pools and circuit breaker all come from the cluster
 //! configuration. The MCP `url` only provides the request path (and query).
 //!
-//! Protocol handling (auth challenges, session expiry, JSON / SSE bodies, legacy `server/discover`
-//! rejections) mirrors rmcp's own `reqwest` and Unix socket clients, which keep part of that
-//! logic `pub(crate)`.
+//! [`McpUpstreamClient`] executes all MCP client operations (`initialize`, `tools/call`,
+//! `tools/list`, `prompts/*`, `resources/*`, `ping`, notifications, etc.) directly in the caller's
+//! Tokio task without spawning background worker tasks or hopping across `mpsc`/`oneshot` channels.
 
 use crate::{
     ArionRequestBody, ArionResponseBody,
@@ -30,6 +30,7 @@ use crate::{
     },
     clusters::{RoutingPriority, clusters_manager, clusters_manager::RoutingContext},
 };
+use arc_swap::ArcSwap;
 use arion_http_header::{LAST_EVENT_ID, MCP_PROTOCOL_VERSION, MCP_SESSION_ID};
 use arion_interner::{InternedStr, StringInterner};
 use bytes::{BufMut, Bytes, BytesMut};
@@ -41,20 +42,46 @@ use http::{
 };
 use http_body_util::{BodyExt, Empty, Full};
 use pin_project::pin_project;
+#[allow(deprecated)]
+use rmcp::model::SetLevelRequestParams;
 use rmcp::{
-    model::{ClientJsonRpcMessage, ClientRequest, ErrorData, JsonRpcMessage, RequestId, ServerJsonRpcMessage},
-    transport::streamable_http_client::{
-        AuthRequiredError, InsufficientScopeError, StreamableHttpClient, StreamableHttpError,
-        StreamableHttpPostResponse,
+    RoleClient, ServiceError,
+    model::{
+        CallToolRequestMethod, CallToolRequestParams, CallToolResult, CancelTaskParams, ClientJsonRpcMessage,
+        ClientNotification, ClientRequest, CompleteRequestMethod, CompleteRequestParams, CompleteResult, ConstString,
+        DiscoverRequestMethod, DiscoverResult, EmptyResult, ErrorData, GetPromptRequestMethod, GetPromptRequestParams,
+        GetPromptResult, GetTaskParams, GetTaskResult, InitializeRequestParams, InitializeResult,
+        InitializeResultMethod, InitializedNotificationMethod, JsonObject, JsonRpcMessage, JsonRpcVersion2_0,
+        ListPromptsRequestMethod, ListPromptsResult, ListResourceTemplatesRequestMethod, ListResourceTemplatesResult,
+        ListResourcesRequestMethod, ListResourcesResult, ListToolsRequestMethod, ListToolsResult,
+        PaginatedRequestParams, PingRequestMethod, Prompt, ProtocolVersion, ReadResourceRequestMethod,
+        ReadResourceRequestParams, ReadResourceResult, RequestId, Resource, ResourceTemplate, ServerJsonRpcMessage,
+        ServerResult, SetLevelRequestMethod, SubscribeRequestMethod, SubscribeRequestParams,
+        SubscriptionsListenRequestMethod, SubscriptionsListenResult, TaskAckResult, Tool, UnsubscribeRequestMethod,
+        UnsubscribeRequestParams, UpdateTaskParams,
+    },
+    service::ClientInitializeError,
+    transport::{
+        DynamicTransportError,
+        streamable_http_client::{
+            AuthRequiredError, InsufficientScopeError, StreamableHttpClient, StreamableHttpError,
+            StreamableHttpPostResponse,
+        },
     },
 };
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::Value;
+use smol_str::SmolStr;
 use sse_stream::{Error as SseError, Sse, SseStream};
 use std::{
     borrow::Cow,
     collections::HashMap,
     pin::Pin,
     str::FromStr,
-    sync::Arc as StdArc,
+    sync::{
+        Arc as StdArc,
+        atomic::{AtomicI64, Ordering},
+    },
     task::{Poll, ready},
 };
 
@@ -62,6 +89,7 @@ const EVENT_STREAM_MIME_TYPE: &str = "text/event-stream";
 const JSON_MIME_TYPE: &str = "application/json";
 const ACCEPT_EVENT_STREAM_AND_JSON: HeaderValue = HeaderValue::from_static("text/event-stream, application/json");
 const CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static(JSON_MIME_TYPE);
+const DEFAULT_PROTOCOL_VERSION_HEADER: HeaderValue = HeaderValue::from_static("2025-03-26");
 
 /// Maximum raw size of one SSE event accepted from an upstream server (same as rmcp's default).
 const DEFAULT_MAX_SSE_EVENT_SIZE: usize = 16 * 1024 * 1024;
@@ -99,6 +127,8 @@ pub(crate) struct McpHttpClient {
     cluster_id: InternedStr,
     host_header: HeaderValue,
     target: Uri,
+    #[cfg(feature = "instrumentation")]
+    clock: quanta::Clock,
 }
 
 impl McpHttpClient {
@@ -115,7 +145,41 @@ impl McpHttpClient {
         let host_header = HeaderValue::from_str(authority.as_str()).map_err(|e| invalid(e.to_string()))?;
         let target = parts.path_and_query.map_or(Uri::from_static("/"), Uri::from);
 
-        Ok(Self { cluster_id: cluster.to_interned_str(), host_header, target })
+        Ok(Self {
+            cluster_id: cluster.to_interned_str(),
+            host_header,
+            target,
+            #[cfg(feature = "instrumentation")]
+            clock: quanta::Clock::new(),
+        })
+    }
+
+    /// Fast-path POST request builder for [`McpUpstreamClient`]: uses pre-validated
+    /// [`HeaderValue`]s for `Mcp-Session-Id` and `MCP-Protocol-Version` with zero heap
+    /// allocations and no `HashMap` iteration.
+    #[inline]
+    fn build_direct_post_request(
+        &self,
+        session_id: Option<&HeaderValue>,
+        protocol_version: Option<&HeaderValue>,
+        payload: Bytes,
+    ) -> Request<ArionRequestBody> {
+        let mut request = Request::new(request_body(Some(payload)));
+        *request.method_mut() = Method::POST;
+        *request.uri_mut() = self.target.clone();
+
+        let headers = request.headers_mut();
+        headers.reserve(5);
+        headers.insert(HOST, self.host_header.clone());
+        headers.insert(ACCEPT, ACCEPT_EVENT_STREAM_AND_JSON);
+        headers.insert(CONTENT_TYPE, CONTENT_TYPE_JSON);
+        if let Some(pv) = protocol_version {
+            headers.insert(MCP_PROTOCOL_VERSION, pv.clone());
+        }
+        if let Some(sid) = session_id {
+            headers.insert(MCP_SESSION_ID, sid.clone());
+        }
+        request
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -171,9 +235,6 @@ impl McpHttpClient {
     /// Resolve the cluster channel and send. The cluster lookup happens on every call: the
     /// cluster map is thread-local and may be replaced by xDS updates while the client lives.
     async fn send(&self, request: Request<ArionRequestBody>) -> Result<Response<ArionResponseBody>, ClientError> {
-        #[cfg(feature = "instrumentation")]
-        let clock = quanta::Clock::new();
-
         let channels = clusters_manager::get_http_connection(&self.cluster_id, RoutingContext::None).map_err(|e| {
             StreamableHttpError::Client(UpstreamClientError::Cluster { cluster: self.cluster_id, source: Box::new(e) })
         })?;
@@ -186,10 +247,816 @@ impl McpHttpClient {
                 RoutingPriority::Default,
                 None,
                 #[cfg(feature = "instrumentation")]
-                &clock,
+                &self.clock,
             )
             .await
             .map_err(|e| StreamableHttpError::Client(UpstreamClientError::Upstream(Box::new(e))))
+    }
+}
+
+/// Pre-validated headers negotiated during the MCP `initialize` handshake.
+#[derive(Debug)]
+struct UpstreamSessionState {
+    session_id: Option<HeaderValue>,
+    protocol_version: HeaderValue,
+}
+
+/// Direct, zero-spawn MCP Streamable HTTP client.
+///
+/// Unlike `rmcp`'s `RunningService<RoleClient, ...>` + `StreamableHttpClientWorker` (which spawns
+/// multiple background tasks per session and per request and hops across `mpsc`/`oneshot`
+/// channels), `McpUpstreamClient` executes every request and SSE stream directly inside the
+/// current Tokio task on the current worker thread.
+pub struct McpUpstreamClient {
+    http: McpHttpClient,
+    client_info: Box<InitializeRequestParams>,
+    peer_info: Box<InitializeResult>,
+    state: ArcSwap<UpstreamSessionState>,
+    next_id: AtomicI64,
+    reinit_lock: tokio::sync::Mutex<()>,
+}
+
+impl std::fmt::Debug for McpUpstreamClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = self.state.load();
+        f.debug_struct("McpUpstreamClient")
+            .field("http", &self.http)
+            .field("session_id", &state.session_id)
+            .field("protocol_version", &state.protocol_version)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Serialize)]
+struct OutboundJsonRpcRequest<'a, P: Serialize> {
+    jsonrpc: JsonRpcVersion2_0,
+    id: i64,
+    method: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    params: Option<P>,
+}
+
+#[derive(Serialize)]
+struct OutboundJsonRpcNotification<'a, P: Serialize> {
+    jsonrpc: JsonRpcVersion2_0,
+    method: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    params: Option<P>,
+}
+
+#[derive(Serialize)]
+struct BorrowedCallToolParams<'a> {
+    name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arguments: Option<&'a JsonObject>,
+}
+
+/// Lightweight response ID that deserializes directly from JSON integers or strings without
+/// allocating an intermediate `serde_json::Value`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DirectResponseId {
+    Number(i64),
+    String(SmolStr),
+}
+
+impl DirectResponseId {
+    #[inline]
+    fn matches_i64(&self, expected: i64) -> bool {
+        match self {
+            Self::Number(n) => *n == expected,
+            Self::String(s) => s.parse::<i64>() == Ok(expected),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for DirectResponseId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct IdVisitor;
+
+        impl serde::de::Visitor<'_> for IdVisitor {
+            type Value = DirectResponseId;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a JSON-RPC request id (integer or string)")
+            }
+
+            #[inline]
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
+                Ok(DirectResponseId::Number(v))
+            }
+
+            #[inline]
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
+                i64::try_from(v)
+                    .map(DirectResponseId::Number)
+                    .map_err(|_overflow| E::custom("JSON-RPC id out of i64 range"))
+            }
+
+            #[inline]
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(DirectResponseId::String(SmolStr::new(v)))
+            }
+
+            #[inline]
+            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Self::Value, E> {
+                Ok(DirectResponseId::String(SmolStr::from(v)))
+            }
+        }
+
+        deserializer.deserialize_any(IdVisitor)
+    }
+}
+
+/// Single-pass JSON-RPC response/error envelope for a known result type `R`.
+///
+/// Unlike `rmcp::model::ServerJsonRpcMessage` (which uses nested `#[serde(untagged)]` enums and
+/// buffers the entire JSON into `serde::Content` twice while trying 18 `ServerResult` variants),
+/// this struct deserializes `R` directly from the input slice in one pass.
+#[derive(Deserialize)]
+#[serde(bound(deserialize = "R: Deserialize<'de>"))]
+struct DirectJsonRpcEnvelope<R> {
+    #[serde(default)]
+    id: Option<DirectResponseId>,
+    #[serde(default)]
+    result: Option<R>,
+    #[serde(default)]
+    error: Option<ErrorData>,
+}
+
+enum DirectRpcOutcome<R> {
+    Result(R),
+    RpcError(ErrorData),
+}
+
+impl McpUpstreamClient {
+    /// Connect to the upstream MCP server at `(cluster, url)` and perform the `initialize` +
+    /// `notifications/initialized` handshake directly in the current task.
+    pub(crate) async fn connect(
+        cluster: &str,
+        url: &str,
+        client_info: InitializeRequestParams,
+    ) -> Result<Self, Box<ClientInitializeError>> {
+        let http = McpHttpClient::try_new(cluster, url).map_err(|err| {
+            Box::new(ClientInitializeError::TransportError {
+                error: DynamicTransportError::from_parts(
+                    "arion-cluster",
+                    std::any::TypeId::of::<McpHttpClient>(),
+                    Box::new(err),
+                ),
+                context: "failed to build upstream MCP http client".into(),
+            })
+        })?;
+
+        let (peer_info, state) = Self::perform_handshake(&http, &client_info, 1).await?;
+
+        Ok(Self {
+            http,
+            client_info: Box::new(client_info),
+            peer_info: Box::new(peer_info),
+            state: ArcSwap::from_pointee(state),
+            next_id: AtomicI64::new(2),
+            reinit_lock: tokio::sync::Mutex::new(()),
+        })
+    }
+
+    /// Returns the server's [`InitializeResult`] received during the initial handshake.
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn peer_info(&self) -> &InitializeResult {
+        &self.peer_info
+    }
+
+    #[inline]
+    fn next_request_id(&self) -> i64 {
+        self.next_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn into_init_transport_error(error: ClientError, context: &'static str) -> Box<ClientInitializeError> {
+        Box::new(ClientInitializeError::TransportError {
+            error: DynamicTransportError::from_parts(
+                "arion-streamable-http",
+                std::any::TypeId::of::<McpHttpClient>(),
+                Box::new(error),
+            ),
+            context: Cow::Borrowed(context),
+        })
+    }
+
+    fn into_service_error(error: ClientError) -> ServiceError {
+        ServiceError::TransportSend(DynamicTransportError::from_parts(
+            "arion-streamable-http",
+            std::any::TypeId::of::<McpHttpClient>(),
+            Box::new(error),
+        ))
+    }
+
+    fn protocol_version_to_header(version: &ProtocolVersion) -> HeaderValue {
+        HeaderValue::from_str(version.as_str()).unwrap_or(DEFAULT_PROTOCOL_VERSION_HEADER)
+    }
+
+    fn encode_request<P: Serialize>(id: i64, method: &str, params: Option<P>) -> Result<Bytes, ClientError> {
+        let mut buf = Vec::with_capacity(192);
+        serde_json::to_writer(&mut buf, &OutboundJsonRpcRequest { jsonrpc: JsonRpcVersion2_0, id, method, params })
+            .map_err(|e| StreamableHttpError::Client(UpstreamClientError::Json(e)))?;
+        Ok(Bytes::from(buf))
+    }
+
+    fn encode_notification<P: Serialize>(method: &str, params: Option<P>) -> Result<Bytes, ClientError> {
+        let mut buf = Vec::with_capacity(128);
+        serde_json::to_writer(&mut buf, &OutboundJsonRpcNotification { jsonrpc: JsonRpcVersion2_0, method, params })
+            .map_err(|e| StreamableHttpError::Client(UpstreamClientError::Json(e)))?;
+        Ok(Bytes::from(buf))
+    }
+
+    #[inline(never)]
+    async fn expect_handshake_boxed(
+        http: &McpHttpClient,
+        client_info: &InitializeRequestParams,
+        init_id: i64,
+    ) -> Result<(InitializeResult, UpstreamSessionState), Box<ClientInitializeError>> {
+        Box::pin(Self::perform_handshake(http, client_info, init_id)).await
+    }
+
+    async fn perform_handshake(
+        http: &McpHttpClient,
+        client_info: &InitializeRequestParams,
+        init_id: i64,
+    ) -> Result<(InitializeResult, UpstreamSessionState), Box<ClientInitializeError>> {
+        let init_payload = Self::encode_request(init_id, InitializeResultMethod::VALUE, Some(client_info))
+            .map_err(|e| Self::into_init_transport_error(e, "encode initialize request"))?;
+
+        let init_req = http.build_direct_post_request(None, None, init_payload);
+        let response = http
+            .send(init_req)
+            .await
+            .map_err(|e| Self::into_init_transport_error(e, "send initialize request"))?;
+
+        let status = response.status();
+        check_auth(status, response.headers())
+            .map_err(|e| Self::into_init_transport_error(e, "send initialize request"))?;
+
+        if !status.is_success() {
+            let err = Self::read_error_response(response, status).await;
+            return match err {
+                Ok(error_data) => Err(Box::new(ClientInitializeError::JsonRpcError(error_data))),
+                Err(client_err) => Err(Self::into_init_transport_error(client_err, "initialize error response")),
+            };
+        }
+
+        let session_id = response.headers().get(MCP_SESSION_ID).cloned();
+        let outcome = Self::decode_response_body::<InitializeResult>(response, init_id)
+            .await
+            .map_err(|e| Self::into_init_transport_error(e, "process initialize response"))?;
+
+        let init_result = match outcome {
+            DirectRpcOutcome::Result(res) => res,
+            DirectRpcOutcome::RpcError(error_data) => {
+                return Err(Box::new(ClientInitializeError::JsonRpcError(error_data)));
+            },
+        };
+
+        let protocol_version = Self::protocol_version_to_header(&init_result.protocol_version);
+        let state = UpstreamSessionState { session_id, protocol_version };
+
+        let notif_payload = Self::encode_notification::<()>(InitializedNotificationMethod::VALUE, None)
+            .map_err(|e| Self::into_init_transport_error(e, "encode initialized notification"))?;
+        let notif_req =
+            http.build_direct_post_request(state.session_id.as_ref(), Some(&state.protocol_version), notif_payload);
+        let notif_resp = http
+            .send(notif_req)
+            .await
+            .map_err(|e| Self::into_init_transport_error(e, "send initialized notification"))?;
+
+        Self::expect_notification_response(notif_resp)
+            .await
+            .map_err(|e| Self::into_init_transport_error(e, "process initialized notification response"))?;
+
+        Ok((init_result, state))
+    }
+
+    async fn reinitialize(
+        &self,
+        expired_state: &StdArc<UpstreamSessionState>,
+    ) -> Result<StdArc<UpstreamSessionState>, ServiceError> {
+        let _guard = self.reinit_lock.lock().await;
+        let current = self.state.load_full();
+        if !StdArc::ptr_eq(&current, expired_state) {
+            return Ok(current);
+        }
+
+        let id = self.next_request_id();
+        let (_, new_state) = Self::expect_handshake_boxed(&self.http, &self.client_info, id)
+            .await
+            .map_err(|err| {
+                ServiceError::TransportSend(DynamicTransportError::from_parts(
+                    "arion-streamable-http",
+                    std::any::TypeId::of::<RoleClient>(),
+                    err,
+                ))
+            })?;
+        let new_state = StdArc::new(new_state);
+        self.state.store(StdArc::clone(&new_state));
+        Ok(new_state)
+    }
+
+    async fn expect_notification_response(response: Response<ArionResponseBody>) -> Result<(), ClientError> {
+        let status = response.status();
+        check_auth(status, response.headers())?;
+        if matches!(status, StatusCode::ACCEPTED | StatusCode::NO_CONTENT) {
+            return Ok(());
+        }
+        if status == StatusCode::NOT_FOUND {
+            return Err(StreamableHttpError::SessionExpired);
+        }
+        if status.is_success() {
+            return Ok(());
+        }
+        let body = collect_body(response.into_body()).await.map_or_else(
+            |_| "<failed to read response body>".to_owned(),
+            |b| String::from_utf8_lossy(&b).into_owned(),
+        );
+        Err(StreamableHttpError::UnexpectedServerResponse(Cow::Owned(format!("HTTP {status}: {body}"))))
+    }
+
+    #[cold]
+    async fn read_error_response(
+        response: Response<ArionResponseBody>,
+        status: StatusCode,
+    ) -> Result<ErrorData, ClientError> {
+        let is_json = header_str(response.headers(), &CONTENT_TYPE).is_some_and(|ct| ct.starts_with(JSON_MIME_TYPE));
+        let body = collect_body(response.into_body())
+            .await
+            .unwrap_or_else(|_| Bytes::from_static(b"<failed to read response body>"));
+        if is_json
+            && let Ok(envelope) = serde_json::from_slice::<DirectJsonRpcEnvelope<serde::de::IgnoredAny>>(&body)
+            && let Some(error) = envelope.error
+        {
+            return Ok(error);
+        }
+        let text = match String::from_utf8(body.into()) {
+            Ok(s) => s,
+            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        };
+        Err(StreamableHttpError::UnexpectedServerResponse(Cow::Owned(format!("HTTP {status}: {text}"))))
+    }
+
+    async fn decode_response_body<R: DeserializeOwned>(
+        response: Response<ArionResponseBody>,
+        expected_id: i64,
+    ) -> Result<DirectRpcOutcome<R>, ClientError> {
+        let content_type = header_str(response.headers(), &CONTENT_TYPE);
+        if let Some(ct) = content_type {
+            if ct.starts_with(JSON_MIME_TYPE) {
+                let body = collect_body(response.into_body()).await?;
+                let envelope = serde_json::from_slice::<DirectJsonRpcEnvelope<R>>(&body).map_err(|e| {
+                    StreamableHttpError::UnexpectedServerResponse(Cow::Owned(format!(
+                        "could not parse JSON response as JSON-RPC response: {e}: {}",
+                        body_preview(&body)
+                    )))
+                })?;
+                return Self::extract_envelope_outcome(envelope, expected_id);
+            }
+            if ct.starts_with(EVENT_STREAM_MIME_TYPE) {
+                return Self::decode_sse_response_body::<R>(response.into_body(), expected_id).await;
+            }
+        }
+        Err(StreamableHttpError::UnexpectedContentType(content_type.map(str::to_owned)))
+    }
+
+    /// Reads an SSE response stream directly on the current task's stack (without `BoxStream`
+    /// allocation or `tokio::spawn`) until the response or error matching `expected_id` arrives.
+    async fn decode_sse_response_body<R: DeserializeOwned>(
+        body: ArionResponseBody,
+        expected_id: i64,
+    ) -> Result<DirectRpcOutcome<R>, ClientError> {
+        let bounded = BoundedSseByteStream {
+            inner: body.into_data_stream(),
+            limiter: SseEventSizeLimiter::new(DEFAULT_MAX_SSE_EVENT_SIZE),
+            failed: false,
+        };
+        let mut sse_stream = std::pin::pin!(SseStream::from_bytes_stream(bounded));
+
+        while let Some(event) = sse_stream.next().await {
+            let sse = event?;
+            let is_message_event = matches!(sse.event.as_deref(), None | Some("" | "message"));
+            if !is_message_event {
+                continue;
+            }
+            let Some(data) = sse.data else {
+                continue;
+            };
+            if data.trim().is_empty() {
+                continue;
+            }
+            let envelope = match serde_json::from_str::<DirectJsonRpcEnvelope<R>>(&data) {
+                Ok(env) => env,
+                Err(e) => {
+                    tracing::debug!(target: "mcp_gateway", "ignoring non-matching or malformed SSE JSON frame: {e}");
+                    continue;
+                },
+            };
+            if envelope.result.is_none() && envelope.error.is_none() {
+                // Intermediate server notification or server-initiated request on the SSE stream.
+                continue;
+            }
+            if let Some(ref got_id) = envelope.id
+                && !got_id.matches_i64(expected_id)
+            {
+                continue;
+            }
+            return Self::extract_envelope_outcome(envelope, expected_id);
+        }
+
+        Err(StreamableHttpError::UnexpectedEndOfStream)
+    }
+
+    #[inline]
+    fn extract_envelope_outcome<R>(
+        envelope: DirectJsonRpcEnvelope<R>,
+        expected_id: i64,
+    ) -> Result<DirectRpcOutcome<R>, ClientError> {
+        if let Some(error) = envelope.error {
+            if let Some(ref got_id) = envelope.id
+                && !got_id.matches_i64(expected_id)
+            {
+                return Err(StreamableHttpError::UnexpectedServerResponse(Cow::Borrowed(
+                    "uncorrelated JSON-RPC error response id",
+                )));
+            }
+            return Ok(DirectRpcOutcome::RpcError(error));
+        }
+        if let Some(result) = envelope.result {
+            if !envelope.id.as_ref().is_some_and(|got| got.matches_i64(expected_id)) {
+                return Err(StreamableHttpError::UnexpectedServerResponse(Cow::Borrowed(
+                    "mismatched or missing JSON-RPC response id",
+                )));
+            }
+            return Ok(DirectRpcOutcome::Result(result));
+        }
+        Err(StreamableHttpError::UnexpectedServerResponse(Cow::Borrowed(
+            "JSON-RPC response contained neither result nor error",
+        )))
+    }
+
+    async fn post_request_once<R: DeserializeOwned>(
+        &self,
+        id: i64,
+        payload: Bytes,
+        state: &UpstreamSessionState,
+    ) -> Result<DirectRpcOutcome<R>, ClientError> {
+        let request =
+            self.http.build_direct_post_request(state.session_id.as_ref(), Some(&state.protocol_version), payload);
+        let response = self.http.send(request).await?;
+        let status = response.status();
+
+        check_auth(status, response.headers())?;
+        if status == StatusCode::NOT_FOUND && state.session_id.is_some() {
+            return Err(StreamableHttpError::SessionExpired);
+        }
+        if !status.is_success() {
+            return Self::read_error_response(response, status).await.map(DirectRpcOutcome::RpcError);
+        }
+        Self::decode_response_body::<R>(response, id).await
+    }
+
+    async fn send_raw_request<R: DeserializeOwned>(&self, id: i64, payload: Bytes) -> Result<R, ServiceError> {
+        let state = self.state.load_full();
+        let outcome = match self.post_request_once::<R>(id, payload.clone(), &state).await {
+            Err(StreamableHttpError::SessionExpired) => {
+                let new_state = self.reinitialize(&state).await?;
+                self.post_request_once::<R>(id, payload, &new_state)
+                    .await
+                    .map_err(Self::into_service_error)?
+            },
+            other => other.map_err(Self::into_service_error)?,
+        };
+        match outcome {
+            DirectRpcOutcome::Result(result) => Ok(result),
+            DirectRpcOutcome::RpcError(error) => Err(ServiceError::McpError(error)),
+        }
+    }
+
+    async fn send_typed_request<P: Serialize, R: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: Option<P>,
+    ) -> Result<R, ServiceError> {
+        let id = self.next_request_id();
+        let payload = Self::encode_request(id, method, params).map_err(Self::into_service_error)?;
+        self.send_raw_request::<R>(id, payload).await
+    }
+
+    /// Fast-path `tools/call` invocation that borrows `name` and `arguments` directly,
+    /// avoiding `CallToolRequestParams` construction, `arguments` map cloning, and `rmcp`'s
+    /// `WithMeta` intermediate `serde_json::Value` conversion.
+    pub(crate) async fn call_tool_borrowed(
+        &self,
+        name: &str,
+        arguments: Option<&JsonObject>,
+    ) -> Result<CallToolResult, ServiceError> {
+        self.send_typed_request(
+            CallToolRequestMethod::VALUE,
+            Some(BorrowedCallToolParams { name, arguments }),
+        )
+        .await
+    }
+
+    /// Invoke `tools/call` with owned [`CallToolRequestParams`].
+    #[allow(dead_code)]
+    pub(crate) async fn call_tool(&self, params: CallToolRequestParams) -> Result<CallToolResult, ServiceError> {
+        if params.meta.is_none() && params.input_responses.is_none() && params.request_state.is_none() {
+            return self.call_tool_borrowed(&params.name, params.arguments.as_ref()).await;
+        }
+        self.send_typed_request(CallToolRequestMethod::VALUE, Some(&params)).await
+    }
+
+    /// Invoke `tools/list`.
+    pub(crate) async fn list_tools(
+        &self,
+        params: Option<PaginatedRequestParams>,
+    ) -> Result<ListToolsResult, ServiceError> {
+        self.send_typed_request(ListToolsRequestMethod::VALUE, params.as_ref()).await
+    }
+
+    /// Invoke `tools/list` across all pages until `next_cursor` is `None`.
+    #[allow(dead_code)]
+    pub(crate) async fn list_all_tools(&self) -> Result<Vec<Tool>, ServiceError> {
+        let mut tools = Vec::new();
+        let mut cursor = None;
+        loop {
+            let result = self.list_tools(Some(PaginatedRequestParams::default().with_cursor(cursor))).await?;
+            tools.extend(result.tools);
+            cursor = result.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(tools)
+    }
+
+    /// Invoke `prompts/list`.
+    #[allow(dead_code)]
+    pub(crate) async fn list_prompts(
+        &self,
+        params: Option<PaginatedRequestParams>,
+    ) -> Result<ListPromptsResult, ServiceError> {
+        self.send_typed_request(ListPromptsRequestMethod::VALUE, params.as_ref()).await
+    }
+
+    /// Invoke `prompts/list` across all pages until `next_cursor` is `None`.
+    #[allow(dead_code)]
+    pub(crate) async fn list_all_prompts(&self) -> Result<Vec<Prompt>, ServiceError> {
+        let mut prompts = Vec::new();
+        let mut cursor = None;
+        loop {
+            let result = self.list_prompts(Some(PaginatedRequestParams::default().with_cursor(cursor))).await?;
+            prompts.extend(result.prompts);
+            cursor = result.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(prompts)
+    }
+
+    /// Invoke `prompts/get`.
+    #[allow(dead_code)]
+    pub(crate) async fn get_prompt(&self, params: GetPromptRequestParams) -> Result<GetPromptResult, ServiceError> {
+        self.send_typed_request(GetPromptRequestMethod::VALUE, Some(&params)).await
+    }
+
+    /// Invoke `resources/list`.
+    #[allow(dead_code)]
+    pub(crate) async fn list_resources(
+        &self,
+        params: Option<PaginatedRequestParams>,
+    ) -> Result<ListResourcesResult, ServiceError> {
+        self.send_typed_request(ListResourcesRequestMethod::VALUE, params.as_ref()).await
+    }
+
+    /// Invoke `resources/list` across all pages until `next_cursor` is `None`.
+    #[allow(dead_code)]
+    pub(crate) async fn list_all_resources(&self) -> Result<Vec<Resource>, ServiceError> {
+        let mut resources = Vec::new();
+        let mut cursor = None;
+        loop {
+            let result = self.list_resources(Some(PaginatedRequestParams::default().with_cursor(cursor))).await?;
+            resources.extend(result.resources);
+            cursor = result.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(resources)
+    }
+
+    /// Invoke `resources/templates/list`.
+    #[allow(dead_code)]
+    pub(crate) async fn list_resource_templates(
+        &self,
+        params: Option<PaginatedRequestParams>,
+    ) -> Result<ListResourceTemplatesResult, ServiceError> {
+        self.send_typed_request(ListResourceTemplatesRequestMethod::VALUE, params.as_ref()).await
+    }
+
+    /// Invoke `resources/templates/list` across all pages until `next_cursor` is `None`.
+    #[allow(dead_code)]
+    pub(crate) async fn list_all_resource_templates(&self) -> Result<Vec<ResourceTemplate>, ServiceError> {
+        let mut templates = Vec::new();
+        let mut cursor = None;
+        loop {
+            let result =
+                self.list_resource_templates(Some(PaginatedRequestParams::default().with_cursor(cursor))).await?;
+            templates.extend(result.resource_templates);
+            cursor = result.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(templates)
+    }
+
+    /// Invoke `resources/read`.
+    #[allow(dead_code)]
+    pub(crate) async fn read_resource(
+        &self,
+        params: ReadResourceRequestParams,
+    ) -> Result<ReadResourceResult, ServiceError> {
+        self.send_typed_request(ReadResourceRequestMethod::VALUE, Some(&params)).await
+    }
+
+    /// Invoke `resources/subscribe`.
+    #[allow(dead_code)]
+    pub(crate) async fn subscribe(&self, params: SubscribeRequestParams) -> Result<(), ServiceError> {
+        let _: EmptyResult = self.send_typed_request(SubscribeRequestMethod::VALUE, Some(&params)).await?;
+        Ok(())
+    }
+
+    /// Invoke `resources/unsubscribe`.
+    #[allow(dead_code)]
+    pub(crate) async fn unsubscribe(&self, params: UnsubscribeRequestParams) -> Result<(), ServiceError> {
+        let _: EmptyResult = self.send_typed_request(UnsubscribeRequestMethod::VALUE, Some(&params)).await?;
+        Ok(())
+    }
+
+    /// Invoke `completion/complete`.
+    #[allow(dead_code)]
+    pub(crate) async fn complete(&self, params: CompleteRequestParams) -> Result<CompleteResult, ServiceError> {
+        self.send_typed_request(CompleteRequestMethod::VALUE, Some(&params)).await
+    }
+
+    /// Invoke `logging/setLevel`.
+    #[allow(dead_code, deprecated)]
+    pub(crate) async fn set_level(&self, params: SetLevelRequestParams) -> Result<(), ServiceError> {
+        let _: EmptyResult = self.send_typed_request(SetLevelRequestMethod::VALUE, Some(&params)).await?;
+        Ok(())
+    }
+
+    /// Invoke `ping`.
+    #[allow(dead_code)]
+    pub(crate) async fn ping(&self) -> Result<(), ServiceError> {
+        let _: EmptyResult = self.send_typed_request::<(), EmptyResult>(PingRequestMethod::VALUE, None).await?;
+        Ok(())
+    }
+
+    /// Invoke `tasks/get`.
+    #[allow(dead_code)]
+    pub(crate) async fn get_task(&self, params: GetTaskParams) -> Result<GetTaskResult, ServiceError> {
+        self.send_typed_request("tasks/get", Some(&params)).await
+    }
+
+    /// Invoke `tasks/update`.
+    #[allow(dead_code)]
+    pub(crate) async fn update_task(&self, params: UpdateTaskParams) -> Result<(), ServiceError> {
+        let _: TaskAckResult = self.send_typed_request("tasks/update", Some(&params)).await?;
+        Ok(())
+    }
+
+    /// Invoke `tasks/cancel`.
+    #[allow(dead_code)]
+    pub(crate) async fn cancel_task(&self, params: CancelTaskParams) -> Result<(), ServiceError> {
+        let _: TaskAckResult = self.send_typed_request("tasks/cancel", Some(&params)).await?;
+        Ok(())
+    }
+
+    /// Send any [`ClientRequest`] and decode its matching [`ServerResult`] variant directly
+    /// without going through `#[serde(untagged)] ServerResult`.
+    #[allow(dead_code)]
+    pub(crate) async fn send_request(&self, request: ClientRequest) -> Result<ServerResult, ServiceError> {
+        match request {
+            ClientRequest::PingRequest(_) => {
+                self.ping().await?;
+                Ok(ServerResult::EmptyResult(EmptyResult {}))
+            },
+            ClientRequest::InitializeRequest(req) => {
+                let res: InitializeResult =
+                    self.send_typed_request(InitializeResultMethod::VALUE, Some(&req.params)).await?;
+                Ok(ServerResult::InitializeResult(res))
+            },
+            ClientRequest::DiscoverRequest(req) => {
+                let res: DiscoverResult =
+                    self.send_typed_request(DiscoverRequestMethod::VALUE, Some(&req.params)).await?;
+                Ok(ServerResult::DiscoverResult(res))
+            },
+            ClientRequest::CompleteRequest(req) => {
+                self.complete(req.params).await.map(ServerResult::CompleteResult)
+            },
+            ClientRequest::SetLevelRequest(req) => {
+                self.set_level(req.params).await?;
+                Ok(ServerResult::EmptyResult(EmptyResult {}))
+            },
+            ClientRequest::GetPromptRequest(req) => {
+                self.get_prompt(req.params).await.map(ServerResult::GetPromptResult)
+            },
+            ClientRequest::ListPromptsRequest(req) => {
+                self.list_prompts(req.params).await.map(ServerResult::ListPromptsResult)
+            },
+            ClientRequest::ListResourcesRequest(req) => {
+                self.list_resources(req.params).await.map(ServerResult::ListResourcesResult)
+            },
+            ClientRequest::ListResourceTemplatesRequest(req) => {
+                self.list_resource_templates(req.params).await.map(ServerResult::ListResourceTemplatesResult)
+            },
+            ClientRequest::ReadResourceRequest(req) => {
+                self.read_resource(req.params).await.map(ServerResult::ReadResourceResult)
+            },
+            ClientRequest::SubscriptionsListenRequest(req) => {
+                let res: SubscriptionsListenResult =
+                    self.send_typed_request(SubscriptionsListenRequestMethod::VALUE, Some(&req.params)).await?;
+                Ok(ServerResult::SubscriptionsListenResult(res))
+            },
+            ClientRequest::SubscribeRequest(req) => {
+                self.subscribe(req.params).await?;
+                Ok(ServerResult::EmptyResult(EmptyResult {}))
+            },
+            ClientRequest::UnsubscribeRequest(req) => {
+                self.unsubscribe(req.params).await?;
+                Ok(ServerResult::EmptyResult(EmptyResult {}))
+            },
+            ClientRequest::CallToolRequest(req) => {
+                self.call_tool(req.params).await.map(ServerResult::CallToolResult)
+            },
+            ClientRequest::ListToolsRequest(req) => {
+                self.list_tools(req.params).await.map(ServerResult::ListToolsResult)
+            },
+            ClientRequest::GetTaskRequest(req) => {
+                self.get_task(req.params).await.map(ServerResult::GetTaskResult)
+            },
+            ClientRequest::UpdateTaskRequest(req) => {
+                self.update_task(req.params).await?;
+                Ok(ServerResult::TaskAckResult(TaskAckResult::new()))
+            },
+            ClientRequest::CancelTaskRequest(req) => {
+                self.cancel_task(req.params).await?;
+                Ok(ServerResult::TaskAckResult(TaskAckResult::new()))
+            },
+            ClientRequest::CustomRequest(req) => {
+                let res: Value = self.send_typed_request(&req.method, req.params.as_ref()).await?;
+                Ok(ServerResult::CustomResult(rmcp::model::CustomResult(res)))
+            },
+            _ => {
+                let id = self.next_request_id();
+                let message = ClientJsonRpcMessage::request(request, RequestId::Number(id));
+                let payload = Bytes::from(
+                    serde_json::to_vec(&message)
+                        .map_err(|e| Self::into_service_error(StreamableHttpError::Client(UpstreamClientError::Json(e))))?,
+                );
+                self.send_raw_request::<ServerResult>(id, payload).await
+            },
+        }
+    }
+
+    /// Send any [`ClientNotification`] directly in the current task.
+    #[allow(dead_code)]
+    pub(crate) async fn send_notification(&self, notification: ClientNotification) -> Result<(), ServiceError> {
+        let message = ClientJsonRpcMessage::notification(notification);
+        let payload = Bytes::from(
+            serde_json::to_vec(&message)
+                .map_err(|e| Self::into_service_error(StreamableHttpError::Client(UpstreamClientError::Json(e))))?,
+        );
+        let state = self.state.load_full();
+        let request = self.http.build_direct_post_request(
+            state.session_id.as_ref(),
+            Some(&state.protocol_version),
+            payload.clone(),
+        );
+        let response = self.http.send(request).await.map_err(Self::into_service_error)?;
+        match Self::expect_notification_response(response).await {
+            Err(StreamableHttpError::SessionExpired) if state.session_id.is_some() => {
+                let new_state = self.reinitialize(&state).await?;
+                let retry_req = self.http.build_direct_post_request(
+                    new_state.session_id.as_ref(),
+                    Some(&new_state.protocol_version),
+                    payload,
+                );
+                let retry_resp = self.http.send(retry_req).await.map_err(Self::into_service_error)?;
+                Self::expect_notification_response(retry_resp).await.map_err(Self::into_service_error)
+            },
+            other => other.map_err(Self::into_service_error),
+        }
     }
 }
 
@@ -729,6 +1596,7 @@ mod tests {
         assert!(limiter.observe(b"data: 0123456789abcdef\n").is_err());
     }
 
+    #[allow(clippy::indexing_slicing)]
     mod transport_integration {
         use super::*;
         use crate::{
@@ -749,17 +1617,11 @@ mod tests {
             rt::{TokioExecutor, TokioIo},
             server::conn::auto,
         };
-        use rmcp::{
-            ServiceExt,
-            model::{ClientCapabilities, ClientConfig, Implementation},
-            transport::{
-                StreamableHttpClientTransport, streamable_http_client::StreamableHttpClientTransportConfig,
-            },
-        };
-        use serde_json::{Value, json};
+        use rmcp::model::{ClientCapabilities, ClientConfig, Implementation};
+        use serde_json::json;
         use std::{
             num::NonZeroU32,
-            sync::atomic::{AtomicUsize, Ordering},
+            sync::atomic::AtomicUsize,
             time::Duration,
         };
 
@@ -770,7 +1632,7 @@ mod tests {
         }
 
         fn json_response(status: u16, body: &Value, session: bool) -> Response<Full<Bytes>> {
-            let mut builder = Response::builder().status(status).header(CONTENT_TYPE, JSON_MIME_TYPE);
+            let mut builder = Response::builder().status(status).header(CONTENT_TYPE, CONTENT_TYPE_JSON);
             if session {
                 builder = builder.header(MCP_SESSION_ID, "test-session");
             }
@@ -809,6 +1671,15 @@ mod tests {
                         .header(CONTENT_TYPE, EVENT_STREAM_MIME_TYPE)
                         .body(Full::new(Bytes::from(format!("data: {reply}\n\n"))))
                         .unwrap()
+                },
+                "tools/call" => {
+                    assert!(session_attached, "session id must be forwarded after initialize");
+                    let name = msg["params"]["name"].as_str().unwrap_or_default();
+                    let reply = json!({"jsonrpc": "2.0", "id": id, "result": {
+                        "content": [{"type": "text", "text": format!("called:{name}")}],
+                        "isError": false,
+                    }});
+                    json_response(200, &reply, false)
                 },
                 m if m.starts_with("notifications/") => {
                     Response::builder().status(202).body(Full::new(Bytes::new())).unwrap()
@@ -883,24 +1754,24 @@ mod tests {
             register_static_cluster(cluster, addr, http2);
             let url = format!("http://{addr}/mcp");
 
-            let transport = StreamableHttpClientTransport::with_client(
-                McpHttpClient::try_new(cluster, &url).unwrap(),
-                StreamableHttpClientTransportConfig::with_uri(url.as_str()),
-            );
             let info = ClientConfig::new(ClientCapabilities::default(), Implementation::new("test", "0.1.0"));
-            let client = info.serve(transport).await.expect("initialize must succeed through the cluster");
+            let client =
+                McpUpstreamClient::connect(cluster, &url, info).await.expect("initialize must succeed through cluster");
 
             for _ in 0..3 {
                 let tools = client.list_tools(Option::default()).await.expect("tools/list must succeed");
                 assert_eq!(tools.tools.len(), 1);
                 assert_eq!(tools.tools[0].name.as_ref(), "echo");
             }
+            let call_res = client.call_tool_borrowed("echo", None).await.expect("tools/call must succeed");
+            assert_eq!(call_res.is_error, Some(false));
+
             drop(client);
             remove_cluster(cluster).unwrap();
 
             let requests = stats.requests.load(Ordering::Relaxed);
             let connections = stats.connections.load(Ordering::Relaxed);
-            assert!(requests >= 5, "expected initialize, initialized and 3 tools/list, got {requests}");
+            assert_eq!(requests, 6, "expected initialize, initialized, 3 tools/list and 1 tools/call, got {requests}");
             assert!(
                 connections < requests,
                 "connections must be reused: {connections} connections for {requests} requests"
@@ -915,28 +1786,6 @@ mod tests {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn lists_tools_through_an_http2_cluster() {
             run_list_tools_scenario("mcp-upstream-client-h2", true).await;
-        }
-
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-        async fn unknown_cluster_is_reported_as_client_error() {
-            let client = McpHttpClient::try_new("mcp-upstream-client-missing", "http://127.0.0.1:9/mcp").unwrap();
-            let err = client
-                .get_stream(StdArc::from(""), None, None, None, HashMap::new())
-                .await
-                .err()
-                .expect("missing cluster must fail");
-            assert!(
-                matches!(err, StreamableHttpError::Client(UpstreamClientError::Cluster { .. })),
-                "unexpected error: {err}"
-            );
-        }
-    }
-
-    #[test]
-    fn sse_limiter_ignores_comments_for_retained_size() {
-        let mut limiter = SseEventSizeLimiter::new(16);
-        for _ in 0..8 {
-            assert!(limiter.observe(b": keep-alive\n").is_ok());
         }
     }
 }

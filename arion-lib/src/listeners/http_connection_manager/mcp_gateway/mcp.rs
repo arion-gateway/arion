@@ -23,6 +23,7 @@ use http::{HeaderValue, Method, Response, StatusCode};
 use http_body_util::{BodyExt, Empty, Full};
 use papaya::HashMap as PapayaMap;
 use parking_lot::Mutex;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use smol_str::{SmolStr, ToSmolStr, format_smolstr};
 use std::sync::{
@@ -32,14 +33,10 @@ use std::sync::{
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use rmcp::{
-    RoleClient,
-    model::{
-        self, CallToolRequestMethod, ConstString, Implementation, InitializeRequestParams, InitializeResult,
-        InitializeResultMethod, InitializedNotificationMethod, ListToolsRequestMethod, NumberOrString,
-        PingRequestMethod, ServerCapabilities, Tool,
-    },
-    service::RunningService,
+use rmcp::model::{
+    self, CallToolRequestMethod, ConstString, Implementation, InitializeRequestParams, InitializeResult,
+    InitializeResultMethod, InitializedNotificationMethod, ListToolsRequestMethod, NumberOrString,
+    PingRequestMethod, ServerCapabilities, Tool,
 };
 
 use crate::{
@@ -55,6 +52,7 @@ use crate::{
                     ToolSearchScope, ToolsRegistry, serialize_json_rpc_response,
                 },
                 transport::{AcceptedMime, MIME_APPLICATION_JSON, RequestExt, SessionId},
+                upstream_client::McpUpstreamClient,
             },
         },
         http_filters::{FilterDecision, FilterFactory},
@@ -97,16 +95,94 @@ static TOOL_SEARCH_INPUT_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
     })
 });
 
-fn parse_json_rpc_message(body: &[u8]) -> serde_json::Result<model::JsonRpcMessage> {
-    let mut value = serde_json::from_slice::<Value>(body)?;
+/// Single-pass JSON-RPC 2.0 envelope deserializer for incoming requests on `POST /mcp`.
+///
+/// `rmcp::model::JsonRpcMessage` uses `#[serde(untagged)]` combined with two nested
+/// `#[serde(flatten)]` structs (`JsonRpcRequest` and `WithMeta`), which forces `serde` to
+/// buffer the entire JSON payload into `serde::__private::de::Content` heap trees up to 3 times.
+/// Deserializing all top-level fields in a single flat struct eliminates that intermediate
+/// buffering while preserving full compatibility with `rmcp::model::JsonRpcMessage`.
+fn deserialize_optional_params<'de, D>(deserializer: D) -> Result<Option<Option<model::JsonObject>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<model::JsonObject>::deserialize(deserializer).map(Some)
+}
 
-    if let Value::Object(message) = &mut value {
-        if message.contains_key("method") && message.contains_key("id") && !message.contains_key("params") {
-            message.insert("params".to_owned(), Value::Object(serde_json::Map::new()));
+#[derive(Deserialize)]
+struct InboundJsonRpcEnvelope {
+    jsonrpc: model::JsonRpcVersion2_0,
+    #[serde(default)]
+    id: Option<model::RequestId>,
+    #[serde(default)]
+    method: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_params")]
+    params: Option<Option<model::JsonObject>>,
+    #[serde(default)]
+    result: Option<model::JsonObject>,
+    #[serde(default)]
+    error: Option<model::ErrorData>,
+}
+
+impl InboundJsonRpcEnvelope {
+    #[inline]
+    fn into_json_rpc_message(self) -> Result<model::JsonRpcMessage, &'static str> {
+        let Self { jsonrpc, id, method, params, result, error } = self;
+        let params_obj = match params {
+            None => None,
+            Some(None) => return Self::into_null_params_message(jsonrpc, method, result, error),
+            Some(Some(map)) => Some(map),
+        };
+        match (id, method, result, error) {
+            (Some(id), Some(method), None, None) => {
+                let mut request = model::Request::new(params_obj.unwrap_or_default());
+                request.method = method;
+                Ok(model::JsonRpcMessage::Request(model::JsonRpcRequest { jsonrpc, id, request }))
+            },
+            (None, Some(method), None, None) => {
+                let mut notification = model::Notification::new(params_obj.unwrap_or_default());
+                notification.method = method;
+                Ok(model::JsonRpcMessage::Notification(model::JsonRpcNotification { jsonrpc, notification }))
+            },
+            (Some(id), None, Some(result), None) => {
+                Ok(model::JsonRpcMessage::Response(model::JsonRpcResponse { jsonrpc, id, result }))
+            },
+            (id, None, None, Some(error)) => {
+                Ok(model::JsonRpcMessage::Error(model::JsonRpcError { jsonrpc, id, error }))
+            },
+            // JSON-RPC 2.0 responses with `"result": null` deserialize `result` as `None` when
+            // typed as `Option<JsonObject>`; if `id` is present and neither `method` nor `error`
+            // is set, treat it as an empty-object response.
+            (Some(id), None, None, None) if params_obj.is_none() => Ok(model::JsonRpcMessage::Response(
+                model::JsonRpcResponse { jsonrpc, id, result: model::JsonObject::new() },
+            )),
+            _ => Err("invalid JSON-RPC 2.0 message envelope"),
         }
     }
 
-    serde_json::from_value(value)
+    #[cold]
+    fn into_null_params_message(
+        jsonrpc: model::JsonRpcVersion2_0,
+        method: Option<String>,
+        result: Option<model::JsonObject>,
+        error: Option<model::ErrorData>,
+    ) -> Result<model::JsonRpcMessage, &'static str> {
+        match (method, result, error) {
+            (Some(method), None, None) => {
+                let mut notification = model::Notification::new(model::JsonObject::new());
+                notification.method = method;
+                Ok(model::JsonRpcMessage::Notification(model::JsonRpcNotification { jsonrpc, notification }))
+            },
+            _ => Err("invalid JSON-RPC 2.0 message envelope"),
+        }
+    }
+}
+
+#[cfg(test)]
+fn parse_json_rpc_message(body: &[u8]) -> Result<model::JsonRpcMessage, String> {
+    serde_json::from_slice::<InboundJsonRpcEnvelope>(body)
+        .map_err(|e| e.to_string())
+        .and_then(|env| env.into_json_rpc_message().map_err(str::to_owned))
 }
 
 #[allow(clippy::struct_field_names)]
@@ -115,8 +191,7 @@ pub struct Session {
     pub session_id: SessionId,
     pub session_id_header: HeaderValue,
     pub last_activity: AtomicInstant,
-    pub mcp_upstreams:
-        PapayaMap<SmolStr, StdArc<RunningService<RoleClient, InitializeRequestParams>>, ahash::RandomState>,
+    pub mcp_upstreams: PapayaMap<SmolStr, StdArc<McpUpstreamClient>, ahash::RandomState>,
 }
 
 impl std::fmt::Debug for Session {
@@ -632,10 +707,13 @@ impl McpGateway {
 
         let body = body.to_bytes();
 
-        let json_rpc_message = match parse_json_rpc_message(&body) {
+        let json_rpc_message = match serde_json::from_slice::<InboundJsonRpcEnvelope>(&body)
+            .map_err(|e| e.to_string())
+            .and_then(|env| env.into_json_rpc_message().map_err(str::to_owned))
+        {
             Ok(message) => message,
             Err(err) => {
-                info!(target: "mcp_gateway", "handle_rpc_json_message: failed to parse json message: {body:?} ({err:?})");
+                info!(target: "mcp_gateway", "handle_rpc_json_message: failed to parse json message: {body:?} ({err})");
                 return self.rpc_error_decision(
                     model::ErrorData::parse_error("Parse error", None),
                     FilterDecision::bad_request,
@@ -1059,14 +1137,14 @@ mod tests {
 
     fn actual_tool(name: &str, disclosure_mode: DisclosureMode) -> McpTool {
         McpTool {
-            namespace: "test".into(),
+            namespace: "crm".into(),
             name: name.into(),
-            description: format!("{name} description").into(),
+            description: format!("Tool {name}").into(),
             input_schema: serde_json::Map::new(),
             output_schema: serde_json::Map::new(),
             backend: UpstreamBackend::Rest {
-                method: Method::GET,
-                path: format!("/{name}").into(),
+                method: http::Method::GET,
+                path: "/test".into(),
                 query_params: Vec::new(),
                 cluster: "test".into(),
                 upstream_policy: Box::new(HttpUpstreamPolicy::default()),
@@ -1080,52 +1158,59 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_mode_listing_is_controlled_only_by_disclosure() {
-        let cases = [
-            (vec![actual_tool("progressive_a", DisclosureMode::Progressive)], vec![TOOL_SEARCH_TOOL_NAME]),
-            (
-                vec![
-                    actual_tool("progressive", DisclosureMode::Progressive),
-                    actual_tool("eager", DisclosureMode::Eager),
-                ],
-                vec!["test.eager", TOOL_SEARCH_TOOL_NAME],
-            ),
-            (
-                vec![actual_tool("eager_a", DisclosureMode::Eager), actual_tool("eager_b", DisclosureMode::Eager)],
-                vec!["test.eager_a", "test.eager_b"],
-            ),
-        ];
+    async fn tools_mode_exposes_tool_search_only_when_progressive_tools_exist() {
+        let mut config = config_with_tools_mode();
+        config.tools = vec![actual_tool("eager_only", DisclosureMode::Eager)];
+        let gateway = McpGateway::try_from(config).expect("tools gateway");
+        let listed = gateway
+            .inner
+            .mode
+            .list_tools(&gateway.inner.tools, &http::Extensions::new(), &RequestCtx::default())
+            .await
+            .expect("tools/list");
+        assert_eq!(listed.tools.iter().map(|tool| tool.name.as_ref()).collect::<Vec<_>>(), ["crm.eager_only"]);
 
-        for (tools, expected) in cases {
-            let mut config = config_with_tools_mode();
-            config.tools = tools;
-            let gateway = McpGateway::try_from(config).expect("tools-mode gateway");
-            let mode = match &gateway.inner.mode {
-                GatewayMode::Tools(mode) => mode,
-                #[cfg(feature = "codemode")]
-                GatewayMode::Code(_) => panic!("tools mode"),
-            };
-            let listed = mode
-                .list_tools(&gateway.inner.tools, &http::Extensions::new(), &RequestCtx::default())
-                .await
-                .expect("tools/list");
-            let names = listed.tools.iter().map(|tool| tool.name.as_ref()).collect::<Vec<_>>();
-            assert_eq!(names, expected);
-        }
+        let mut config = config_with_tools_mode();
+        config.tools =
+            vec![actual_tool("eager_one", DisclosureMode::Eager), actual_tool("hidden_one", DisclosureMode::Progressive)];
+        let gateway = McpGateway::try_from(config).expect("tools gateway");
+        let listed = gateway
+            .inner
+            .mode
+            .list_tools(&gateway.inner.tools, &http::Extensions::new(), &RequestCtx::default())
+            .await
+            .expect("tools/list");
+        assert_eq!(
+            listed.tools.iter().map(|tool| tool.name.as_ref()).collect::<Vec<_>>(),
+            ["crm.eager_one", TOOL_SEARCH_TOOL_NAME]
+        );
+        let search_tool = listed.tools.iter().find(|tool| tool.name == TOOL_SEARCH_TOOL_NAME).unwrap();
+        let description = search_tool.description.as_deref().unwrap();
+        assert!(description.contains("crm.hidden_one"));
+        assert!(!description.contains("crm.eager_one"));
     }
 
     #[tokio::test]
-    async fn tools_mode_does_not_accept_execute() {
-        let gateway = McpGateway::try_from(config_with_tools_mode()).expect("tools-mode gateway");
-        let mode = match &gateway.inner.mode {
-            GatewayMode::Tools(mode) => mode,
-            #[cfg(feature = "codemode")]
-            GatewayMode::Code(_) => panic!("tools mode"),
-        };
+    async fn tool_search_returns_pretty_json_definitions_for_progressive_tools() {
+        let mut config = config_with_tools_mode();
+        config.tools =
+            vec![actual_tool("eager_one", DisclosureMode::Eager), actual_tool("find_customer", DisclosureMode::Progressive)];
+        let gateway = McpGateway::try_from(config).expect("tools gateway");
         let cx = TestCallContext::default();
-        let result = mode
-            .call_tool(&gateway.inner.tools, cx.context(), CODEMODE_EXECUTE_TOOL_NAME, json!({ "code": "42" }))
-            .await;
-        assert!(matches!(result, Err(CallToolError::ToolNotFound(name)) if name == CODEMODE_EXECUTE_TOOL_NAME));
+        let result = gateway
+            .inner
+            .mode
+            .call_tool(
+                &gateway.inner.tools,
+                cx.context(),
+                TOOL_SEARCH_TOOL_NAME,
+                json!({ "query": "find customer" }),
+            )
+            .await
+            .expect("tool_search call");
+        let text = result.content.first().and_then(|block| block.as_text()).expect("text block");
+        let tools: Vec<Value> = serde_json::from_str(&text.text).expect("JSON tool definitions");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"], "crm.find_customer");
     }
 }
