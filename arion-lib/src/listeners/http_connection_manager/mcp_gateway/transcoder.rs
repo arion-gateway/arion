@@ -60,6 +60,8 @@ pub struct RestTranscoder {
     pub query_params: Vec<McpRestQueryParams>,
     /// Always present: `Static` (pre-normalized with leading '/') or `Dynamic`.
     pub path: CompiledTemplate<String>,
+    /// Pre-parsed URI when `path` is `Static` and `query_params` is empty.
+    pub static_uri: Option<http::Uri>,
     /// `None` = no body. Replaces the old `has_body_template` boolean.
     pub body: Option<CompiledTemplate<Bytes>>,
     template_engine: Engine<'static>,

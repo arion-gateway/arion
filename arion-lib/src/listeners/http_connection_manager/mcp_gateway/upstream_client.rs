@@ -30,8 +30,9 @@ use crate::{
     },
     clusters::{RoutingPriority, clusters_manager, clusters_manager::RoutingContext},
 };
+use arion_http_header::{LAST_EVENT_ID, MCP_PROTOCOL_VERSION, MCP_SESSION_ID};
 use arion_interner::{InternedStr, StringInterner};
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 use futures::{Stream, StreamExt, stream::BoxStream};
 use http::{
     HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri,
@@ -41,7 +42,7 @@ use http::{
 use http_body_util::{BodyExt, Empty, Full};
 use pin_project::pin_project;
 use rmcp::{
-    model::{ClientJsonRpcMessage, ClientRequest, ErrorData, JsonRpcMessage, ServerJsonRpcMessage},
+    model::{ClientJsonRpcMessage, ClientRequest, ErrorData, JsonRpcMessage, RequestId, ServerJsonRpcMessage},
     transport::streamable_http_client::{
         AuthRequiredError, InsufficientScopeError, StreamableHttpClient, StreamableHttpError,
         StreamableHttpPostResponse,
@@ -57,11 +58,10 @@ use std::{
     task::{Poll, ready},
 };
 
-const HEADER_SESSION_ID: &str = "Mcp-Session-Id";
-const HEADER_LAST_EVENT_ID: &str = "Last-Event-Id";
-const HEADER_MCP_PROTOCOL_VERSION: &str = "mcp-protocol-version";
 const EVENT_STREAM_MIME_TYPE: &str = "text/event-stream";
 const JSON_MIME_TYPE: &str = "application/json";
+const ACCEPT_EVENT_STREAM_AND_JSON: HeaderValue = HeaderValue::from_static("text/event-stream, application/json");
+const CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static(JSON_MIME_TYPE);
 
 /// Maximum raw size of one SSE event accepted from an upstream server (same as rmcp's default).
 const DEFAULT_MAX_SSE_EVENT_SIZE: usize = 16 * 1024 * 1024;
@@ -103,47 +103,69 @@ pub(crate) struct McpHttpClient {
 
 impl McpHttpClient {
     pub(crate) fn try_new(cluster: &str, url: &str) -> Result<Self, UpstreamClientError> {
-        let invalid = |reason: &str| UpstreamClientError::InvalidUrl { url: url.to_owned(), reason: reason.to_owned() };
+        let invalid = |reason: String| UpstreamClientError::InvalidUrl { url: url.to_owned(), reason };
 
-        let uri = Uri::from_str(url).map_err(|e| invalid(&e.to_string()))?;
-        match uri.scheme() {
-            Some(s) if *s == Scheme::HTTPS || *s == Scheme::HTTP => {},
-            _ => return Err(invalid("scheme must be http or https")),
+        let uri = Uri::from_str(url).map_err(|e| invalid(e.to_string()))?;
+        let parts = uri.into_parts();
+        match parts.scheme {
+            Some(ref s) if *s == Scheme::HTTPS || *s == Scheme::HTTP => {},
+            _ => return Err(invalid("scheme must be http or https".to_owned())),
         }
-        let authority = uri.authority().ok_or_else(|| invalid("missing host"))?;
-        let host_header = HeaderValue::from_str(authority.as_str()).map_err(|e| invalid(&e.to_string()))?;
-
-        let target = uri.path_and_query().map_or("/", http::uri::PathAndQuery::as_str);
-        let target = Uri::from_str(target).map_err(|e| invalid(&e.to_string()))?;
+        let authority = parts.authority.ok_or_else(|| invalid("missing host".to_owned()))?;
+        let host_header = HeaderValue::from_str(authority.as_str()).map_err(|e| invalid(e.to_string()))?;
+        let target = parts.path_and_query.map_or(Uri::from_static("/"), Uri::from);
 
         Ok(Self { cluster_id: cluster.to_interned_str(), host_header, target })
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn request(
+    fn build_request(
         &self,
         method: Method,
         accept: bool,
+        content_type: Option<HeaderValue>,
         session_id: Option<&str>,
-        auth_token: Option<String>,
+        last_event_id: Option<&str>,
+        auth_token: Option<&str>,
         custom_headers: HashMap<HeaderName, HeaderValue>,
-    ) -> Result<http::request::Builder, ClientError> {
-        let mut builder =
-            Request::builder().method(method).uri(self.target.clone()).header(HOST, self.host_header.clone());
+        payload: Option<Bytes>,
+    ) -> Result<Request<ArionRequestBody>, ClientError> {
+        let mut request = Request::new(request_body(payload));
+        *request.method_mut() = method;
+        *request.uri_mut() = self.target.clone();
+
+        let headers = request.headers_mut();
+        headers.reserve(custom_headers.len() + 5);
+        headers.insert(HOST, self.host_header.clone());
         if accept {
-            builder = builder.header(ACCEPT, concat_accept());
+            headers.insert(ACCEPT, ACCEPT_EVENT_STREAM_AND_JSON);
+        }
+        if let Some(ct) = content_type {
+            headers.insert(CONTENT_TYPE, ct);
         }
         if let Some(token) = auth_token {
-            builder = builder.header(AUTHORIZATION, format!("Bearer {token}"));
+            let mut buf = BytesMut::with_capacity("Bearer ".len() + token.len());
+            buf.put_slice(b"Bearer ");
+            buf.put_slice(token.as_bytes());
+            let value = HeaderValue::from_maybe_shared(buf.freeze())
+                .map_err(|e| StreamableHttpError::Client(UpstreamClientError::Request(e.into())))?;
+            headers.insert(AUTHORIZATION, value);
         }
         for (name, value) in custom_headers {
             validate_custom_header(&name).map_err(StreamableHttpError::ReservedHeaderConflict)?;
-            builder = builder.header(name, value);
+            headers.insert(name, value);
         }
         if let Some(session_id) = session_id {
-            builder = builder.header(HEADER_SESSION_ID, session_id);
+            let value = HeaderValue::from_str(session_id)
+                .map_err(|e| StreamableHttpError::Client(UpstreamClientError::Request(e.into())))?;
+            headers.insert(MCP_SESSION_ID, value);
         }
-        Ok(builder)
+        if let Some(last_event_id) = last_event_id {
+            let value = HeaderValue::from_str(last_event_id)
+                .map_err(|e| StreamableHttpError::Client(UpstreamClientError::Request(e.into())))?;
+            headers.insert(LAST_EVENT_ID, value);
+        }
+        Ok(request)
     }
 
     /// Resolve the cluster channel and send. The cluster lookup happens on every call: the
@@ -171,10 +193,7 @@ impl McpHttpClient {
     }
 }
 
-fn concat_accept() -> &'static str {
-    "text/event-stream, application/json"
-}
-
+#[inline]
 fn request_body(payload: Option<Bytes>) -> ArionRequestBody {
     let body = match payload {
         Some(bytes) => PolyBody::from(Full::new(bytes)),
@@ -190,10 +209,17 @@ async fn collect_body(body: ArionResponseBody) -> Result<Bytes, ClientError> {
         .map_err(|e| StreamableHttpError::Client(UpstreamClientError::Body(Box::new(e))))
 }
 
-fn header_string(response: &Response<ArionResponseBody>, name: &str) -> Option<String> {
-    response.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned)
+#[inline]
+fn header_str<'a>(headers: &'a http::HeaderMap, name: &HeaderName) -> Option<&'a str> {
+    headers.get(name).and_then(|v| v.to_str().ok())
 }
 
+#[inline]
+fn is_zero_content_length(headers: &http::HeaderMap) -> bool {
+    header_str(headers, &CONTENT_LENGTH).and_then(|v| v.parse::<u64>().ok()) == Some(0)
+}
+
+#[inline]
 fn is_notification_like(message: &ClientJsonRpcMessage) -> bool {
     matches!(
         message,
@@ -202,15 +228,21 @@ fn is_notification_like(message: &ClientJsonRpcMessage) -> bool {
 }
 
 /// Maps 401 / 403 carrying a `WWW-Authenticate` challenge to the matching rmcp errors.
+#[inline]
 fn check_auth(status: StatusCode, headers: &http::HeaderMap) -> Result<(), ClientError> {
     if status != StatusCode::UNAUTHORIZED && status != StatusCode::FORBIDDEN {
         return Ok(());
     }
+    check_auth_slow(status, headers)
+}
+
+#[cold]
+fn check_auth_slow(status: StatusCode, headers: &http::HeaderMap) -> Result<(), ClientError> {
     let Some(header) = headers.get(WWW_AUTHENTICATE) else {
         return Ok(());
     };
     let header = header.to_str().map_err(|_non_ascii| {
-        StreamableHttpError::UnexpectedServerResponse(Cow::from("invalid www-authenticate header value"))
+        StreamableHttpError::UnexpectedServerResponse(Cow::Borrowed("invalid www-authenticate header value"))
     })?;
     if status == StatusCode::UNAUTHORIZED {
         Err(StreamableHttpError::AuthRequired(AuthRequiredError::new(header.to_owned())))
@@ -223,22 +255,21 @@ fn check_auth(status: StatusCode, headers: &http::HeaderMap) -> Result<(), Clien
 }
 
 /// Rejects headers the transport manages itself; `MCP-Protocol-Version` is let through.
+#[inline]
 fn validate_custom_header(name: &HeaderName) -> Result<(), String> {
-    let name_str = name.as_str();
-    if name_str.eq_ignore_ascii_case(HEADER_MCP_PROTOCOL_VERSION) {
+    if *name == MCP_PROTOCOL_VERSION {
         return Ok(());
     }
-    let reserved = name_str.eq_ignore_ascii_case("accept")
-        || name_str.eq_ignore_ascii_case(HEADER_SESSION_ID)
-        || name_str.eq_ignore_ascii_case(HEADER_LAST_EVENT_ID);
-    if reserved { Err(name.to_string()) } else { Ok(()) }
+    if *name == ACCEPT || *name == MCP_SESSION_ID || *name == LAST_EVENT_ID {
+        return Err(name.as_str().to_owned());
+    }
+    Ok(())
 }
 
 /// Extracts the `scope=` parameter of a `WWW-Authenticate` value (quoted or bare).
 fn extract_scope_from_header(header: &str) -> Option<String> {
-    const SCOPE_KEY: &str = "scope=";
-    // ASCII lowercasing keeps byte offsets, so `pos` is valid in `header` as well.
-    let pos = header.to_ascii_lowercase().find(SCOPE_KEY)?;
+    const SCOPE_KEY: &[u8] = b"scope=";
+    let pos = header.as_bytes().windows(SCOPE_KEY.len()).position(|w| w.eq_ignore_ascii_case(SCOPE_KEY))?;
     let value = header.get(pos + SCOPE_KEY.len()..)?;
     if let Some(quoted) = value.strip_prefix('"') {
         return quoted.split_once('"').map(|(scope, _)| scope.to_owned());
@@ -254,43 +285,55 @@ fn parse_json_rpc_error(body: &str) -> Option<ServerJsonRpcMessage> {
     }
 }
 
-fn body_preview(body: &[u8]) -> Cow<'static, str> {
+fn body_preview(body: &[u8]) -> Cow<'_, str> {
     if body.is_empty() {
         return Cow::Borrowed("<empty>");
     }
-    let lossy = String::from_utf8_lossy(body);
-    let mut end = lossy.len().min(JSON_RPC_BODY_PREVIEW_LEN);
-    while !lossy.is_char_boundary(end) {
-        end -= 1;
+    let slice = body.get(..body.len().min(JSON_RPC_BODY_PREVIEW_LEN)).unwrap_or(body);
+    match std::str::from_utf8(slice) {
+        Ok(s) => Cow::Borrowed(s),
+        Err(e) if e.valid_up_to() > 0 => {
+            // Safe slice up to the last valid UTF-8 boundary (handles multi-byte char split at 256).
+            let valid = slice.get(..e.valid_up_to()).unwrap_or_default();
+            String::from_utf8_lossy(valid)
+        },
+        Err(_) => String::from_utf8_lossy(slice),
     }
-    Cow::Owned(lossy.get(..end).unwrap_or_default().to_owned())
 }
 
-/// Converts a sessionless `server/discover` rejection into a response the rmcp lifecycle can
-/// classify (legacy servers answer it with a plain 4xx).
-fn legacy_discover_response(
-    message: &ClientJsonRpcMessage,
-    session_was_attached: bool,
+/// Handles non-2xx responses (including legacy sessionless `server/discover` rejections).
+#[cold]
+async fn handle_error_response(
+    response: Response<ArionResponseBody>,
     status: StatusCode,
-    body: &str,
-) -> Option<StreamableHttpPostResponse> {
-    if session_was_attached
-        || !status.is_client_error()
-        || matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+    discover_request_id: Option<RequestId>,
+) -> Result<StreamableHttpPostResponse, ClientError> {
+    let is_json = header_str(response.headers(), &CONTENT_TYPE).is_some_and(|ct| ct.starts_with(JSON_MIME_TYPE));
+    let session_id = header_str(response.headers(), &MCP_SESSION_ID).map(str::to_owned);
+    let body = collect_body(response.into_body()).await.map_or_else(
+        |_| "<failed to read response body>".to_owned(),
+        |b| match String::from_utf8(b.into()) {
+            Ok(s) => s,
+            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        },
+    );
+    if let Some(id) = discover_request_id
+        && status.is_client_error()
+        && !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
     {
-        return None;
+        let error = match serde_json::from_str::<ServerJsonRpcMessage>(&body) {
+            Ok(ServerJsonRpcMessage::Error(error)) => error.error,
+            _ => ErrorData::invalid_request(format!("server/discover rejected with HTTP {status}: {body}"), None),
+        };
+        return Ok(StreamableHttpPostResponse::Json(ServerJsonRpcMessage::error(error, Some(id)), None));
     }
-    let ClientJsonRpcMessage::Request(request) = message else {
-        return None;
-    };
-    if !matches!(request.request, ClientRequest::DiscoverRequest(_)) {
-        return None;
+    if is_json {
+        if let Some(message) = parse_json_rpc_error(&body) {
+            return Ok(StreamableHttpPostResponse::Json(message, session_id));
+        }
+        tracing::warn!(target: "mcp_gateway", "HTTP {status}: could not parse JSON body as a JSON-RPC error");
     }
-    let error = match serde_json::from_str::<ServerJsonRpcMessage>(body) {
-        Ok(ServerJsonRpcMessage::Error(error)) => error.error,
-        _ => ErrorData::invalid_request(format!("server/discover rejected with HTTP {status}: {body}"), None),
-    };
-    Some(StreamableHttpPostResponse::Json(ServerJsonRpcMessage::error(error, Some(request.id.clone())), None))
+    Err(StreamableHttpError::UnexpectedServerResponse(Cow::Owned(format!("HTTP {status}: {body}"))))
 }
 
 fn sse_stream_of(body: ArionResponseBody, max_event_size: usize) -> BoxStream<'static, Result<Sse, SseError>> {
@@ -331,12 +374,26 @@ impl StreamableHttpClient for McpHttpClient {
         let payload =
             serde_json::to_vec(&message).map_err(|e| StreamableHttpError::Client(UpstreamClientError::Json(e)))?;
         let session_was_attached = session_id.is_some();
+        let is_notification = is_notification_like(&message);
+        let discover_request_id = match message {
+            ClientJsonRpcMessage::Request(request)
+                if !session_was_attached && matches!(request.request, ClientRequest::DiscoverRequest(_)) =>
+            {
+                Some(request.id)
+            },
+            _ => None,
+        };
 
-        let request = self
-            .request(Method::POST, true, session_id.as_deref(), auth_header, custom_headers)?
-            .header(CONTENT_TYPE, JSON_MIME_TYPE)
-            .body(request_body(Some(Bytes::from(payload))))
-            .map_err(|e| StreamableHttpError::Client(UpstreamClientError::Request(e)))?;
+        let request = self.build_request(
+            Method::POST,
+            true,
+            Some(CONTENT_TYPE_JSON),
+            session_id.as_deref(),
+            None,
+            auth_header.as_deref(),
+            custom_headers,
+            Some(Bytes::from(payload)),
+        )?;
 
         let response = self.send(request).await?;
         let status = response.status();
@@ -349,41 +406,29 @@ impl StreamableHttpClient for McpHttpClient {
             return Err(StreamableHttpError::SessionExpired);
         }
 
-        let content_type = header_string(&response, CONTENT_TYPE.as_str());
-        let session_id = header_string(&response, HEADER_SESSION_ID);
-        let content_length = header_string(&response, CONTENT_LENGTH.as_str()).and_then(|v| v.parse::<u64>().ok());
-
         if !status.is_success() {
-            let body = collect_body(response.into_body()).await.map_or_else(
-                |_| "<failed to read response body>".to_owned(),
-                |b| String::from_utf8_lossy(&b).into_owned(),
-            );
-            if let Some(response) = legacy_discover_response(&message, session_was_attached, status, &body) {
-                return Ok(response);
-            }
-            if content_type.as_deref().is_some_and(|ct| ct.starts_with(JSON_MIME_TYPE)) {
-                if let Some(message) = parse_json_rpc_error(&body) {
-                    return Ok(StreamableHttpPostResponse::Json(message, session_id));
-                }
-                tracing::warn!(target: "mcp_gateway", "HTTP {status}: could not parse JSON body as a JSON-RPC error");
-            }
-            return Err(StreamableHttpError::UnexpectedServerResponse(Cow::Owned(format!("HTTP {status}: {body}"))));
+            return handle_error_response(response, status, discover_request_id).await;
         }
 
         // The spec requires 202 for these, but some servers answer with an empty 200.
-        if content_length == Some(0) && is_notification_like(&message) {
+        if is_notification && is_zero_content_length(response.headers()) {
             return Ok(StreamableHttpPostResponse::Accepted);
         }
 
-        match content_type.as_deref() {
-            Some(ct) if ct.starts_with(EVENT_STREAM_MIME_TYPE) => {
-                Ok(StreamableHttpPostResponse::Sse(sse_stream_of(response.into_body(), max_sse_event_size), session_id))
-            },
-            Some(ct) if ct.starts_with(JSON_MIME_TYPE) => {
+        // rmcp only consumes the response session_id during sessionless initialization.
+        let response_session_id = if session_was_attached {
+            None
+        } else {
+            header_str(response.headers(), &MCP_SESSION_ID).map(str::to_owned)
+        };
+
+        let content_type = header_str(response.headers(), &CONTENT_TYPE);
+        if let Some(ct) = content_type {
+            if ct.starts_with(JSON_MIME_TYPE) {
                 let body = collect_body(response.into_body()).await?;
-                match serde_json::from_slice::<ServerJsonRpcMessage>(&body) {
-                    Ok(parsed) => Ok(StreamableHttpPostResponse::Json(parsed, session_id)),
-                    Err(e) if is_notification_like(&message) => {
+                return match serde_json::from_slice::<ServerJsonRpcMessage>(&body) {
+                    Ok(parsed) => Ok(StreamableHttpPostResponse::Json(parsed, response_session_id)),
+                    Err(e) if is_notification => {
                         tracing::warn!(
                             target: "mcp_gateway",
                             "could not parse JSON response as ServerJsonRpcMessage, treating as accepted: {e}"
@@ -394,10 +439,17 @@ impl StreamableHttpClient for McpHttpClient {
                         "could not parse JSON response as ServerJsonRpcMessage: {e}: {}",
                         body_preview(&body)
                     )))),
-                }
-            },
-            _ => Err(StreamableHttpError::UnexpectedContentType(content_type)),
+                };
+            }
+            if ct.starts_with(EVENT_STREAM_MIME_TYPE) {
+                return Ok(StreamableHttpPostResponse::Sse(
+                    sse_stream_of(response.into_body(), max_sse_event_size),
+                    response_session_id,
+                ));
+            }
         }
+
+        Err(StreamableHttpError::UnexpectedContentType(content_type.map(str::to_owned)))
     }
 
     async fn delete_session(
@@ -407,10 +459,16 @@ impl StreamableHttpClient for McpHttpClient {
         auth_header: Option<String>,
         custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<(), ClientError> {
-        let request = self
-            .request(Method::DELETE, false, Some(&session_id), auth_header, custom_headers)?
-            .body(request_body(None))
-            .map_err(|e| StreamableHttpError::Client(UpstreamClientError::Request(e)))?;
+        let request = self.build_request(
+            Method::DELETE,
+            false,
+            None,
+            Some(&session_id),
+            None,
+            auth_header.as_deref(),
+            custom_headers,
+            None,
+        )?;
 
         let response = self.send(request).await?;
         let status = response.status();
@@ -454,13 +512,16 @@ impl StreamableHttpClient for McpHttpClient {
         custom_headers: HashMap<HeaderName, HeaderValue>,
         max_sse_event_size: usize,
     ) -> Result<BoxStream<'static, Result<Sse, SseError>>, ClientError> {
-        let mut builder = self.request(Method::GET, true, session_id.as_deref(), auth_header, custom_headers)?;
-        if let Some(last_event_id) = last_event_id {
-            builder = builder.header(HEADER_LAST_EVENT_ID, last_event_id);
-        }
-        let request = builder
-            .body(request_body(None))
-            .map_err(|e| StreamableHttpError::Client(UpstreamClientError::Request(e)))?;
+        let request = self.build_request(
+            Method::GET,
+            true,
+            None,
+            session_id.as_deref(),
+            last_event_id.as_deref(),
+            auth_header.as_deref(),
+            custom_headers,
+            None,
+        )?;
 
         let response = self.send(request).await?;
         let status = response.status();
@@ -474,11 +535,12 @@ impl StreamableHttpClient for McpHttpClient {
                 "get_stream returned {status}"
             ))));
         }
-        match header_string(&response, CONTENT_TYPE.as_str()) {
+        let content_type = header_str(response.headers(), &CONTENT_TYPE);
+        match content_type {
             Some(ct) if ct.starts_with(EVENT_STREAM_MIME_TYPE) || ct.starts_with(JSON_MIME_TYPE) => {
                 Ok(sse_stream_of(response.into_body(), max_sse_event_size))
             },
-            other => Err(StreamableHttpError::UnexpectedContentType(other)),
+            other => Err(StreamableHttpError::UnexpectedContentType(other.map(str::to_owned))),
         }
     }
 }
@@ -507,27 +569,38 @@ impl SseEventSizeLimiter {
         Self { max_size, retained_size: 0, line_size: 0, line_is_comment: false, previous_was_cr: false }
     }
 
-    fn observe(&mut self, chunk: &[u8]) -> Result<(), ()> {
-        for &byte in chunk {
-            if self.previous_was_cr {
-                self.previous_was_cr = false;
-                if byte == b'\n' {
-                    continue;
-                }
+    fn observe(&mut self, mut chunk: &[u8]) -> Result<(), ()> {
+        if self.previous_was_cr {
+            self.previous_was_cr = false;
+            if let Some(rest) = chunk.strip_prefix(b"\n") {
+                chunk = rest;
             }
-            match byte {
-                b'\r' => {
-                    self.finish_line()?;
-                    self.previous_was_cr = true;
-                },
-                b'\n' => self.finish_line()?,
-                _ => {
+        }
+        while let Some(&first) = chunk.first() {
+            if let Some(pos) = chunk.iter().position(|&b| b == b'\r' || b == b'\n') {
+                if pos > 0 {
                     if self.line_size == 0 {
-                        self.line_is_comment = byte == b':';
+                        self.line_is_comment = first == b':';
                     }
-                    self.line_size = self.line_size.saturating_add(1);
+                    self.line_size = self.line_size.saturating_add(pos);
                     self.check_limit()?;
-                },
+                }
+                let is_cr = chunk.get(pos) == Some(&b'\r');
+                self.finish_line()?;
+                chunk = chunk.get(pos + 1..).unwrap_or_default();
+                if is_cr {
+                    if let Some(rest) = chunk.strip_prefix(b"\n") {
+                        chunk = rest;
+                    } else {
+                        self.previous_was_cr = true;
+                    }
+                }
+            } else {
+                if self.line_size == 0 {
+                    self.line_is_comment = first == b':';
+                }
+                self.line_size = self.line_size.saturating_add(chunk.len());
+                return self.check_limit();
             }
         }
         Ok(())
@@ -545,6 +618,7 @@ impl SseEventSizeLimiter {
         self.check_limit()
     }
 
+    #[inline]
     fn check_limit(&self) -> Result<(), ()> {
         if self.retained_size.saturating_add(self.line_size) > self.max_size { Err(()) } else { Ok(()) }
     }
@@ -690,9 +764,9 @@ mod tests {
         }
 
         fn json_response(status: u16, body: &Value, session: bool) -> Response<Full<Bytes>> {
-            let mut builder = Response::builder().status(status).header(CONTENT_TYPE, JSON_MIME_TYPE);
+            let mut builder = Response::builder().status(status).header(CONTENT_TYPE, CONTENT_TYPE_JSON);
             if session {
-                builder = builder.header(HEADER_SESSION_ID, "test-session");
+                builder = builder.header(MCP_SESSION_ID, "test-session");
             }
             builder.body(Full::new(Bytes::from(body.to_string()))).unwrap()
         }
@@ -703,7 +777,7 @@ mod tests {
                 let code = if req.method() == Method::DELETE { 200 } else { 405 };
                 return Response::builder().status(code).body(Full::new(Bytes::new())).unwrap();
             }
-            let session_attached = req.headers().contains_key(HEADER_SESSION_ID);
+            let session_attached = req.headers().contains_key(MCP_SESSION_ID);
             let body = req.into_body().collect().await.unwrap().to_bytes();
             let msg: Value = serde_json::from_slice(&body).unwrap();
             let id = msg["id"].clone();

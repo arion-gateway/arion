@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{io, sync::Arc as StdArc, time::Instant};
+use std::{sync::Arc as StdArc, time::Instant};
 
 use arion_configuration::config::{
     cluster::ClusterSpecifier,
     network_filters::http_connection_manager::http_filters::mcp_gateway::{UpstreamBackend, UpstreamLimits},
 };
 use arion_http_header::X_REQUEST_ID;
-use arion_interner::StringInterner;
+use arion_interner::InternedStr;
 use bytes::Bytes;
 use http::{HeaderValue, Request, Response, StatusCode, header::HOST};
 use opentelemetry::KeyValue;
@@ -136,15 +136,16 @@ pub async fn invoke_rest_tool(
     req_ctx: &RequestCtx,
 ) -> ToolInvocationOutcome {
     let started = Instant::now();
-    let cluster = match &tool.conf.backend {
-        UpstreamBackend::Rest { cluster, .. } => cluster.as_str(),
-        _ => unreachable!("invoke_rest_tool called for a non-REST tool"),
-    };
+    debug_assert!(
+        matches!(&tool.conf.backend, UpstreamBackend::Rest { .. }),
+        "invoke_rest_tool called for a non-REST tool"
+    );
+    let cluster = tool.upstream_target.as_str();
     let mut span = req_ctx.begin_upstream_span(cluster);
     span.set_attributes([
-        KeyValue::new("mcp.tool.name", tool.conf.name.to_static_str()),
+        KeyValue::new("mcp.tool.name", tool.interned_name.as_str()),
         KeyValue::new("mcp.backend", "rest"),
-        KeyValue::new("mcp.upstream", cluster.to_static_str()),
+        KeyValue::new("mcp.upstream", cluster),
     ]);
     let outcome = dispatch_rest_tool(tool, request, upstream_limits, req_ctx, &mut span).await;
     if let Some(code) = outcome_failure_code(&outcome) {
@@ -152,7 +153,7 @@ pub async fn invoke_rest_tool(
         span.set_error(code);
     }
     span.complete();
-    record_tool_invocation(&tool.conf.name, started, &outcome);
+    record_tool_invocation(tool.interned_name, started, &outcome);
     outcome
 }
 
@@ -163,22 +164,25 @@ async fn dispatch_rest_tool(
     req_ctx: &RequestCtx,
     span: &mut arion_tracing::http_tracer::ScopedClientSpan,
 ) -> ToolInvocationOutcome {
-    let UpstreamBackend::Rest { cluster, upstream_policy, .. } = &tool.conf.backend else {
+    let UpstreamBackend::Rest { upstream_policy, .. } = &tool.conf.backend else {
         unreachable!("invoke_rest_tool called for a non-REST tool")
     };
 
-    if let Some(authority) = upstream_policy.authority.as_ref() {
-        let Ok(host) = HeaderValue::from_str(authority.as_str()) else {
+    match &tool.rest_authority_header {
+        Some(Ok(host)) => {
+            request.headers_mut().insert(HOST, host.clone());
+        },
+        Some(Err(_)) => {
             return ToolInvocationOutcome::Failure(ToolInvocationFailure {
                 code: ToolInvocationErrorCode::UpstreamError,
                 message: "The configured upstream authority is invalid".to_owned(),
                 status: None,
                 retryable: false,
             });
-        };
-        request.headers_mut().insert(HOST, host);
-    } else {
-        request.headers_mut().remove(HOST);
+        },
+        None => {
+            request.headers_mut().remove(HOST);
+        },
     }
 
     if let Some(request_id) = req_ctx.propagated_request_id() {
@@ -186,7 +190,7 @@ async fn dispatch_rest_tool(
     } else {
         request.headers_mut().remove(X_REQUEST_ID);
     }
-    let cluster_specifier = ClusterSpecifier::Cluster(cluster.clone().into());
+    let cluster_specifier = ClusterSpecifier::Cluster(tool.upstream_target);
     let acquired = match acquire_http_upstream(
         &cluster_specifier,
         &request,
@@ -198,7 +202,7 @@ async fn dispatch_rest_tool(
         Err(error) => return ToolInvocationOutcome::Failure(acquire_failure(&tool.conf.name, &error)),
     };
 
-    if upstream_policy.authority.is_none() {
+    if tool.rest_authority_header.is_none() {
         let endpoint_authority = acquired.channels().upstream_authority().as_str();
         let Ok(host) = HeaderValue::from_str(endpoint_authority) else {
             return ToolInvocationOutcome::Failure(ToolInvocationFailure {
@@ -302,38 +306,6 @@ impl ToolInvocationOutcome {
             Self::Failure(failure) => failure.into_call_tool_result(),
         }
     }
-
-    /// Consume the outcome into the final `tools/call` result [`Value`].
-    ///
-    /// Unlike `into_call_tool_result` + `serde_json::to_value` (which walks the
-    /// whole payload twice: once in `CallToolResult::structured` for the text
-    /// preview, once serializing `structuredContent`), the validated structured
-    /// payload is *moved* into `structuredContent` (O(1)) and only the small
-    /// `content` block goes through the serializer. Output is identical to
-    /// `serde_json::to_value(outcome.into_call_tool_result())`.
-    pub fn into_result_value(self) -> Result<Value, serde_json::Error> {
-        match self {
-            Self::Success(mut result) => {
-                let content = serde_json::to_value(std::mem::take(&mut result.content))?;
-                let mut map = serde_json::Map::with_capacity(5);
-                if let Some(result_type) = result.result_type.take() {
-                    map.insert("resultType".to_owned(), serde_json::to_value(result_type)?);
-                }
-                map.insert("content".to_owned(), content);
-                if let Some(structured) = result.structured_content.take() {
-                    map.insert("structuredContent".to_owned(), structured);
-                }
-                if let Some(is_error) = result.is_error.take() {
-                    map.insert("isError".to_owned(), Value::Bool(is_error));
-                }
-                if let Some(meta) = result.meta.take() {
-                    map.insert("_meta".to_owned(), serde_json::to_value(&meta)?);
-                }
-                Ok(Value::Object(map))
-            },
-            Self::Failure(failure) => serde_json::to_value(failure.into_call_tool_result()),
-        }
-    }
 }
 
 pub(crate) fn call_tool_outcome_from_upstream(
@@ -341,7 +313,7 @@ pub(crate) fn call_tool_outcome_from_upstream(
     status: StatusCode,
     body: Bytes,
 ) -> ToolInvocationOutcome {
-    record_tool_response_bytes(&tool.conf.name, body.len());
+    record_tool_response_bytes(tool.interned_name, body.len());
 
     if !status.is_success() {
         return ToolInvocationOutcome::Failure(ToolInvocationFailure {
@@ -419,10 +391,10 @@ pub(crate) fn outcome_failure_code(outcome: &ToolInvocationOutcome) -> Option<&'
 }
 
 #[cfg(feature = "metrics")]
-pub(crate) fn record_tool_invocation(tool_name: &str, started: Instant, outcome: &ToolInvocationOutcome) {
+pub(crate) fn record_tool_invocation(tool_name: InternedStr, started: Instant, outcome: &ToolInvocationOutcome) {
     let shard_id = get_shard_id!();
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let tool_name = tool_name.to_static_str();
+    let tool_name = tool_name.as_str();
     let tool_attrs = &[KeyValue::new("tool", tool_name)];
     with_metric!(mcp_metrics::TOOL_RQ_TOTAL, add, 1, shard_id, tool_attrs);
     with_histogram!(mcp_metrics::TOOL_RQ_TIME, record, elapsed_ms, shard_id, tool_attrs);
@@ -438,41 +410,39 @@ pub(crate) fn record_tool_invocation(tool_name: &str, started: Instant, outcome:
 }
 
 #[cfg(not(feature = "metrics"))]
-pub(crate) fn record_tool_invocation(_tool_name: &str, _started: Instant, _outcome: &ToolInvocationOutcome) {}
+pub(crate) fn record_tool_invocation(_tool_name: InternedStr, _started: Instant, _outcome: &ToolInvocationOutcome) {}
 
 #[cfg(feature = "metrics")]
-pub(crate) fn record_tool_response_bytes(tool_name: &str, bytes: usize) {
+pub(crate) fn record_tool_response_bytes(tool_name: InternedStr, bytes: usize) {
     let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
     with_histogram!(
         mcp_metrics::TOOL_RESPONSE_BYTES,
         record,
         bytes,
         get_shard_id!(),
-        &[KeyValue::new("tool", tool_name.to_static_str())]
+        &[KeyValue::new("tool", tool_name.as_str())]
     );
 }
 
 #[cfg(not(feature = "metrics"))]
-pub(crate) fn record_tool_response_bytes(_tool_name: &str, _bytes: usize) {}
+pub(crate) fn record_tool_response_bytes(_tool_name: InternedStr, _bytes: usize) {}
 
-#[derive(Default)]
-struct CountingWriter(usize);
-
-impl io::Write for CountingWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0 = self.0.checked_add(buf.len()).ok_or_else(|| io::Error::other("serialized size overflow"))?;
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-pub(crate) fn serialized_json_size(value: &impl Serialize) -> Result<usize, serde_json::Error> {
-    let mut writer = CountingWriter::default();
-    serde_json::to_writer(&mut writer, value)?;
-    Ok(writer.0)
+/// Serialize a JSON-RPC 2.0 response envelope `{"jsonrpc":"2.0","id":<id>,"result":<result>}`
+/// directly into a byte buffer in a single pass, returning both the encoded [`Bytes`] and
+/// the serialized byte length of `result`.
+pub(crate) fn serialize_json_rpc_response(
+    id: &rmcp::model::RequestId,
+    result: &impl Serialize,
+) -> Result<(Bytes, usize), serde_json::Error> {
+    let mut buf = Vec::with_capacity(256);
+    buf.extend_from_slice(br#"{"jsonrpc":"2.0","id":"#);
+    serde_json::to_writer(&mut buf, id)?;
+    buf.extend_from_slice(br#","result":"#);
+    let result_start = buf.len();
+    serde_json::to_writer(&mut buf, result)?;
+    let result_bytes = buf.len() - result_start;
+    buf.push(b'}');
+    Ok((Bytes::from(buf), result_bytes))
 }
 
 pub(crate) async fn collect_response_body(
@@ -511,28 +481,24 @@ mod tests {
     use crate::{PolyBody, body::timeout_body::TimeoutBody};
 
     #[test]
-    fn counting_writer_matches_compact_json() {
-        let value = json!({"nested": ["escaped\ntext", "é", {"emoji": "🦀"}], "number": 42});
-        assert_eq!(serialized_json_size(&value).unwrap(), serde_json::to_vec(&value).unwrap().len());
-    }
+    fn serialize_json_rpc_response_matches_json_rpc_response() {
+        let id = rmcp::model::RequestId::Number(42);
+        let result = CallToolResult::structured(json!({
+            "temperature": 22.5,
+            "tags": ["a", "b"],
+            "nested": {"x": [1, 2, 3], "emoji": "🦀"},
+        }));
+        let (bytes, result_bytes) = serialize_json_rpc_response(&id, &result).unwrap();
+        let expected_result_bytes = serde_json::to_vec(&result).unwrap().len();
+        assert_eq!(result_bytes, expected_result_bytes);
 
-    #[test]
-    fn into_result_value_matches_serialized_call_tool_result() {
-        let payload = json!({
-            "temperature": 22.5,
-            "tags": ["a", "b"],
-            "nested": {"x": [1, 2, 3], "emoji": "🦀"},
-        });
-        let outcome = ToolInvocationOutcome::Success(CallToolResult::structured(payload));
-        let moved = ToolInvocationOutcome::Success(CallToolResult::structured(json!({
-            "temperature": 22.5,
-            "tags": ["a", "b"],
-            "nested": {"x": [1, 2, 3], "emoji": "🦀"},
-        })))
-        .into_result_value()
+        let expected = serde_json::to_vec(&rmcp::model::JsonRpcResponse {
+            jsonrpc: rmcp::model::JsonRpcVersion2_0,
+            id,
+            result: serde_json::to_value(&result).unwrap(),
+        })
         .unwrap();
-        let serialized = serde_json::to_value(outcome.into_call_tool_result()).unwrap();
-        assert_eq!(moved, serialized);
+        assert_eq!(bytes.as_ref(), expected.as_slice());
     }
 
     #[tokio::test]

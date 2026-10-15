@@ -22,13 +22,15 @@ use crate::{
     },
 };
 use bytes::Bytes;
-use http::StatusCode;
+use http::{HeaderValue, StatusCode};
 use http_body_util::Full;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use rmcp::model::Request;
 use serde_json::Value;
 
 pub const DEFAULT_USER_AGENT: &str = concat!("arion/", env!("CARGO_PKG_VERSION"));
+const DEFAULT_USER_AGENT_HEADER: HeaderValue = HeaderValue::from_static(DEFAULT_USER_AGENT);
+const CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static("application/json");
 pub const PATH_TEMPLATE_NAME: &str = "path";
 pub const BODY_TEMPLATE_NAME: &str = "body";
 
@@ -56,6 +58,10 @@ impl RestTranscoder {
         } else {
             CompiledTemplate::Static(format!("/{path}"))
         };
+        let static_uri = match (&path, query_params.is_empty()) {
+            (CompiledTemplate::Static(static_path), true) => http::Uri::try_from(static_path.as_str()).ok(),
+            _ => None,
+        };
         let body = match body_template {
             None => None,
             Some(template) if template.contains("{{") => {
@@ -64,7 +70,7 @@ impl RestTranscoder {
             },
             Some(template) => Some(CompiledTemplate::Static(Bytes::from(template))),
         };
-        Ok(Self { method, query_params, path, body, template_engine })
+        Ok(Self { method, query_params, path, static_uri, body, template_engine })
     }
 
     /// Renders a dynamic template by substituting variables with values from the arguments map.
@@ -92,58 +98,65 @@ impl Transcoder for RestTranscoder {
         // causes "invalid format" error in http::Uri parser.
         let arguments = mcp_request.params.get("arguments").and_then(|v| v.as_object()).unwrap_or_else(|| &EMPTY_MAP);
 
-        // Path: static version has priority (no engine), dynamic renders via upon.
-        let mut uri = String::with_capacity(
+        // Path: pre-parsed static URI when there are no query params, otherwise build string and parse.
+        let uri = if let Some(static_uri) = &self.static_uri {
+            static_uri.clone()
+        } else {
+            let mut uri_str = String::with_capacity(
+                match &self.path {
+                    CompiledTemplate::Static(p) => p.len(),
+                    CompiledTemplate::Dynamic => 64,
+                } + self.query_params.len() * 32
+                    + 2,
+            );
             match &self.path {
-                CompiledTemplate::Static(p) => p.len(),
-                CompiledTemplate::Dynamic => 64,
-            } + self.query_params.len() * 32
-                + 2,
-        );
-        match &self.path {
-            CompiledTemplate::Static(static_path) => uri.push_str(static_path),
-            CompiledTemplate::Dynamic => {
-                let rendered_path = self.render_template(PATH_TEMPLATE_NAME, arguments)?;
-                if !rendered_path.starts_with('/') {
-                    uri.push('/');
-                }
-                uri.push_str(&rendered_path);
-            },
-        }
+                CompiledTemplate::Static(static_path) => uri_str.push_str(static_path),
+                CompiledTemplate::Dynamic => {
+                    let rendered_path = self.render_template(PATH_TEMPLATE_NAME, arguments)?;
+                    if !rendered_path.starts_with('/') {
+                        uri_str.push('/');
+                    }
+                    uri_str.push_str(&rendered_path);
+                },
+            }
 
-        if !self.query_params.is_empty() {
-            append_query_string(&mut uri, &self.query_params, arguments);
-        }
-
-        // Arion will override the authority with the correct upstream endpoint.
-        // This is required for the match_virtual_host to work properly.
-
-        let user_agent =
-            http_headers.get(http::header::USER_AGENT).and_then(|ua| ua.to_str().ok()).unwrap_or(DEFAULT_USER_AGENT);
-
-        let mut builder =
-            http::Request::builder().method(&self.method).uri(uri).header(http::header::USER_AGENT, user_agent);
+            if !self.query_params.is_empty() {
+                append_query_string(&mut uri_str, &self.query_params, arguments);
+            }
+            http::Uri::try_from(uri_str).map_err(http::Error::from)?
+        };
 
         // Build the body based on body template or empty body.
         // Static version has priority (cheap refcount clone), dynamic renders via upon.
-        let body = match &self.body {
-            None => InstrumentedBody::default(),
+        let (body, has_json_body) = match &self.body {
+            None => (InstrumentedBody::default(), false),
             Some(CompiledTemplate::Static(static_body)) => {
-                builder = builder.header(http::header::CONTENT_TYPE, "application/json");
                 let poly_body = PolyBody::from(Full::new(static_body.clone()));
                 let timeout_body = TimeoutBody::new(None, poly_body);
-                InstrumentedBody::new(BodyKind::Request, timeout_body, None, |_, _, _, _| {})
+                (InstrumentedBody::new(BodyKind::Request, timeout_body, None, |_, _, _, _| {}), true)
             },
             Some(CompiledTemplate::Dynamic) => {
                 let rendered = self.render_template(BODY_TEMPLATE_NAME, arguments)?;
-                builder = builder.header(http::header::CONTENT_TYPE, "application/json");
                 let poly_body = PolyBody::from(Full::new(Bytes::from(rendered)));
                 let timeout_body = TimeoutBody::new(None, poly_body);
-                InstrumentedBody::new(BodyKind::Request, timeout_body, None, |_, _, _, _| {})
+                (InstrumentedBody::new(BodyKind::Request, timeout_body, None, |_, _, _, _| {}), true)
             },
         };
 
-        Ok(builder.body(body)?)
+        // Arion will override the authority with the correct upstream endpoint.
+        // This is required for the match_virtual_host to work properly.
+        let user_agent = http_headers.get(http::header::USER_AGENT).cloned().unwrap_or(DEFAULT_USER_AGENT_HEADER);
+
+        let mut request = http::Request::new(body);
+        *request.method_mut() = self.method.clone();
+        *request.uri_mut() = uri;
+        let headers = request.headers_mut();
+        headers.insert(http::header::USER_AGENT, user_agent);
+        if has_json_body {
+            headers.insert(http::header::CONTENT_TYPE, CONTENT_TYPE_JSON);
+        }
+
+        Ok(request)
     }
 
     fn decode(&self, upstream_body: Bytes, upstream_status: StatusCode) -> Result<Value, TranscoderError> {
@@ -286,7 +299,7 @@ mod tests {
         let http_request = create_http_request();
         let query_params: Vec<super::super::McpRestQueryParams> = vec![];
 
-        let body_template = r#"{"username": "{{user.name}}", "contact": "{{user.email}}}"#.to_owned();
+        let body_template = r#"{"username": "{{user.name}}", "contact": "{{user.email}}"}"#.to_owned();
         let transcoder =
             create_transcoder(http::Method::POST, "/api/users".to_owned(), query_params, true, Some(body_template));
 
