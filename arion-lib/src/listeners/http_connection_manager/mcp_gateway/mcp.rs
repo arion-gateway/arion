@@ -21,6 +21,7 @@ use http::{HeaderValue, Method, Response, StatusCode};
 use http_body_util::{BodyExt, Empty, Full};
 use papaya::{HashMap as PapayaMap, HashSet as PapayaSet};
 use parking_lot::Mutex;
+use serde::Deserialize;
 use smol_str::{SmolStr, ToSmolStr, format_smolstr};
 use std::sync::{
     Arc as StdArc,
@@ -30,13 +31,13 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 use rmcp::{
-    RoleClient, ServiceError,
+    ServiceError,
     model::{
-        self, CallToolRequestMethod, ConstString, Implementation, InitializeRequestParams, InitializeResult,
-        InitializeResultMethod, InitializedNotificationMethod, ListToolsRequestMethod, NumberOrString,
-        PingRequestMethod, ServerCapabilities, ServerNotification,
+        self, CallToolRequestMethod, ConstString, Implementation, InitializeResult, InitializeResultMethod,
+        InitializedNotificationMethod, ListToolsRequestMethod, NumberOrString, PingRequestMethod, ServerCapabilities,
+        ServerNotification,
     },
-    service::{ClientInitializeError, RunningService},
+    service::ClientInitializeError,
 };
 
 use crate::{
@@ -50,6 +51,7 @@ use crate::{
                 tools::{CallToolError, ToolBuilderError, ToolsRegistry},
                 transport::{self, AcceptedMime, MIME_APPLICATION_JSON, MIME_TEXT_EVENT_STREAM, RequestExt, SessionId},
                 upstream,
+                upstream_client::McpUpstreamClient,
             },
         },
         http_filters::{FilterDecision, FilterFactory},
@@ -63,14 +65,67 @@ const CONNECTION_KEEP_ALIVE: HeaderValue = HeaderValue::from_static("keep-alive"
 const CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static(MIME_APPLICATION_JSON);
 const CONTENT_TYPE_EVENT_STREAM: HeaderValue = HeaderValue::from_static(MIME_TEXT_EVENT_STREAM);
 
+/// Single-pass JSON-RPC 2.0 envelope deserializer for incoming requests on `POST /mcp`.
+///
+/// `rmcp::model::JsonRpcMessage` uses `#[serde(untagged)]` combined with two nested
+/// `#[serde(flatten)]` structs (`JsonRpcRequest` and `WithMeta`), which forces `serde` to
+/// buffer the entire JSON payload into `serde::__private::de::Content` heap trees up to 3 times.
+/// Deserializing all top-level fields in a single flat struct eliminates that intermediate
+/// buffering while preserving full compatibility with `rmcp::model::JsonRpcMessage`.
+#[derive(Deserialize)]
+struct InboundJsonRpcEnvelope {
+    jsonrpc: model::JsonRpcVersion2_0,
+    #[serde(default)]
+    id: Option<model::RequestId>,
+    #[serde(default)]
+    method: Option<String>,
+    #[serde(default)]
+    params: Option<model::JsonObject>,
+    #[serde(default)]
+    result: Option<model::JsonObject>,
+    #[serde(default)]
+    error: Option<model::ErrorData>,
+}
+
+impl InboundJsonRpcEnvelope {
+    #[inline]
+    fn into_json_rpc_message(self) -> Result<model::JsonRpcMessage, &'static str> {
+        let Self { jsonrpc, id, method, params, result, error } = self;
+        match (id, method, result, error) {
+            (Some(id), Some(method), None, None) => {
+                let mut request = model::Request::new(params.unwrap_or_default());
+                request.method = method;
+                Ok(model::JsonRpcMessage::Request(model::JsonRpcRequest { jsonrpc, id, request }))
+            },
+            (None, Some(method), None, None) => {
+                let mut notification = model::Notification::new(params.unwrap_or_default());
+                notification.method = method;
+                Ok(model::JsonRpcMessage::Notification(model::JsonRpcNotification { jsonrpc, notification }))
+            },
+            (Some(id), None, Some(result), None) => {
+                Ok(model::JsonRpcMessage::Response(model::JsonRpcResponse { jsonrpc, id, result }))
+            },
+            (id, None, None, Some(error)) => {
+                Ok(model::JsonRpcMessage::Error(model::JsonRpcError { jsonrpc, id, error }))
+            },
+            // JSON-RPC 2.0 responses with `"result": null` deserialize `result` as `None` when
+            // typed as `Option<JsonObject>`; if `id` is present and neither `method` nor `error`
+            // is set, treat it as an empty-object response.
+            (Some(id), None, None, None) if params.is_none() => Ok(model::JsonRpcMessage::Response(
+                model::JsonRpcResponse { jsonrpc, id, result: model::JsonObject::new() },
+            )),
+            _ => Err("invalid JSON-RPC 2.0 message envelope"),
+        }
+    }
+}
+
 #[allow(clippy::struct_field_names)]
 pub struct Session {
     pub listener_name: InternedStr,
     pub session_id: SessionId,
     pub session_id_header: HeaderValue,
     pub last_activity: AtomicInstant,
-    pub mcp_upstreams:
-        PapayaMap<InternedStr, StdArc<RunningService<RoleClient, InitializeRequestParams>>, ahash::RandomState>,
+    pub mcp_upstreams: PapayaMap<InternedStr, StdArc<McpUpstreamClient>, ahash::RandomState>,
     pub prompt: Mutex<Option<String>>,
     pub active_tools: PapayaSet<SmolStr, ahash::RandomState>,
 }
@@ -393,10 +448,13 @@ impl McpGateway {
 
         let body = body.to_bytes();
 
-        let json_rpc_message = match serde_json::from_slice::<model::JsonRpcMessage>(&body) {
+        let json_rpc_message = match serde_json::from_slice::<InboundJsonRpcEnvelope>(&body)
+            .map_err(|e| e.to_string())
+            .and_then(|env| env.into_json_rpc_message().map_err(str::to_owned))
+        {
             Ok(message) => message,
             Err(err) => {
-                info!(target: "mcp_gateway", "handle_rpc_json_message: failed to parse json message: {body:?} ({err:?})");
+                info!(target: "mcp_gateway", "handle_rpc_json_message: failed to parse json message: {body:?} ({err})");
                 let err_data = self.build_json_rpc_error(model::ErrorData::parse_error("Parse error", None));
                 let body_str = serde_json::to_string(&err_data).unwrap_or_default();
                 return FilterDecision::bad_request(body_str, self.version);
