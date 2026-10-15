@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use arion_http_header::MCP_SESSION_ID;
-use smol_str::{SmolStr, ToSmolStr};
+use smol_str::SmolStr;
 
 pub const MIME_TEXT_EVENT_STREAM: &str = "text/event-stream";
 pub const MIME_APPLICATION_JSON: &str = "application/json";
@@ -27,6 +27,13 @@ impl SessionId {
     }
 }
 
+impl std::borrow::Borrow<str> for SessionId {
+    #[inline]
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
 impl std::fmt::Display for SessionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
@@ -34,7 +41,7 @@ impl std::fmt::Display for SessionId {
 }
 
 pub trait RequestExt {
-    fn get_mcp_session_id(&self) -> Option<SessionId>;
+    fn get_mcp_session_id(&self) -> Option<&str>;
     fn get_mcp_accepted_mime(&self) -> Option<AcceptedMime>;
 }
 
@@ -79,8 +86,9 @@ impl TryFrom<&str> for AcceptedMime {
 }
 
 impl<B> RequestExt for http::Request<B> {
-    fn get_mcp_session_id(&self) -> Option<SessionId> {
-        self.headers().get(MCP_SESSION_ID)?.to_str().ok().map(|s| SessionId(s.to_smolstr()))
+    #[inline]
+    fn get_mcp_session_id(&self) -> Option<&str> {
+        self.headers().get(MCP_SESSION_ID)?.to_str().ok()
     }
 
     fn get_mcp_accepted_mime(&self) -> Option<AcceptedMime> {
