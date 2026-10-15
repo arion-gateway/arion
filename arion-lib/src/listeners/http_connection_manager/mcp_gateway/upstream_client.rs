@@ -34,7 +34,7 @@ use arc_swap::ArcSwap;
 use arion_http_header::{LAST_EVENT_ID, MCP_PROTOCOL_VERSION, MCP_SESSION_ID};
 use arion_interner::{InternedStr, StringInterner};
 use bytes::{BufMut, Bytes, BytesMut};
-use futures::{Stream, StreamExt, stream::BoxStream};
+use futures::{FutureExt, Stream, StreamExt, stream::BoxStream};
 use http::{
     HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri,
     header::{ACCEPT, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HOST, WWW_AUTHENTICATE},
@@ -431,6 +431,12 @@ enum DirectRpcOutcome<R> {
     RpcError(ErrorData),
 }
 
+enum SseFrameAction<R> {
+    Continue,
+    ServerRequest { id: DirectResponseId, method: SmolStr },
+    Done(DirectRpcOutcome<R>),
+}
+
 impl McpUpstreamClient {
     /// Connect to the upstream MCP server at `(cluster, url)` and perform the `initialize` +
     /// `notifications/initialized` handshake directly in the current task.
@@ -731,8 +737,50 @@ impl McpUpstreamClient {
         }
     }
 
-    /// Reads an SSE response stream directly on the current task's stack (without `BoxStream`
-    /// allocation or `tokio::spawn`) until the response or error matching `expected_id` arrives.
+    /// Evaluates a single SSE `data` JSON slice without allocating `String`s.
+    #[inline]
+    fn evaluate_sse_json_slice<R: DeserializeOwned>(
+        data: &[u8],
+        expected_id: i64,
+    ) -> Result<SseFrameAction<R>, ClientError> {
+        let envelope = match serde_json::from_slice::<SseJsonRpcEnvelope<'_, R>>(data) {
+            Ok(env) => env,
+            Err(e) => {
+                tracing::debug!(target: "mcp_gateway", "ignoring non-matching or malformed SSE JSON frame: {e}");
+                return Ok(SseFrameAction::Continue);
+            },
+        };
+        if let Some(method) = envelope.method {
+            if let Some(server_req_id) = envelope.id {
+                return Ok(SseFrameAction::ServerRequest {
+                    id: server_req_id,
+                    method: SmolStr::from(method.as_ref()),
+                });
+            }
+            return Ok(SseFrameAction::Continue);
+        }
+        if envelope.result.is_none() && envelope.error.is_none() {
+            return Ok(SseFrameAction::Continue);
+        }
+        if let Some(ref got_id) = envelope.id
+            && !got_id.matches_i64(expected_id)
+        {
+            return Ok(SseFrameAction::Continue);
+        }
+        Self::extract_envelope_outcome(
+            DirectJsonRpcEnvelope { id: envelope.id, result: envelope.result, error: envelope.error },
+            expected_id,
+        )
+        .map(SseFrameAction::Done)
+    }
+
+    /// Reads an SSE response stream directly on the current task's stack:
+    /// 1. **Zero-copy fast path**: if the first HTTP body chunk contains one or more complete
+    ///    single-line SSE events (`data: {...}\n\n`), parses the JSON slice directly in-place
+    ///    without allocating `SseStream` buffers or `String`s, and drains any immediately ready
+    ///    EOF frame (`now_or_never`) so Hyper returns the HTTP/1.1 connection to the pool!
+    /// 2. **Streaming fallback**: if an event spans multiple TCP chunks or uses multi-line `data:`,
+    ///    falls back to `SseStream` and drains ready EOF on completion.
     async fn decode_sse_response_body<R: DeserializeOwned>(
         http: &McpHttpClient,
         session_id: Option<&HeaderValue>,
@@ -740,8 +788,38 @@ impl McpUpstreamClient {
         body: ArionResponseBody,
         expected_id: i64,
     ) -> Result<DirectRpcOutcome<R>, ClientError> {
+        let mut data_stream = body.into_data_stream();
+
+        let Some(first_item) = data_stream.next().await else {
+            return Err(StreamableHttpError::UnexpectedEndOfStream);
+        };
+        let first_chunk = first_item.map_err(|e| StreamableHttpError::Client(UpstreamClientError::Body(Box::new(e))))?;
+
+        // Fast path: try to parse complete SSE events directly from `first_chunk` with zero copies.
+        if first_chunk.len() <= DEFAULT_MAX_SSE_EVENT_SIZE
+            && let Some((outcome, server_requests)) = try_parse_fast_sse_chunk::<R>(&first_chunk, expected_id)?
+        {
+            for (req_id, method) in server_requests {
+                Box::pin(Self::reply_to_server_request(
+                    http,
+                    session_id,
+                    protocol_version,
+                    &req_id,
+                    method.as_str(),
+                ))
+                .await;
+            }
+            // Drain ready EOF (e.g. HTTP/1.1 chunked `0\r\n\r\n` or completed `Content-Length`)
+            // so `hyper` marks the connection as clean and recycles it into the connection pool!
+            drain_ready_eof(&mut data_stream);
+            return Ok(outcome);
+        }
+
+        // Slow path: the response spans multiple chunks, exceeds the fast-path size check, or uses
+        // multi-line `data:` fields; `BoundedSseByteStream` enforces `DEFAULT_MAX_SSE_EVENT_SIZE`.
+        let chained = futures::stream::once(std::future::ready(Ok(first_chunk))).chain(&mut data_stream);
         let bounded = BoundedSseByteStream {
-            inner: body.into_data_stream(),
+            inner: chained,
             limiter: SseEventSizeLimiter::new(DEFAULT_MAX_SSE_EVENT_SIZE),
             failed: false,
         };
@@ -756,43 +834,26 @@ impl McpUpstreamClient {
             let Some(data) = sse.data else {
                 continue;
             };
-            if data.trim().is_empty() {
+            let trimmed = data.trim().as_bytes();
+            if trimmed.is_empty() {
                 continue;
             }
-            let envelope = match serde_json::from_str::<SseJsonRpcEnvelope<'_, R>>(&data) {
-                Ok(env) => env,
-                Err(e) => {
-                    tracing::debug!(target: "mcp_gateway", "ignoring non-matching or malformed SSE JSON frame: {e}");
-                    continue;
-                },
-            };
-            if let Some(method) = envelope.method {
-                // Frame has a `"method"` field: it is a server-to-client request (if `id` is Some)
-                // or a server notification (if `id` is None), never a response to our request.
-                if let Some(ref server_req_id) = envelope.id {
+            match Self::evaluate_sse_json_slice::<R>(trimmed, expected_id)? {
+                SseFrameAction::Continue => {},
+                SseFrameAction::ServerRequest { id, method } => {
                     Box::pin(Self::reply_to_server_request(
                         http,
                         session_id,
                         protocol_version,
-                        server_req_id,
-                        method.as_ref(),
+                        &id,
+                        method.as_str(),
                     ))
                     .await;
-                }
-                continue;
+                },
+                SseFrameAction::Done(outcome) => {
+                    return Ok(outcome);
+                },
             }
-            if envelope.result.is_none() && envelope.error.is_none() {
-                continue;
-            }
-            if let Some(ref got_id) = envelope.id
-                && !got_id.matches_i64(expected_id)
-            {
-                continue;
-            }
-            return Self::extract_envelope_outcome(
-                DirectJsonRpcEnvelope { id: envelope.id, result: envelope.result, error: envelope.error },
-                expected_id,
-            );
         }
 
         Err(StreamableHttpError::UnexpectedEndOfStream)
@@ -1190,6 +1251,106 @@ impl McpUpstreamClient {
             other => other.map_err(Self::into_service_error),
         }
     }
+}
+
+/// Non-blockingly drains any already-buffered EOF (`None`) from the response body stream so that
+/// Hyper's HTTP/1.1 connection state machine sees the response body as fully consumed and returns
+/// the underlying socket to the connection pool instead of closing it.
+#[inline]
+fn drain_ready_eof<S: Stream + Unpin>(stream: &mut S) {
+    while let Some(Some(_)) = stream.next().now_or_never() {}
+}
+
+type FastSseParseResult<R> = Option<(DirectRpcOutcome<R>, Vec<(DirectResponseId, SmolStr)>)>;
+
+/// Attempts to parse complete single-line `data:` SSE events directly from the first body chunk
+/// without allocating `SseStream` state or `String`s.
+///
+/// Returns `Ok(None)` if the chunk contains multi-line `data:` fields, non-message `event:` types,
+/// or ends before the matching JSON-RPC response arrives (in which case the caller falls back to
+/// the streaming `SseStream` parser).
+#[inline]
+fn try_parse_fast_sse_chunk<R: DeserializeOwned>(
+    mut chunk: &[u8],
+    expected_id: i64,
+) -> Result<FastSseParseResult<R>, ClientError> {
+    let mut server_requests: Vec<(DirectResponseId, SmolStr)> = Vec::new();
+    let mut current_data: Option<&[u8]> = None;
+
+    while !chunk.is_empty() {
+        let Some(nl_pos) = chunk.iter().position(|&b| b == b'\n') else {
+            // Incomplete line at the end of the chunk: fall back to streaming parser.
+            return Ok(None);
+        };
+        let mut line = chunk.get(..nl_pos).unwrap_or_default();
+        chunk = chunk.get(nl_pos + 1..).unwrap_or_default();
+        if let Some(stripped) = line.strip_suffix(b"\r") {
+            line = stripped;
+        }
+
+        if line.is_empty() {
+            // Blank line dispatches the accumulated event.
+            if let Some(data_slice) = current_data.take() {
+                let trimmed = trim_ascii(data_slice);
+                if !trimmed.is_empty() {
+                    match McpUpstreamClient::evaluate_sse_json_slice::<R>(trimmed, expected_id)? {
+                        SseFrameAction::Continue => {},
+                        SseFrameAction::ServerRequest { id, method } => {
+                            server_requests.push((id, method));
+                        },
+                        SseFrameAction::Done(outcome) => {
+                            return Ok(Some((outcome, server_requests)));
+                        },
+                    }
+                }
+            }
+            continue;
+        }
+
+        if line.first() == Some(&b':') {
+            // SSE comment line.
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix(b"data:") {
+            if current_data.is_some() {
+                // Multi-line `data:` event requires joining with `\n`; use the streaming fallback.
+                return Ok(None);
+            }
+            let data = rest.strip_prefix(b" ").unwrap_or(rest);
+            current_data = Some(data);
+        } else if let Some(rest) = line.strip_prefix(b"event:") {
+            let ev = trim_ascii(rest);
+            if !ev.is_empty() && ev != b"message" {
+                return Ok(None);
+            }
+        } else if line.starts_with(b"id:") || line.starts_with(b"retry:") {
+            // Ignore `id:` and `retry:` fields in fast-path.
+        } else {
+            return Ok(None);
+        }
+    }
+
+    Ok(None)
+}
+
+#[inline]
+fn trim_ascii(mut bytes: &[u8]) -> &[u8] {
+    while let Some((&first, rest)) = bytes.split_first() {
+        if first.is_ascii_whitespace() {
+            bytes = rest;
+        } else {
+            break;
+        }
+    }
+    while let Some((&last, rest)) = bytes.split_last() {
+        if last.is_ascii_whitespace() {
+            bytes = rest;
+        } else {
+            break;
+        }
+    }
+    bytes
 }
 
 #[inline]
@@ -1956,9 +2117,9 @@ mod tests {
                 requests, 9,
                 "expected initialize, initialized, 3 tools/list, 2 tools/call, and 2 server-request replies, got {requests}"
             );
-            assert!(
-                connections < requests,
-                "connections must be reused: {connections} connections for {requests} requests"
+            assert_eq!(
+                connections, 1,
+                "all sequential requests (including SSE responses) must reuse a single TCP connection, got {connections}"
             );
         }
 
