@@ -22,14 +22,11 @@ use arion_configuration::config::network_filters::http_connection_manager::http_
     DynamicMcpServer, EmbeddingVector, McpBackendTransportUpstream, McpTool, UpstreamBackend,
 };
 use atomic_time::AtomicInstant;
+#[cfg(test)]
+use rmcp::transport::DynamicTransportError;
 use rmcp::{
-    ServiceExt,
-    model::{ClientCapabilities, ClientConfig, Implementation, InitializeRequestParams, Tool},
-    service::{ClientInitializeError, RoleClient, RunningService},
-    transport::{
-        DynamicTransportError, StreamableHttpClientTransport,
-        streamable_http_client::StreamableHttpClientTransportConfig,
-    },
+    model::{ClientCapabilities, ClientConfig, Implementation, Tool},
+    service::ClientInitializeError,
 };
 use scopeguard::defer;
 use smol_str::SmolStr;
@@ -41,14 +38,16 @@ use super::{
     errors::ListToolsError,
     rest::DEFAULT_USER_AGENT,
 };
-use crate::listeners::http_connection_manager::mcp_gateway::{rbac::ToolRbac, upstream_client::McpHttpClient};
+#[cfg(test)]
+use crate::listeners::http_connection_manager::mcp_gateway::upstream_client::McpHttpClient;
+use crate::listeners::http_connection_manager::mcp_gateway::{rbac::ToolRbac, upstream_client::McpUpstreamClient};
 
 const INDEFINITE_CACHE_LIFETIME: Duration = Duration::from_secs(100 * 365 * 24 * 3600);
 const DEFAULT_DYNAMIC_REFRESH_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Build the upstream MCP HTTP client for `url`, sending through the `HttpChannel` of `cluster`
-/// (endpoints, TLS, HTTP/1 or HTTP/2 and connection pools come from the cluster). Each transport
-/// keeps its own MCP session state (session id, protocol version) in its worker.
+/// (endpoints, TLS, HTTP/1 or HTTP/2 and connection pools come from the cluster).
+#[cfg(test)]
 fn upstream_http_client(cluster: &str, url: &str) -> Result<McpHttpClient, Box<ClientInitializeError>> {
     McpHttpClient::try_new(cluster, url).map_err(|err| {
         Box::new(ClientInitializeError::TransportError {
@@ -269,15 +268,11 @@ impl ToolsRegistry {
     pub(super) async fn get_mcp_client(
         cluster: &str,
         url: &str,
-    ) -> Result<RunningService<RoleClient, InitializeRequestParams>, Box<ClientInitializeError>> {
+    ) -> Result<McpUpstreamClient, Box<ClientInitializeError>> {
         debug!(target: "mcp_gateway", "Creating MCP client for URL: {url} (cluster {cluster})...");
-        let transport = StreamableHttpClientTransport::with_client(
-            upstream_http_client(cluster, url)?,
-            StreamableHttpClientTransportConfig::with_uri(url),
-        );
         let client_info =
             ClientConfig::new(ClientCapabilities::default(), Implementation::new(DEFAULT_USER_AGENT, "0.1.0"));
-        client_info.serve(transport).await.map_err(Box::new).inspect_err(|e| {
+        McpUpstreamClient::connect(cluster, url, client_info).await.inspect_err(|e| {
             info!(target: "mcp_gateway", "get_mcp_client error: {}!", e);
         })
     }
