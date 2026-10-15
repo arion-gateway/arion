@@ -74,19 +74,19 @@ impl FilterDecision {
     }
 
     #[inline]
-    pub fn internal_server_error(msg: &str, ver: http::Version) -> Self {
+    pub fn internal_server_error(msg: impl Into<String>, ver: http::Version) -> Self {
         FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::internal_server_error(EventFailure::DirectResponse.into(), ResponseFlags::default())
-                .with_body(msg.to_owned())
+                .with_body(msg.into())
                 .into_response(ver),
         ))
     }
 
     #[inline]
-    pub fn bad_request(msg: &str, ver: http::Version) -> Self {
+    pub fn bad_request(msg: impl Into<String>, ver: http::Version) -> Self {
         FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into())
-                .with_body(msg.to_owned())
+                .with_body(msg.into())
                 .with_close_connection(true)
                 .into_response(ver),
         ))
@@ -94,16 +94,16 @@ impl FilterDecision {
 
     #[inline]
     #[allow(dead_code)]
-    pub fn not_found(msg: &str, ver: http::Version) -> Self {
+    pub fn not_found(msg: impl Into<String>, ver: http::Version) -> Self {
         FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::not_found(EventFailure::DirectResponse.into(), ResponseFlags::default())
-                .with_body(msg.to_owned())
+                .with_body(msg.into())
                 .into_response(ver),
         ))
     }
 
     #[inline]
-    pub fn method_not_allowed(msg: &str, ver: http::Version) -> Self {
+    pub fn method_not_allowed(msg: impl Into<String>, ver: http::Version) -> Self {
         FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::custom_error(
                 StatusCode::METHOD_NOT_ALLOWED,
@@ -111,25 +111,25 @@ impl FilterDecision {
                 EventFailure::RouteNotFound.into(),
                 ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
             )
-            .with_body(msg.to_owned())
+            .with_body(msg.into())
             .into_response(ver),
         ))
     }
 
     #[inline]
-    pub fn no_route_found(msg: &str, ver: http::Version) -> Self {
+    pub fn no_route_found(msg: impl Into<String>, ver: http::Version) -> Self {
         FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::not_found(
                 EventFailure::RouteNotFound.into(),
                 ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
             )
-            .with_body(msg.to_owned())
+            .with_body(msg.into())
             .into_response(ver),
         ))
     }
 
     #[inline]
-    pub fn rate_limited(msg: &str, status: Option<StatusCode>, ver: http::Version) -> Self {
+    pub fn rate_limited(msg: impl Into<String>, status: Option<StatusCode>, ver: http::Version) -> Self {
         FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::custom_error(
                 status.unwrap_or(http::StatusCode::TOO_MANY_REQUESTS),
@@ -137,17 +137,17 @@ impl FilterDecision {
                 EventFailure::RateLimited.into(),
                 ResponseFlags(FmtResponseFlags::RATE_LIMITED),
             )
-            .with_body(msg.to_owned())
+            .with_body(msg.into())
             .into_response(ver),
         ))
     }
 
     #[inline]
     #[allow(dead_code)]
-    pub fn unauthorized(msg: &str, ver: http::Version) -> Self {
+    pub fn unauthorized(msg: impl Into<String>, ver: http::Version) -> Self {
         FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::unauthorized(EventFailure::ExtProcError.into())
-                .with_body(msg.to_owned())
+                .with_body(msg.into())
                 .into_response(ver),
         ))
     }
