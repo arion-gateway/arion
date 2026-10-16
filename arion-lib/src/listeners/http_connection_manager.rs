@@ -451,12 +451,7 @@ impl VirtualHostTable {
         suffixes.sort_by_key(|(a, _)| std::cmp::Reverse(a.len()));
         prefixes.sort_by_key(|(a, _)| std::cmp::Reverse(a.len()));
 
-        Self {
-            exact,
-            suffixes: suffixes.into_boxed_slice(),
-            prefixes: prefixes.into_boxed_slice(),
-            wildcard,
-        }
+        Self { exact, suffixes: suffixes.into_boxed_slice(), prefixes: prefixes.into_boxed_slice(), wildcard }
     }
 
     #[inline]
@@ -2367,6 +2362,16 @@ fn handle_route_conf_not_found(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arion_configuration::config::network_filters::http_connection_manager::{
+        header_modifier::{HeaderAppendAction, HeaderKeyValue, HeaderValueOption},
+        http_filters::{
+            FilterConfigOverride, FilterOverride, HttpFilter as HttpFilterConfig, HttpFilterType,
+            local_rate_limit::LocalRateLimit,
+        },
+        route::{DirectResponseAction, PathMatcher, PathSpecifier, RouteMatch},
+    };
+    use arion_format::header_formatter::HeaderFormatter;
+    use std::collections::HashMap;
 
     fn make_vh(name: &str, domains: &[&str]) -> VirtualHost {
         VirtualHost {
@@ -2380,6 +2385,19 @@ mod tests {
         let req = Request::builder().header("host", host_header).body(()).unwrap();
         let host = RequestHost::from_request(&req)?;
         table.select(host).map(|vh| vh.name.as_str())
+    }
+
+    /// Reference oracle based on `MatchHost::eval_lpm` with first-declaration-wins tie-breaking.
+    fn reference_select_vh_name<'a>(virtual_hosts: &'a [VirtualHost], host: RequestHost<'_>) -> Option<&'a str> {
+        let mut best: Option<(MatchHostScoreLPM, &'a str)> = None;
+        for vh in virtual_hosts {
+            if let Some(vh_score) = vh.domains.iter().filter_map(|d| d.eval_lpm(host)).max()
+                && best.as_ref().is_none_or(|(best_score, _)| vh_score > *best_score)
+            {
+                best = Some((vh_score, vh.name.as_str()));
+            }
+        }
+        best.map(|(_, name)| name)
     }
 
     #[test]
@@ -2420,14 +2438,7 @@ mod tests {
         let vh_exact = make_vh("vh_exact", &["api.v1.internal.example.com"]);
 
         let table = VirtualHostTable::compile(
-            vec![
-                vh_wildcard,
-                vh_prefix_short,
-                vh_prefix_long,
-                vh_suffix_short,
-                vh_suffix_long,
-                vh_exact,
-            ],
+            vec![vh_wildcard, vh_prefix_short, vh_prefix_long, vh_suffix_short, vh_suffix_long, vh_exact],
             &[],
         );
 
@@ -2524,6 +2535,427 @@ mod tests {
         // Request without Host header and without URI authority returns None
         let req_empty = Request::builder().uri("/only-path").body(()).unwrap();
         assert!(RequestHost::from_request(&req_empty).is_none());
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn test_virtual_host_single_rule_cartesian_product_all_rule_and_request_combinations() {
+        // Every combination of filter rule type x port specification:
+        // - Exact: host-only, host+port, IPv4-only, IPv4+port, IPv6-only, IPv6+port
+        // - Suffix: subdomain without port, subdomain with port, dashed suffix without/with port, port-only (`*:8080`)
+        // - Prefix: host prefix without port, host + wildcard port (`host:*`), IPv6 + wildcard port (`[::1]:*`), port prefix (`host:80*`)
+        // - Wildcard: `*`
+        let filter_rules = [
+            "app.sub.example.com",
+            "app.sub.example.com:8080",
+            "127.0.0.1",
+            "127.0.0.1:8080",
+            "[::1]",
+            "[::1]:8080",
+            "*.sub.example.com",
+            "*.sub.example.com:8080",
+            "*.example.com",
+            "*.example.com:8080",
+            "*-api.example.com",
+            "*-api.example.com:8080",
+            "*:8080",
+            "app.sub.*",
+            "app.*",
+            "app.sub.example.com:*",
+            "app.sub.example.com:80*",
+            "[::1]:*",
+            "*",
+        ];
+
+        // Full Cartesian product of request host shapes:
+        // (host-only, host:8080, host:8081, host:9090, trailing-dot, trailing-dot:port, malformed ports, IPv4, IPv6)
+        let request_hosts = [
+            "app.sub.example.com",
+            "app.sub.example.com:8080",
+            "app.sub.example.com:8081",
+            "app.sub.example.com:9090",
+            "app.sub.example.com.",
+            "app.sub.example.com.:8080",
+            "app.sub.example.com.:9090",
+            "app.sub.example.com:",
+            "app.sub.example.com:http",
+            "other.sub.example.com",
+            "other.sub.example.com:8080",
+            "other.sub.example.com:9090",
+            "other.sub.example.com.",
+            "other.sub.example.com.:8080",
+            "sub.example.com",
+            "sub.example.com:8080",
+            "v1-api.example.com",
+            "v1-api.example.com:8080",
+            "v1-api.example.com:9090",
+            "-api.example.com",
+            "-api.example.com:8080",
+            "app.other.org",
+            "app.other.org:8080",
+            "127.0.0.1",
+            "127.0.0.1:8080",
+            "127.0.0.1:9090",
+            "[::1]",
+            "[::1]:8080",
+            "[::1]:9090",
+            "::1",
+            ":8080",
+            "unmatched.org",
+            "unmatched.org:8080",
+        ];
+
+        for &rule_str in &filter_rules {
+            let vhs = vec![make_vh("vh_single", &[rule_str])];
+            let table = VirtualHostTable::compile(vhs.clone(), &[]);
+
+            for &req_host_str in &request_hosts {
+                // 1. Via `Host` header
+                let req_header = Request::builder().header("host", req_host_str).body(()).unwrap();
+                let parsed_host = RequestHost::from_request(&req_header).unwrap();
+                let actual = table.select(parsed_host).map(|vh| vh.name.as_str());
+                let expected = reference_select_vh_name(&vhs, parsed_host);
+                assert_eq!(actual, expected, "single-rule mismatch for rule={rule_str:?}, req_host={req_host_str:?}");
+
+                // 2. Via HTTP/2 URI `:authority` (for valid authority strings)
+                if let Ok(req_uri) = Request::builder().uri(format!("http://{req_host_str}/path")).body(())
+                    && let Some(uri_host) = RequestHost::from_request(&req_uri)
+                {
+                    assert_eq!(
+                        table.select(uri_host).map(|vh| vh.name.as_str()),
+                        reference_select_vh_name(&vhs, uri_host),
+                        "URI authority mismatch for rule={rule_str:?}, req_host={req_host_str:?}"
+                    );
+                }
+            }
+        }
+
+        // Verify `Host` header takes priority over URI `:authority` when both are present
+        let table = VirtualHostTable::compile(
+            vec![make_vh("vh_header", &["header.example.com:8080"]), make_vh("vh_uri", &["uri.example.com:8080"])],
+            &[],
+        );
+        let req_both = Request::builder()
+            .uri("http://uri.example.com:8080/path")
+            .header("host", "header.example.com:8080")
+            .body(())
+            .unwrap();
+        let host_both = RequestHost::from_request(&req_both).unwrap();
+        assert_eq!(table.select(host_both).map(|vh| vh.name.as_str()), Some("vh_header"));
+    }
+
+    #[test]
+    fn test_virtual_host_power_set_512_combinations_differential_oracle() {
+        // 9 orthogonal rule archetypes covering all combinations of:
+        // (Exact / Suffix / Prefix / Wildcard) x (host+port / host-only / port-only / host+wildcard-port)
+        let archetypes: [(&str, &str); 9] = [
+            ("vh_exact_port", "app.sub.example.com:8080"),
+            ("vh_exact_host", "app.sub.example.com"),
+            ("vh_suffix_long_port", "*.sub.example.com:8080"),
+            ("vh_suffix_long_host", "*.sub.example.com"),
+            ("vh_suffix_short_host", "*.example.com"),
+            ("vh_suffix_port_only", "*:8080"),
+            ("vh_prefix_wildcard_port", "app.sub.example.com:*"),
+            ("vh_prefix_host", "app.*"),
+            ("vh_wildcard", "*"),
+        ];
+
+        let request_hosts = [
+            "app.sub.example.com:8080",
+            "app.sub.example.com:9090",
+            "app.sub.example.com",
+            "app.sub.example.com.",
+            "app.sub.example.com.:8080",
+            "app.sub.example.com.:9090",
+            "app.sub.example.com:",
+            "app.sub.example.com:http",
+            "other.sub.example.com:8080",
+            "other.sub.example.com:9090",
+            "other.sub.example.com",
+            "other.sub.example.com.",
+            "other.example.com:8080",
+            "other.example.com:9090",
+            "other.example.com",
+            "app.other.org:8080",
+            "app.other.org:9090",
+            "app.other.org",
+            "unrelated.org:8080",
+            "unrelated.org:9090",
+            "unrelated.org",
+        ];
+
+        // Iterate over all 2^9 = 512 subsets of rules!
+        for mask in 0..(1usize << archetypes.len()) {
+            let vhs: Vec<VirtualHost> = archetypes
+                .iter()
+                .enumerate()
+                .filter_map(|(bit, &(name, pattern))| ((mask & (1 << bit)) != 0).then(|| make_vh(name, &[pattern])))
+                .collect();
+
+            let table = VirtualHostTable::compile(vhs.clone(), &[]);
+
+            for &req_host_str in &request_hosts {
+                let req = Request::builder().header("host", req_host_str).body(()).unwrap();
+                let parsed_host = RequestHost::from_request(&req).unwrap();
+                let actual = table.select(parsed_host).map(|vh| vh.name.as_str());
+                let expected = reference_select_vh_name(&vhs, parsed_host);
+                assert_eq!(actual, expected, "power-set mismatch for mask={mask:#011b}, req_host={req_host_str:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_routing_state_match_request_route_and_per_route_filters_cartesian() {
+        let base_rl =
+            LocalRateLimit { stat_prefix: "base".into(), token_bucket: None, status: StatusCode::TOO_MANY_REQUESTS };
+        let override_rl = LocalRateLimit { stat_prefix: "override".into(), ..base_rl.clone() };
+
+        let hcm_filters = vec![
+            Arc::new(
+                HttpFilter::try_from(HttpFilterConfig {
+                    name: "f_override".into(),
+                    disabled: false,
+                    filter: HttpFilterType::RateLimit(base_rl.clone()),
+                })
+                .unwrap(),
+            ),
+            Arc::new(
+                HttpFilter::try_from(HttpFilterConfig {
+                    name: "f_keep".into(),
+                    disabled: false,
+                    filter: HttpFilterType::RateLimit(base_rl),
+                })
+                .unwrap(),
+            ),
+        ];
+
+        let make_route = |name: &str, prefix: &str, overrides: HashMap<SmolStr, FilterOverride>| Route {
+            name: name.into(),
+            request_headers_to_add: HeaderModifiersAdd::default(),
+            request_headers_to_remove: HeaderModifiersRemove::default(),
+            response_headers_to_add: HeaderModifiersAdd::default(),
+            response_headers_to_remove: HeaderModifiersRemove::default(),
+            route_match: RouteMatch {
+                path_matcher: Some(PathMatcher { specifier: PathSpecifier::Prefix(prefix.into()), ignore_case: false }),
+                headers: vec![],
+                query_parameters: vec![],
+            },
+            typed_per_filter_config: overrides,
+            action: Action::DirectResponse(DirectResponseAction { status: StatusCode::OK, body: None }),
+        };
+
+        let mut overrides_custom = HashMap::new();
+        overrides_custom.insert(
+            "f_override".into(),
+            FilterOverride {
+                disabled: false,
+                filter_settings: Some(FilterConfigOverride::LocalRateLimit(override_rl)),
+            },
+        );
+
+        let mut overrides_disabled = HashMap::new();
+        overrides_disabled.insert("f_override".into(), FilterOverride { disabled: true, filter_settings: None });
+
+        let vh_api = VirtualHost {
+            name: "vh_api".into(),
+            domains: vec![MatchHost::try_from("api.example.com:8443").unwrap()],
+            routes: vec![
+                make_route("r_custom", "/v1", overrides_custom),
+                make_route("r_disabled", "/v2", overrides_disabled),
+                make_route("r_base", "/", HashMap::new()),
+            ],
+            ..Default::default()
+        };
+
+        let vh_fallback = VirtualHost {
+            name: "vh_fallback".into(),
+            domains: vec![MatchHost::try_from("*.example.com").unwrap()],
+            routes: vec![make_route("r_fallback", "/v1", HashMap::new())],
+            ..Default::default()
+        };
+
+        let rc = RouteConfiguration {
+            name: "rc".into(),
+            most_specific_header_mutations_wins: false,
+            request_headers_to_add: HeaderModifiersAdd::default(),
+            request_headers_to_remove: HeaderModifiersRemove::default(),
+            response_headers_to_add: HeaderModifiersAdd::default(),
+            response_headers_to_remove: HeaderModifiersRemove::default(),
+            virtual_hosts: vec![vh_api, vh_fallback],
+            has_request_mutations: false,
+            has_response_mutations: false,
+        };
+
+        let state = RoutingState::new(rc, &hcm_filters);
+
+        // 1. Exact host+port selects `vh_api`, `/v1` selects `r_custom` with overridden filter
+        let req1 = Request::builder().header("host", "api.example.com:8443").uri("/v1/users").body(()).unwrap();
+        let cached1 = state.match_request_route(&req1).unwrap();
+        assert_eq!(cached1.vh.name.as_str(), "vh_api");
+        assert_eq!(cached1.route.name, "r_custom");
+        assert_eq!(cached1.http_filters.len(), 2);
+        assert!(!cached1.http_filters[0].disabled);
+        assert!(!Arc::ptr_eq(&cached1.http_filters[0], &hcm_filters[0]));
+        assert!(Arc::ptr_eq(&cached1.http_filters[1], &hcm_filters[1]));
+
+        // 2. `/v2` on `vh_api` selects `r_disabled` where `f_override` is disabled
+        let req2 = Request::builder().header("host", "api.example.com:8443").uri("/v2/items").body(()).unwrap();
+        let cached2 = state.match_request_route(&req2).unwrap();
+        assert_eq!(cached2.vh.name.as_str(), "vh_api");
+        assert_eq!(cached2.route.name, "r_disabled");
+        assert!(cached2.http_filters[0].disabled);
+        assert!(Arc::ptr_eq(&cached2.http_filters[1], &hcm_filters[1]));
+
+        // 3. `/other` on `vh_api` falls back to `r_base` reusing `Arc` pointers from `hcm_filters`
+        let req3 = Request::builder().header("host", "api.example.com:8443").uri("/other").body(()).unwrap();
+        let cached3 = state.match_request_route(&req3).unwrap();
+        assert_eq!(cached3.route.name, "r_base");
+        assert!(Arc::ptr_eq(&cached3.http_filters[0], &hcm_filters[0]));
+        assert!(Arc::ptr_eq(&cached3.http_filters[1], &hcm_filters[1]));
+
+        // 4. Different port `api.example.com:9000` strips port and matches `*.example.com` (`vh_fallback`)
+        let req4 = Request::builder().header("host", "api.example.com:9000").uri("/v1/users").body(()).unwrap();
+        let cached4 = state.match_request_route(&req4).unwrap();
+        assert_eq!(cached4.vh.name.as_str(), "vh_fallback");
+        assert_eq!(cached4.route.name, "r_fallback");
+
+        // 5. Unmatched route path on `vh_fallback` returns `None`
+        let req5 = Request::builder().header("host", "api.example.com:9000").uri("/unmatched").body(()).unwrap();
+        assert!(state.match_request_route(&req5).is_none());
+    }
+
+    #[test]
+    fn test_header_mutations_cartesian_all_8_level_combinations_and_precedence() {
+        let make_overwrite = |key: &'static str, val: &str| {
+            HeaderModifiersAdd(vec![HeaderValueOption {
+                header: HeaderKeyValue {
+                    key: ::http::HeaderName::from_static(key),
+                    value: HeaderFormatter::try_new(val).unwrap(),
+                },
+                append_action: HeaderAppendAction::OverwriteIfExistsOrAdd,
+                keep_empty_value: false,
+            }])
+        };
+
+        // Test all 2^3 = 8 combinations of (RC level, VH level, Route level) mutations
+        // x 2 settings of `most_specific_header_mutations_wins` (false vs true) = 16 combinations.
+        for mask in 0..8usize {
+            for most_specific_wins in [false, true] {
+                let rc_has = (mask & 1) != 0;
+                let vh_has = (mask & 2) != 0;
+                let route_has = (mask & 4) != 0;
+
+                let route = Route {
+                    name: "r".into(),
+                    request_headers_to_add: if route_has {
+                        make_overwrite("x-winner", "route")
+                    } else {
+                        HeaderModifiersAdd::default()
+                    },
+                    request_headers_to_remove: HeaderModifiersRemove::default(),
+                    response_headers_to_add: if route_has {
+                        make_overwrite("x-resp-winner", "route")
+                    } else {
+                        HeaderModifiersAdd::default()
+                    },
+                    response_headers_to_remove: HeaderModifiersRemove::default(),
+                    route_match: RouteMatch {
+                        path_matcher: Some(PathMatcher {
+                            specifier: PathSpecifier::Prefix("/".into()),
+                            ignore_case: false,
+                        }),
+                        headers: vec![],
+                        query_parameters: vec![],
+                    },
+                    typed_per_filter_config: HashMap::new(),
+                    action: Action::DirectResponse(DirectResponseAction { status: StatusCode::OK, body: None }),
+                };
+
+                let vh = VirtualHost {
+                    name: "vh".into(),
+                    domains: vec![MatchHost::Wildcard],
+                    routes: vec![route],
+                    request_headers_to_add: if vh_has {
+                        make_overwrite("x-winner", "vh")
+                    } else {
+                        HeaderModifiersAdd::default()
+                    },
+                    request_headers_to_remove: HeaderModifiersRemove::default(),
+                    response_headers_to_add: if vh_has {
+                        make_overwrite("x-resp-winner", "vh")
+                    } else {
+                        HeaderModifiersAdd::default()
+                    },
+                    response_headers_to_remove: HeaderModifiersRemove::default(),
+                    retry_policy: None,
+                };
+
+                let rc = RouteConfiguration {
+                    name: "rc".into(),
+                    most_specific_header_mutations_wins: most_specific_wins,
+                    request_headers_to_add: if rc_has {
+                        make_overwrite("x-winner", "rc")
+                    } else {
+                        HeaderModifiersAdd::default()
+                    },
+                    request_headers_to_remove: HeaderModifiersRemove::default(),
+                    response_headers_to_add: if rc_has {
+                        make_overwrite("x-resp-winner", "rc")
+                    } else {
+                        HeaderModifiersAdd::default()
+                    },
+                    response_headers_to_remove: HeaderModifiersRemove::default(),
+                    virtual_hosts: vec![vh],
+                    has_request_mutations: false,
+                    has_response_mutations: false,
+                };
+
+                let state = RoutingState::new(rc, &[]);
+                assert_eq!(state.has_request_mutations, mask != 0);
+                assert_eq!(state.has_response_mutations, mask != 0);
+
+                let mut req = Request::builder().header("host", "example.com").uri("/").body(()).unwrap();
+                let mut resp = Response::builder().status(StatusCode::OK).body(()).unwrap();
+                let conn = ConnMeta::default();
+
+                {
+                    let cached = state.match_request_route(&req).unwrap();
+                    apply_mutations_on_request(&mut req, &state, &cached, most_specific_wins, &conn);
+                    apply_mutations_on_response(&mut resp, &state, &cached, most_specific_wins, &conn);
+                }
+
+                let expected = if most_specific_wins {
+                    if route_has {
+                        Some("route")
+                    } else if vh_has {
+                        Some("vh")
+                    } else if rc_has {
+                        Some("rc")
+                    } else {
+                        None
+                    }
+                } else if rc_has {
+                    Some("rc")
+                } else if vh_has {
+                    Some("vh")
+                } else if route_has {
+                    Some("route")
+                } else {
+                    None
+                };
+
+                assert_eq!(
+                    req.headers().get("x-winner").and_then(|v| v.to_str().ok()),
+                    expected,
+                    "request mutation mismatch for mask={mask:#05b}, most_specific_wins={most_specific_wins}"
+                );
+                assert_eq!(
+                    resp.headers().get("x-resp-winner").and_then(|v| v.to_str().ok()),
+                    expected,
+                    "response mutation mismatch for mask={mask:#05b}, most_specific_wins={most_specific_wins}"
+                );
+            }
+        }
     }
 
     #[test]

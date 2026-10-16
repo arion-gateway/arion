@@ -786,7 +786,9 @@ fn configure_and_start_tcp_listener(
 
 #[cfg(test)]
 mod tests {
-    use arion_configuration::config::listener::{FilterChainMatch, FilterChainMatch as FilterChainMatchConfig, ServerNameMatch};
+    use arion_configuration::config::listener::{
+        FilterChainMatch, FilterChainMatch as FilterChainMatchConfig, ServerNameMatch,
+    };
     use arion_data_plane_api::{
         decode::from_yaml, envoy_data_plane_api::envoy::config::listener::v3::FilterChainMatch as EnvoyFilterChainMatch,
     };

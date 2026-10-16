@@ -189,12 +189,9 @@ impl DestPortMatcher {
             })
             .collect();
 
-        let wildcard = DestIpMatcher::build(
-            &wildcard_candidates,
-            |m| &m.destination_prefix_ranges,
-            ServerNameMatcher::build,
-        )
-        .map(Box::new);
+        let wildcard =
+            DestIpMatcher::build(&wildcard_candidates, |m| &m.destination_prefix_ranges, ServerNameMatcher::build)
+                .map(Box::new);
 
         Some(Self::WithExact { exact, wildcard })
     }
@@ -229,20 +226,12 @@ enum IpMatcher<Next> {
 
 #[inline]
 const fn ipv4_mask(prefix_len: u8) -> u32 {
-    if prefix_len == 0 {
-        0
-    } else {
-        u32::MAX << (32 - prefix_len)
-    }
+    if prefix_len == 0 { 0 } else { u32::MAX << (32 - prefix_len) }
 }
 
 #[inline]
 const fn ipv6_mask(prefix_len: u8) -> u128 {
-    if prefix_len == 0 {
-        0
-    } else {
-        u128::MAX << (128 - prefix_len)
-    }
+    if prefix_len == 0 { 0 } else { u128::MAX << (128 - prefix_len) }
 }
 
 impl<Next> IpMatcher<Next> {
@@ -416,12 +405,9 @@ impl ServerNameMatcher {
             })
             .collect();
 
-        let fallback = SourceIpMatcher::build(
-            &fallback_candidates,
-            |m| &m.source_prefix_ranges,
-            SourcePortMatcher::build,
-        )
-        .map(Box::new);
+        let fallback =
+            SourceIpMatcher::build(&fallback_candidates, |m| &m.source_prefix_ranges, SourcePortMatcher::build)
+                .map(Box::new);
 
         Some(Self::WithRules { exact, wildcard_suffixes, fallback })
     }
@@ -935,5 +921,353 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Builds a `FilterChainMatch` from a 5-bit mask:
+    /// - bit 0 (1): `destination_port`
+    /// - bit 1 (2): `destination_prefix_ranges`
+    /// - bit 2 (4): `server_names`
+    /// - bit 3 (8): `source_prefix_ranges`
+    /// - bit 4 (16): `source_ports`
+    fn make_chain_from_mask(mask: usize) -> FilterChainMatch {
+        FilterChainMatch {
+            destination_port: ((mask & 1) != 0).then_some(8443),
+            destination_prefix_ranges: if (mask & 2) != 0 {
+                vec![IpNet::from_str("10.1.0.0/16").unwrap(), IpNet::from_str("2001:db8:1::/48").unwrap()]
+            } else {
+                vec![]
+            },
+            server_names: if (mask & 4) != 0 {
+                vec![
+                    ServerNameMatch::from_str("app.example.com").unwrap(),
+                    ServerNameMatch::from_str("*.sub.example.com").unwrap(),
+                ]
+            } else {
+                vec![]
+            },
+            source_prefix_ranges: if (mask & 8) != 0 {
+                vec![IpNet::from_str("192.168.1.0/24").unwrap(), IpNet::from_str("fd00:1::/32").unwrap()]
+            } else {
+                vec![]
+            },
+            source_ports: if (mask & 16) != 0 { vec![5000, 5001] } else { vec![] },
+        }
+    }
+
+    #[test]
+    fn cartesian_product_single_chain_all_32_optional_field_masks() {
+        // Tests all 2^5 = 32 combinations of optional FilterChainMatch fields in isolation
+        // against the full Cartesian product of matching/non-matching connection attributes.
+        let dst_ports = [(8443u16, true), (9000u16, false)];
+        let dst_ips: [(IpAddr, bool); 4] = [
+            (Ipv4Addr::new(10, 1, 2, 3).into(), true),
+            (Ipv4Addr::new(10, 2, 2, 3).into(), false),
+            (Ipv6Addr::from_str("2001:db8:1::1").unwrap().into(), true),
+            (Ipv6Addr::from_str("2001:db8:2::1").unwrap().into(), false),
+        ];
+        let snis = [
+            (Some("app.example.com"), true),
+            (Some("x.sub.example.com"), true),
+            (Some("a.b.sub.example.com"), true),
+            (Some("sub.example.com"), false),
+            (Some("other.example.com"), false),
+            (None, false),
+        ];
+        let src_ips: [(IpAddr, bool); 4] = [
+            (Ipv4Addr::new(192, 168, 1, 42).into(), true),
+            (Ipv4Addr::new(192, 168, 2, 42).into(), false),
+            (Ipv6Addr::from_str("fd00:1::99").unwrap().into(), true),
+            (Ipv6Addr::from_str("fd00:2::99").unwrap().into(), false),
+        ];
+        let src_ports = [(5000u16, true), (5001u16, true), (9999u16, false)];
+
+        for chain_mask in 0..32usize {
+            let entries = vec![(make_chain_from_mask(chain_mask), chain_mask)];
+            let chains: FilterChains<usize> = entries.iter().cloned().collect();
+            assert_eq!(chains.has_server_names(), (chain_mask & 4) != 0);
+
+            for &(dst_port, dp_match) in &dst_ports {
+                for &(dst_ip, di_match) in &dst_ips {
+                    for &(sni, sni_match) in &snis {
+                        for &(src_ip, si_match) in &src_ips {
+                            for &(src_port, sp_match) in &src_ports {
+                                let input_mask = usize::from(dp_match)
+                                    | (usize::from(di_match) << 1)
+                                    | (usize::from(sni_match) << 2)
+                                    | (usize::from(si_match) << 3)
+                                    | (usize::from(sp_match) << 4);
+
+                                let meta = DownstreamConnectionMetadata::FromSocket {
+                                    peer_address: (src_ip, src_port).into(),
+                                    local_address: (dst_ip, dst_port).into(),
+                                };
+
+                                let actual = chains.select(&meta, sni).unwrap().copied();
+                                let expected_ref = reference_select(&entries, &meta, sni).unwrap().copied();
+                                // A single chain with `chain_mask` matches iff every bit set in `chain_mask`
+                                // is also set in `input_mask`.
+                                let expected_analytic = ((input_mask & chain_mask) == chain_mask).then_some(chain_mask);
+
+                                assert_eq!(
+                                    actual, expected_analytic,
+                                    "analytic mismatch for chain_mask={chain_mask:#07b}, input_mask={input_mask:#07b}"
+                                );
+                                assert_eq!(
+                                    actual, expected_ref,
+                                    "reference mismatch for chain_mask={chain_mask:#07b}, input_mask={input_mask:#07b}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cartesian_product_all_32_chains_simultaneously() {
+        // Compiles all 32 (2^5) FilterChainMatch optional field combinations into a single
+        // `FilterChains` table so every node at every level of the tree exercises both
+        // exact/prefix/rule branches AND wildcard/fallback branches simultaneously.
+        let entries: Vec<(FilterChainMatch, usize)> =
+            (0..32usize).map(|mask| (make_chain_from_mask(mask), mask)).collect();
+        let chains: FilterChains<usize> = entries.iter().cloned().collect();
+        assert!(chains.has_server_names());
+
+        let dst_ports = [(8443u16, true), (9000u16, false)];
+        let dst_ips: [(IpAddr, bool); 4] = [
+            (Ipv4Addr::new(10, 1, 2, 3).into(), true),
+            (Ipv4Addr::new(10, 2, 2, 3).into(), false),
+            (Ipv6Addr::from_str("2001:db8:1::1").unwrap().into(), true),
+            (Ipv6Addr::from_str("2001:db8:2::1").unwrap().into(), false),
+        ];
+        let snis = [
+            (Some("app.example.com"), true),
+            (Some("x.sub.example.com"), true),
+            (Some("other.example.com"), false),
+            (None, false),
+        ];
+        let src_ips: [(IpAddr, bool); 4] = [
+            (Ipv4Addr::new(192, 168, 1, 42).into(), true),
+            (Ipv4Addr::new(192, 168, 2, 42).into(), false),
+            (Ipv6Addr::from_str("fd00:1::99").unwrap().into(), true),
+            (Ipv6Addr::from_str("fd00:2::99").unwrap().into(), false),
+        ];
+        let src_ports = [(5000u16, true), (5001u16, true), (9999u16, false)];
+
+        for &(dst_port, dp_match) in &dst_ports {
+            for &(dst_ip, di_match) in &dst_ips {
+                for &(sni, sni_match) in &snis {
+                    for &(src_ip, si_match) in &src_ips {
+                        for &(src_port, sp_match) in &src_ports {
+                            let expected_mask = usize::from(dp_match)
+                                | (usize::from(di_match) << 1)
+                                | (usize::from(sni_match) << 2)
+                                | (usize::from(si_match) << 3)
+                                | (usize::from(sp_match) << 4);
+
+                            let meta = DownstreamConnectionMetadata::FromSocket {
+                                peer_address: (src_ip, src_port).into(),
+                                local_address: (dst_ip, dst_port).into(),
+                            };
+
+                            let actual = chains.select(&meta, sni).unwrap().copied();
+                            let expected_ref = reference_select(&entries, &meta, sni).unwrap().copied();
+
+                            assert_eq!(actual, Some(expected_mask));
+                            assert_eq!(actual, expected_ref);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn cartesian_product_multi_specificity_and_sparse_pairs() {
+        // Exercises multi-tier specificity across all 5 levels:
+        // - Level 1: None vs Some(443) vs Some(8443)
+        // - Level 2: [] vs /0 vs /8 vs /16 vs /32 (IPv4) and /0 vs /32 vs /64 vs /128 (IPv6)
+        // - Level 3: [] vs *.com vs *.example.com vs *.sub.example.com vs api.sub.example.com
+        // - Level 4: [] vs /0 vs /12 vs /24 vs /32 (IPv4) and /0 vs /48 vs /128 (IPv6)
+        // - Level 5: [] vs [1000] vs [2000, 2001]
+        let entries = vec![
+            // Sparse combination: only dst_ip /32 + src_port
+            (
+                FilterChainMatch {
+                    destination_port: None,
+                    destination_prefix_ranges: vec![IpNet::from_str("10.1.2.3/32").unwrap()],
+                    server_names: vec![],
+                    source_prefix_ranges: vec![],
+                    source_ports: vec![2000],
+                },
+                0usize,
+            ),
+            // Sparse combination: only dst_ip /16 + SNI 3-label wildcard
+            (
+                FilterChainMatch {
+                    destination_port: None,
+                    destination_prefix_ranges: vec![IpNet::from_str("10.1.0.0/16").unwrap()],
+                    server_names: vec![ServerNameMatch::from_str("*.sub.example.com").unwrap()],
+                    source_prefix_ranges: vec![],
+                    source_ports: vec![],
+                },
+                1usize,
+            ),
+            // Sparse combination: only dst_ip /16 + SNI 2-label wildcard + src_ip /24
+            (
+                FilterChainMatch {
+                    destination_port: None,
+                    destination_prefix_ranges: vec![IpNet::from_str("10.1.0.0/16").unwrap()],
+                    server_names: vec![ServerNameMatch::from_str("*.example.com").unwrap()],
+                    source_prefix_ranges: vec![IpNet::from_str("172.16.1.0/24").unwrap()],
+                    source_ports: vec![],
+                },
+                2usize,
+            ),
+            // Sparse combination: only dst_ip /16 + SNI 1-label wildcard (*.com)
+            (
+                FilterChainMatch {
+                    destination_port: None,
+                    destination_prefix_ranges: vec![IpNet::from_str("10.1.0.0/16").unwrap()],
+                    server_names: vec![ServerNameMatch::from_str("*.com").unwrap()],
+                    source_prefix_ranges: vec![],
+                    source_ports: vec![],
+                },
+                3usize,
+            ),
+            // Sparse combination: only SNI exact + src_port
+            (
+                FilterChainMatch {
+                    destination_port: None,
+                    destination_prefix_ranges: vec![],
+                    server_names: vec![ServerNameMatch::from_str("api.sub.example.com").unwrap()],
+                    source_prefix_ranges: vec![],
+                    source_ports: vec![1000],
+                },
+                4usize,
+            ),
+            // Sparse combination: only src_ip /32
+            (
+                FilterChainMatch {
+                    destination_port: None,
+                    destination_prefix_ranges: vec![],
+                    server_names: vec![],
+                    source_prefix_ranges: vec![IpNet::from_str("172.16.1.5/32").unwrap()],
+                    source_ports: vec![],
+                },
+                5usize,
+            ),
+            // Sparse combination: only src_ip /0 (IPv4 catch-all) + src_port 2001
+            (
+                FilterChainMatch {
+                    destination_port: None,
+                    destination_prefix_ranges: vec![],
+                    server_names: vec![],
+                    source_prefix_ranges: vec![IpNet::from_str("0.0.0.0/0").unwrap()],
+                    source_ports: vec![2001],
+                },
+                6usize,
+            ),
+            // IPv6 /128 destination + IPv6 /128 source
+            (
+                FilterChainMatch {
+                    destination_port: Some(8443),
+                    destination_prefix_ranges: vec![IpNet::from_str("2001:db8:1::1/128").unwrap()],
+                    server_names: vec![],
+                    source_prefix_ranges: vec![IpNet::from_str("fd00:1::1/128").unwrap()],
+                    source_ports: vec![],
+                },
+                7usize,
+            ),
+            // IPv6 /64 destination + IPv6 /0 source
+            (
+                FilterChainMatch {
+                    destination_port: Some(8443),
+                    destination_prefix_ranges: vec![IpNet::from_str("2001:db8:1::/64").unwrap()],
+                    server_names: vec![],
+                    source_prefix_ranges: vec![IpNet::from_str("::/0").unwrap()],
+                    source_ports: vec![],
+                },
+                8usize,
+            ),
+        ];
+
+        let chains: FilterChains<usize> = entries.iter().cloned().collect();
+
+        let dst_ports = [443u16, 8443];
+        let dst_ips: [IpAddr; 5] = [
+            Ipv4Addr::new(10, 1, 2, 3).into(),
+            Ipv4Addr::new(10, 1, 9, 9).into(),
+            Ipv4Addr::new(192, 168, 0, 1).into(),
+            Ipv6Addr::from_str("2001:db8:1::1").unwrap().into(),
+            Ipv6Addr::from_str("2001:db8:1::2").unwrap().into(),
+        ];
+        let snis = [
+            None,
+            Some(""),
+            Some("api.sub.example.com"),
+            Some("other.sub.example.com"),
+            Some("deep.other.sub.example.com"),
+            Some("foo.example.com"),
+            Some("bar.com"),
+            Some(".example.com"),
+            Some("unmatched.org"),
+        ];
+        let src_ips: [IpAddr; 5] = [
+            Ipv4Addr::new(172, 16, 1, 5).into(),
+            Ipv4Addr::new(172, 16, 1, 6).into(),
+            Ipv4Addr::new(10, 0, 0, 1).into(),
+            Ipv6Addr::from_str("fd00:1::1").unwrap().into(),
+            Ipv6Addr::from_str("fd00:2::1").unwrap().into(),
+        ];
+        let src_ports = [1000u16, 2000, 2001, 9999];
+
+        for &dst_port in &dst_ports {
+            for &dst_ip in &dst_ips {
+                for &sni in &snis {
+                    for &src_ip in &src_ips {
+                        for &src_port in &src_ports {
+                            let meta = DownstreamConnectionMetadata::FromProxyProtocol {
+                                original_peer_address: (src_ip, src_port).into(),
+                                original_destination_address: (dst_ip, dst_port).into(),
+                                protocol: ppp::v2::Protocol::Stream,
+                                tlv_data: std::collections::HashMap::new(),
+                                proxy_peer_address: (Ipv4Addr::LOCALHOST, 1).into(),
+                                proxy_local_address: (Ipv4Addr::LOCALHOST, 2).into(),
+                            };
+                            let actual = chains.select(&meta, sni);
+                            let expected = reference_select(&entries, &meta, sni);
+                            assert_eq!(
+                                actual.as_ref().ok(),
+                                expected.as_ref().ok(),
+                                "mismatch for dst={dst_ip}:{dst_port}, sni={sni:?}, src={src_ip}:{src_port}"
+                            );
+                            assert_eq!(actual.is_err(), expected.is_err());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn filter_chains_iterators_and_try_map() {
+        let mut chains: FilterChains<usize> =
+            [(make_chain_from_mask(1), 10usize), (make_chain_from_mask(0), 20usize)].into_iter().collect();
+        assert!(!chains.has_server_names());
+        assert_eq!(chains.values().copied().collect::<Vec<_>>(), vec![10, 20]);
+
+        for v in chains.values_mut() {
+            *v += 1;
+        }
+        assert_eq!(chains.values().copied().collect::<Vec<_>>(), vec![11, 21]);
+
+        let mapped = chains.clone().try_map(|v| Ok::<_, &str>(v * 2)).unwrap();
+        assert_eq!(mapped.values().copied().collect::<Vec<_>>(), vec![22, 42]);
+
+        let err_res = chains.try_map(|v| if v == 21 { Err("boom") } else { Ok(v) });
+        assert_eq!(err_res.unwrap_err(), "boom");
     }
 }
