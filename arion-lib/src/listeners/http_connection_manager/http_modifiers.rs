@@ -18,7 +18,7 @@
 //
 //
 
-use super::upgrade_utils;
+use super::{RoutingState, RuntimeVirtualHost, upgrade_utils};
 use crate::{
     ArionResponseBody,
     event_error::EventFailure,
@@ -30,7 +30,7 @@ use arion_configuration::config::{
     network_filters::{
         early_header_mutation::EarlyHeaderMutation,
         http_connection_manager::{
-            HeaderModifiersAdd, HeaderModifiersRemove, Route, RouteConfiguration, VirtualHost, XffSettings,
+            HeaderModifiersAdd, HeaderModifiersRemove, Route, XffSettings,
             header_modifier::{HeaderAppendAction, HeaderValueOption},
         },
     },
@@ -361,28 +361,28 @@ impl<B> ModifiersExtractor<Response<B>> for Route {
     }
 }
 
-impl<B> ModifiersExtractor<Request<B>> for VirtualHost {
+impl<B> ModifiersExtractor<Request<B>> for RuntimeVirtualHost {
     #[inline]
     fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
         (&self.request_headers_to_remove, &self.request_headers_to_add)
     }
 }
 
-impl<B> ModifiersExtractor<Response<B>> for VirtualHost {
+impl<B> ModifiersExtractor<Response<B>> for RuntimeVirtualHost {
     #[inline]
     fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
         (&self.response_headers_to_remove, &self.response_headers_to_add)
     }
 }
 
-impl<B> ModifiersExtractor<Request<B>> for RouteConfiguration {
+impl<B> ModifiersExtractor<Request<B>> for RoutingState {
     #[inline]
     fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
         (&self.request_headers_to_remove, &self.request_headers_to_add)
     }
 }
 
-impl<B> ModifiersExtractor<Response<B>> for RouteConfiguration {
+impl<B> ModifiersExtractor<Response<B>> for RoutingState {
     #[inline]
     fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
         (&self.response_headers_to_remove, &self.response_headers_to_add)

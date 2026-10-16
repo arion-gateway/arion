@@ -12,10 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::listeners::http_connection_manager::RouteIndex;
 #[cfg(feature = "wasm")]
 use crate::listeners::http_connection_manager::wasm::WasmFilter;
-use std::collections::HashMap;
 use triomphe::Arc;
 
 use crate::{
@@ -44,7 +42,7 @@ use smol_str::SmolStr;
 use tracing::debug;
 
 use arion_configuration::config::network_filters::http_connection_manager::{
-    RouteConfiguration,
+    Route,
     http_filters::{
         ExtProcPerRoute, FilterConfigOverride, FilterOverride, HttpFilter as HttpFilterConfig, HttpFilterType,
     },
@@ -321,35 +319,21 @@ fn apply_authorization_rules<B>(rbac: &HttpRbac, req: &Request<B>) -> FilterDeci
     }
 }
 
-// `RouteMatch` contains `Regex` which has interior mutability, but its `Hash` and `PartialEq`
-// implementations use only `as_str()` (the immutable pattern string), so this is safe.
-#[allow(clippy::mutable_key_type)]
-pub(crate) fn per_route_http_filters(
-    route_config: &RouteConfiguration,
-    hcm_filters: &[Arc<HttpFilter>],
-) -> HashMap<RouteIndex, Vec<Arc<HttpFilter>>> {
-    let mut per_route_filters: HashMap<RouteIndex, Vec<Arc<HttpFilter>>> = HashMap::new();
-    for (vh_idx, vh) in route_config.virtual_hosts.iter().enumerate() {
-        for (route_idx, route) in vh.routes.iter().enumerate() {
-            let key = RouteIndex { vh_idx, route_idx };
-            for hcm_filter in hcm_filters {
-                let effective_filter = match route.typed_per_filter_config.get(&hcm_filter.name) {
-                    Some(override_config) => Arc::new(HttpFilter {
-                        name: hcm_filter.name.clone(),
-                        disabled: override_config.disabled,
-                        filter: HttpFilterValue::from_filter_override(
-                            override_config,
-                            hcm_filter.filter_config.as_deref(),
-                        ),
-                        filter_config: hcm_filter.filter_config.clone(),
-                    }),
-                    None => Arc::clone(hcm_filter),
-                };
-                per_route_filters.entry(key).or_default().push(effective_filter);
-            }
-        }
-    }
-    per_route_filters
+/// Resolves the effective HTTP filter chain for a single route by merging the base HCM filters
+/// with any per-route overrides (`typed_per_filter_config`).
+pub(crate) fn compile_route_http_filters(route: &Route, hcm_filters: &[Arc<HttpFilter>]) -> Box<[Arc<HttpFilter>]> {
+    hcm_filters
+        .iter()
+        .map(|hcm_filter| match route.typed_per_filter_config.get(&hcm_filter.name) {
+            Some(override_config) => Arc::new(HttpFilter {
+                name: hcm_filter.name.clone(),
+                disabled: override_config.disabled,
+                filter: HttpFilterValue::from_filter_override(override_config, hcm_filter.filter_config.as_deref()),
+                filter_config: hcm_filter.filter_config.clone(),
+            }),
+            None => Arc::clone(hcm_filter),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -402,11 +386,12 @@ route_config:
         let hcm_filters: Vec<_> =
             config.http_filters.iter().map(|f| Arc::new(HttpFilter::try_from(f.clone()).unwrap())).collect();
 
-        let per_route = per_route_http_filters(route_config, &hcm_filters);
-        let ext_proc_runs = |route_idx| {
-            per_route
-                .get(&RouteIndex { vh_idx: 0, route_idx })
-                .and_then(|filters| filters.first())
+        let vh = route_config.virtual_hosts.first().unwrap();
+        let ext_proc_runs = |route_idx: usize| {
+            let route = vh.routes.get(route_idx).unwrap();
+            let filters = compile_route_http_filters(route, &hcm_filters);
+            filters
+                .first()
                 .map(|filter| !filter.disabled && matches!(filter.filter, Some(HttpFilterValue::ExternalProcessor(_))))
         };
         assert_eq!(ext_proc_runs(0), Some(true));

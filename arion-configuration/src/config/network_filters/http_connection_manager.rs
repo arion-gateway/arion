@@ -270,8 +270,8 @@ pub enum MatchHostScoreLPM {
 
 #[derive(Debug, Clone, Copy)]
 pub struct RequestHost<'a> {
-    full: &'a str,
-    without_port: Option<&'a str>,
+    pub full: &'a str,
+    pub without_port: Option<&'a str>,
 }
 
 impl<'a> RequestHost<'a> {
