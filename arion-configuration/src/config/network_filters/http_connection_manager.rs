@@ -30,7 +30,11 @@ use http_filters::{FilterOverride, HttpFilter};
 use route::{Action, RouteMatch};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
-use std::{collections::HashMap, str::FromStr, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+    time::Duration,
+};
 
 use crate::config::access_log::AccessLog;
 
@@ -124,6 +128,7 @@ pub struct RouteConfiguration {
     pub request_headers_to_remove: HeaderModifiersRemove,
     pub response_headers_to_add: HeaderModifiersAdd,
     pub response_headers_to_remove: HeaderModifiersRemove,
+    #[serde(deserialize_with = "deserialize_virtual_hosts")]
     pub virtual_hosts: Vec<VirtualHost>,
     /// Cached at config-load time: whether any request/response header mutations exist
     /// at any level (global, virtual host, route). The per-request hot path checks these
@@ -133,6 +138,31 @@ pub struct RouteConfiguration {
     pub has_request_mutations: bool,
     #[serde(skip)]
     pub has_response_mutations: bool,
+}
+
+pub(crate) fn validate_unique_virtual_host_domains(virtual_hosts: &[VirtualHost]) -> Result<(), GenericError> {
+    let mut seen_domains = HashSet::new();
+    for (vh_idx, vh) in virtual_hosts.iter().enumerate() {
+        for (domain_idx, domain) in vh.domains.iter().enumerate() {
+            if !seen_domains.insert(domain) {
+                return Err(GenericError::from_msg(format!(
+                    "Only unique values for domains are permitted. Duplicate entry of domain {domain}"
+                ))
+                .with_index(domain_idx)
+                .with_node("domains")
+                .with_name(vh.name.to_string())
+                .with_index(vh_idx)
+                .with_node("virtual_hosts"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn deserialize_virtual_hosts<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<VirtualHost>, D::Error> {
+    let virtual_hosts = Vec::<VirtualHost>::deserialize(deserializer)?;
+    validate_unique_virtual_host_domains(&virtual_hosts).map_err(|e| serde::de::Error::custom(format!("{e:?}")))?;
+    Ok(virtual_hosts)
 }
 
 impl RouteConfiguration {
@@ -164,12 +194,23 @@ impl RouteConfiguration {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum MatchHost {
     Wildcard,
     Prefix(SmolStr),
     Suffix(SmolStr),
     Exact(SmolStr),
+}
+
+impl std::fmt::Display for MatchHost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Wildcard => f.write_str("*"),
+            Self::Exact(cs) => f.write_str(cs.as_str()),
+            Self::Prefix(cs) => write!(f, "{cs}*"),
+            Self::Suffix(cs) => write!(f, "*{cs}"),
+        }
+    }
 }
 
 impl Serialize for MatchHost {
@@ -728,6 +769,34 @@ mod tests {
         assert!(config.has_request_mutations);
         assert!(config.has_response_mutations);
     }
+
+    #[test]
+    fn test_deserialize_route_configuration_rejects_duplicate_domains() {
+        let yaml = r#"
+name: routes
+request_headers_to_add: []
+request_headers_to_remove: []
+response_headers_to_add: []
+response_headers_to_remove: []
+virtual_hosts:
+  - name: vh1
+    domains: ["example.com"]
+    routes: []
+    request_headers_to_add: []
+    request_headers_to_remove: []
+    response_headers_to_add: []
+    response_headers_to_remove: []
+  - name: vh2
+    domains: ["example.com"]
+    routes: []
+    request_headers_to_add: []
+    request_headers_to_remove: []
+    response_headers_to_add: []
+    response_headers_to_remove: []
+"#;
+        let err = serde_yaml::from_str::<RouteConfiguration>(yaml).unwrap_err();
+        assert!(err.to_string().contains("Duplicate entry of domain example.com"), "unexpected error: {err}");
+    }
 }
 
 #[cfg(feature = "envoy-conversions")]
@@ -740,6 +809,7 @@ mod envoy_conversions {
             FilterConfigOverride, FilterOverride, HttpFilter, HttpFilterType, SupportedEnvoyFilter,
             SupportedEnvoyHttpFilter, router::Router,
         },
+        validate_unique_virtual_host_domains,
     };
     use crate::config::access_log::AccessLog;
 
@@ -769,7 +839,11 @@ mod envoy_conversions {
     };
     use http::{HeaderName, StatusCode};
     use smol_str::SmolStr;
-    use std::{collections::HashMap, str::FromStr, time::Duration};
+    use std::{
+        collections::{HashMap, HashSet},
+        str::FromStr,
+        time::Duration,
+    };
 
     impl HttpConnectionManager {
         pub(crate) fn ensure_corresponding_filter_exists(
@@ -1134,6 +1208,7 @@ mod envoy_conversions {
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 let virtual_hosts = convert_non_empty_vec!(virtual_hosts)?;
+                validate_unique_virtual_host_domains(&virtual_hosts)?;
                 let mut config = Self {
                     name: SmolStr::from(&name),
                     virtual_hosts,
@@ -1227,6 +1302,16 @@ mod envoy_conversions {
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 let domains = convert_non_empty_vec!(domains)?;
+                let mut seen_domains = HashSet::with_capacity(domains.len());
+                for (idx, domain) in domains.iter().enumerate() {
+                    if !seen_domains.insert(domain) {
+                        return Err(GenericError::from_msg(format!(
+                            "Only unique values for domains are permitted. Duplicate entry of domain {domain}"
+                        ))
+                        .with_index(idx)
+                        .with_node("domains"));
+                    }
+                }
                 let routes = convert_vec!(routes)?;
 
                 let retry_policy = retry_policy.map(RetryPolicy::try_from).transpose().with_node("retry_policy")?;
@@ -1577,6 +1662,74 @@ route_config:
             assert_eq!(policy.max_age, Some(3600));
             let second = routes.get(1);
             assert!(second.unwrap().typed_per_filter_config.is_empty());
+        }
+
+        #[test]
+        fn test_duplicate_virtual_host_domains_rejected() {
+            use std::error::Error;
+
+            // 1. Duplicate domain across two different VirtualHosts
+            let dup_across_vhs: EnvoyRouteConfiguration = arion_data_plane_api::decode::from_yaml(
+                r#"
+name: routes
+virtual_hosts:
+- name: vh1
+  domains: ["example.com", "*.example.com"]
+  routes: []
+- name: vh2
+  domains: ["other.com", "*.example.com"]
+  routes: []
+"#,
+            )
+            .unwrap();
+            let err = RouteConfiguration::try_from(dup_across_vhs).unwrap_err();
+            assert_eq!(err.to_string(), r#"Error parsing field ["routes"] / virtual_hosts ["vh2"] / domains [1]"#);
+            assert!(
+                err.source().unwrap().to_string().contains("Duplicate entry of domain *.example.com"),
+                "unexpected source error: {:?}",
+                err.source()
+            );
+
+            // 2. Duplicate wildcard domain across two different VirtualHosts
+            let dup_wildcard: EnvoyRouteConfiguration = arion_data_plane_api::decode::from_yaml(
+                r#"
+name: routes
+virtual_hosts:
+- name: vh1
+  domains: ["*"]
+  routes: []
+- name: vh2
+  domains: ["*"]
+  routes: []
+"#,
+            )
+            .unwrap();
+            let err = RouteConfiguration::try_from(dup_wildcard).unwrap_err();
+            assert_eq!(err.to_string(), r#"Error parsing field ["routes"] / virtual_hosts ["vh2"] / domains [0]"#);
+            assert!(
+                err.source().unwrap().to_string().contains("Duplicate entry of domain *"),
+                "unexpected source error: {:?}",
+                err.source()
+            );
+
+            // 3. Duplicate domain within the same VirtualHost
+            let dup_within_vh: EnvoyRouteConfiguration = arion_data_plane_api::decode::from_yaml(
+                r#"
+name: routes
+virtual_hosts:
+- name: vh1
+  domains: ["example.com", "example.com"]
+  routes: []
+"#,
+            )
+            .unwrap();
+            let err = RouteConfiguration::try_from(dup_within_vh).unwrap_err();
+            assert_eq!(err.to_string(), r#"Error parsing field ["routes"] / virtual_hosts ["vh1"] / domains [1]"#);
+            assert!(
+                err.source().unwrap().to_string().contains("Duplicate entry of domain example.com"),
+                "unexpected source error: {:?}",
+                err.source()
+            );
         }
     }
 }
