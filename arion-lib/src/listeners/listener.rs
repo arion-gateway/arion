@@ -20,6 +20,7 @@
 
 use super::{
     filterchain::{ConnectionHandler, FilterchainBuilder, FilterchainType},
+    filterchain_matcher::FilterChains,
     internal_registry::{self, InternalConnection},
     listeners_manager::TlsContextChange,
 };
@@ -53,7 +54,7 @@ use crate::{
 
 use arion_configuration::config::{
     access_log::AccessLog,
-    listener::{FilterChainMatch, Listener as ListenerConfig, ListenerType, MatchResult},
+    listener::{Listener as ListenerConfig, ListenerType},
     listener_filters::{DownstreamProxyProtocolConfig, ListenerLocalRateLimitConfig},
 };
 use arion_interner::InternedStr;
@@ -61,7 +62,6 @@ use arion_interner::InternedStr;
 use arion_interner::StringInterner;
 #[cfg(feature = "metrics")]
 use arion_metrics::metrics::filters;
-use smallvec::{SmallVec, smallvec};
 use tokio::sync::mpsc;
 
 #[cfg(feature = "access-log")]
@@ -81,7 +81,6 @@ use scopeguard::defer;
 #[cfg(any(feature = "access-log", feature = "metrics"))]
 use std::time::Duration;
 use std::{
-    collections::HashMap,
     fmt::Debug,
     net::SocketAddr,
     sync::{
@@ -118,7 +117,7 @@ enum ConnectionSource {
 struct PartialListener {
     name: InternedStr,
     binding: ListenerBinding,
-    filter_chains: HashMap<FilterChainMatch, FilterchainBuilder>,
+    filter_chains: FilterChains<FilterchainBuilder>,
     with_tls_inspector: bool,
     proxy_protocol_config: Option<DownstreamProxyProtocolConfig>,
     listener_local_rate_limit_config: Option<ListenerLocalRateLimitConfig>,
@@ -147,19 +146,18 @@ impl TryFrom<ConversionContext<'_, ListenerConfig>> for PartialListener {
             ListenerType::Internal { .. } => ListenerBinding::Internal,
         };
 
-        let filter_chains: HashMap<FilterChainMatch, _> = listener
+        let filter_chains: FilterChains<_> = listener
             .filter_chains
             .into_iter()
             .map(|f| FilterchainBuilder::try_from(ConversionContext::new((f.1, secret_manager))).map(|x| (f.0, x)))
             .collect::<Result<_>>()?;
 
-        if !with_tls_inspector {
-            let has_server_names = filter_chains.keys().any(|m| !m.server_names.is_empty());
-            if has_server_names {
-                return Err((format!(
-                    "Listener '{}' has server_names in filter_chain_match, but no TLS inspector so matches would always fail", listener.name
-                )).into());
-            }
+        if !with_tls_inspector && filter_chains.has_server_names() {
+            return Err((format!(
+                "Listener '{}' has server_names in filter_chain_match, but no TLS inspector so matches would always fail",
+                listener.name
+            ))
+            .into());
         }
 
         Ok(PartialListener {
@@ -190,10 +188,7 @@ impl ListenerFactory {
             access_log,
         } = self.listener;
 
-        let filter_chains = filter_chains
-            .into_iter()
-            .map(|fc| fc.1.with_listener_name(name).build().map(|x| (fc.0, x)))
-            .collect::<Result<HashMap<_, _>>>()?;
+        let filter_chains = filter_chains.try_map(|fc| fc.with_listener_name(name).build())?;
 
         let listener_local_rate_limit = listener_local_rate_limit_config.map(Into::into);
 
@@ -249,7 +244,7 @@ fn get_listener_context(listener_name: InternedStr) -> StdArc<ListenerContext> {
 pub struct Listener {
     name: InternedStr,
     binding: ListenerBinding,
-    pub filter_chains: HashMap<FilterChainMatch, FilterchainType>,
+    pub filter_chains: FilterChains<FilterchainType>,
     with_tls_inspector: bool,
     proxy_protocol_config: Option<DownstreamProxyProtocolConfig>,
     local_rate_limit: Option<ListenerLocalRateLimit>,
@@ -273,7 +268,7 @@ impl Listener {
                 bind_device: None,
                 tcp_backlog_size: 128,
             },
-            filter_chains: HashMap::new(),
+            filter_chains: FilterChains::default(),
             with_tls_inspector: false,
             proxy_protocol_config: None,
             local_rate_limit: None,
@@ -508,6 +503,7 @@ impl Listener {
 
                 loop {
                     tokio::select! {
+                        biased;
                         maybe_connection = rx.recv() => {
                             match maybe_connection {
                                 Some(InternalConnection { stream, downstream_metadata, start_instant }) => {
@@ -553,115 +549,20 @@ impl Listener {
         }
     }
 
+    #[inline]
     fn select_filterchain<'a, T>(
-        filter_chains: &'a HashMap<FilterChainMatch, T>,
+        filter_chains: &'a FilterChains<T>,
         connection_metadata: &DownstreamConnectionMetadata,
         server_name: Option<&str>,
     ) -> Result<Option<&'a T>> {
-        fn match_subitem<'a, F: Fn(&FilterChainMatch, T) -> MatchResult, T: Copy>(
-            function: F,
-            comparand: T,
-            iter: impl Iterator<Item = &'a FilterChainMatch>,
-            scratchpad: &mut [MatchResult],
-            possible_filters: &mut [bool],
-        ) {
-            let mut best_match = MatchResult::FailedMatch;
-
-            // Check all filters still in the running, skipping over those already eliminated
-            for (i, match_config) in iter.enumerate() {
-                // Use get() to safely skip if index is out of bounds or filter is already eliminated
-                if !possible_filters.get(i).copied().unwrap_or(false) {
-                    continue;
-                }
-
-                let match_result = function(match_config, comparand);
-
-                // Safely update the scratchpad at the given index
-                if let Some(slot) = scratchpad.get_mut(i) {
-                    *slot = match_result;
-                }
-
-                if match_result > best_match {
-                    best_match = match_result;
-                }
-            }
-
-            // Now trim all the results that failed to match, or were less specific than the best match
-            for (i, result) in scratchpad.iter().enumerate() {
-                if (*result != best_match || *result == MatchResult::FailedMatch)
-                    && let Some(is_possible) = possible_filters.get_mut(i)
-                {
-                    *is_possible = false;
-                }
-            }
-        }
-
-        let source_addr = connection_metadata.peer_address();
-        let destination_addr = connection_metadata.local_address();
-        let num_chains = filter_chains.len();
-        let mut possible_filters: SmallVec<[bool; 8]> = smallvec![true; num_chains];
-        let mut scratchpad: SmallVec<[MatchResult; 8]> = smallvec![MatchResult::NoRule; num_chains];
-
-        // Note: We use .keys() consistently. HashMap order is non-deterministic but stable
-        // within the same process as long as it's not mutated.
-        match_subitem(
-            FilterChainMatch::matches_destination_port,
-            destination_addr.port(),
-            filter_chains.keys(),
-            &mut scratchpad,
-            &mut possible_filters,
-        );
-
-        match_subitem(
-            FilterChainMatch::matches_destination_ip,
-            destination_addr.ip(),
-            filter_chains.keys(),
-            &mut scratchpad,
-            &mut possible_filters,
-        );
-
-        match_subitem(
-            FilterChainMatch::matches_server_name,
-            server_name.unwrap_or(""),
-            filter_chains.keys(),
-            &mut scratchpad,
-            &mut possible_filters,
-        );
-
-        match_subitem(
-            FilterChainMatch::matches_source_ip,
-            source_addr.ip(),
-            filter_chains.keys(),
-            &mut scratchpad,
-            &mut possible_filters,
-        );
-
-        match_subitem(
-            FilterChainMatch::matches_source_port,
-            source_addr.port(),
-            filter_chains.keys(),
-            &mut scratchpad,
-            &mut possible_filters,
-        );
-
-        let mut final_candidates = possible_filters
-            .into_iter()
-            .zip(filter_chains.values()) // values() matches keys() order in the same state
-            .filter_map(|(include, value)| include.then_some(value));
-
-        let first_match = final_candidates.next();
-        if final_candidates.next().is_some() {
-            Err("multiple filterchains matched a single connection. This is a bug in arion!".into())
-        } else {
-            Ok(first_match)
-        }
+        filter_chains.select(connection_metadata, server_name)
     }
 
     #[allow(clippy::too_many_lines)]
     #[allow(clippy::too_many_arguments)]
     async fn process_connection(
         listener_name: InternedStr,
-        filter_chains: Arc<HashMap<FilterChainMatch, FilterchainType>>,
+        filter_chains: Arc<FilterChains<FilterchainType>>,
         with_tls_inspector: bool,
         source: ConnectionSource,
         mut stream: AsyncInstrumentedStream,
@@ -789,7 +690,7 @@ impl Listener {
     // they only need to be updated when they're read after all and could work with
     fn process_secret_update(
         listener_name: &str,
-        filter_chains: &mut HashMap<FilterChainMatch, FilterchainType>,
+        filter_chains: &mut FilterChains<FilterchainType>,
         secret_update: TlsContextChange,
     ) {
         match secret_update {
@@ -820,7 +721,7 @@ impl Listener {
 
     fn process_route_update(
         listener_name: &str,
-        filter_chains: &HashMap<FilterChainMatch, FilterchainType>,
+        filter_chains: &FilterChains<FilterchainType>,
         route_update: RouteConfigurationChange,
     ) {
         match route_update {
@@ -885,7 +786,9 @@ fn configure_and_start_tcp_listener(
 
 #[cfg(test)]
 mod tests {
-    use arion_configuration::config::listener::{FilterChainMatch as FilterChainMatchConfig, ServerNameMatch};
+    use arion_configuration::config::listener::{
+        FilterChainMatch, FilterChainMatch as FilterChainMatchConfig, ServerNameMatch,
+    };
     use arion_data_plane_api::{
         decode::from_yaml, envoy_data_plane_api::envoy::config::listener::v3::FilterChainMatch as EnvoyFilterChainMatch,
     };
@@ -960,12 +863,12 @@ socket_options:
             ),
             (FilterChainMatch::default(), 1),
         ];
-        let hashmap: HashMap<_, _> = fcm.iter().cloned().collect();
+        let filter_chains: FilterChains<_> = fcm.iter().cloned().collect();
         let metadata = DownstreamConnectionMetadata::FromSocket {
             peer_address: (Ipv4Addr::LOCALHOST, 33000).into(),
             local_address: (Ipv4Addr::LOCALHOST, 8443).into(),
         };
-        let selected = Listener::select_filterchain(&hashmap, &metadata, None).unwrap();
+        let selected = Listener::select_filterchain(&filter_chains, &metadata, None).unwrap();
         assert_eq!(selected.copied(), Some(1));
     }
 
@@ -1021,7 +924,7 @@ filter_chains:
         ",
         )
         .unwrap();
-        let m = std::iter::once((m.try_into().unwrap(), ())).collect();
+        let m: FilterChains<_> = std::iter::once((m.try_into().unwrap(), ())).collect();
         let metadata = DownstreamConnectionMetadata::FromSocket {
             peer_address: (Ipv4Addr::LOCALHOST, 3300).into(),
             local_address: (Ipv4Addr::LOCALHOST, 443).into(),
@@ -1049,7 +952,6 @@ filter_chains:
         ",
         )
         .unwrap();
-        //     let listener : Listener = l.try_into().unwrap();
         let m = l
             .filter_chains
             .into_iter()
@@ -1060,7 +962,7 @@ filter_chains:
                     .transpose()
                     .map(|x| (x.unwrap_or_default(), i))
             })
-            .collect::<std::result::Result<HashMap<_, _>, _>>()
+            .collect::<std::result::Result<FilterChains<_>, _>>()
             .unwrap();
         let metadata = DownstreamConnectionMetadata::FromSocket {
             peer_address: (Ipv4Addr::LOCALHOST, 33000).into(),
@@ -1083,5 +985,89 @@ filter_chains:
             Some(2)
         );
         assert_eq!(Listener::select_filterchain(&m, &metadata, Some("hello.world")).unwrap().copied(), Some(3));
+    }
+
+    #[test]
+    fn hierarchy_and_lpm_precedence() {
+        let l: EnvoyListener = from_yaml(
+            "
+        name: listener
+        filter_chains:
+        - filter_chain_match:
+            destination_port: 8443
+            prefix_ranges: [{address_prefix: 10.0.0.0, prefix_len: 8}]
+            server_names: [app.example.com]
+            source_prefix_ranges: [{address_prefix: 192.168.1.0, prefix_len: 24}]
+            source_ports: [5000]
+        - filter_chain_match:
+            destination_port: 8443
+            prefix_ranges: [{address_prefix: 10.1.0.0, prefix_len: 16}]
+            server_names: [app.example.com]
+        - filter_chain_match:
+            destination_port: 8443
+            prefix_ranges: [{address_prefix: 10.0.0.0, prefix_len: 8}]
+            server_names: [app.example.com]
+        - filter_chain_match:
+            destination_port: 8443
+        - filter_chain_match: {}
+        ",
+        )
+        .unwrap();
+        let m = l
+            .filter_chains
+            .into_iter()
+            .enumerate()
+            .map(|(i, fc)| {
+                fc.filter_chain_match
+                    .map(FilterChainMatchConfig::try_from)
+                    .transpose()
+                    .map(|x| (x.unwrap_or_default(), i))
+            })
+            .collect::<std::result::Result<FilterChains<_>, _>>()
+            .unwrap();
+
+        // 10.1.2.3 matches /16 (chain 1) over /8 (chains 0 and 2)
+        let meta_16 = DownstreamConnectionMetadata::FromSocket {
+            peer_address: (Ipv4Addr::new(192, 168, 1, 10), 5000).into(),
+            local_address: (Ipv4Addr::new(10, 1, 2, 3), 8443).into(),
+        };
+        assert_eq!(Listener::select_filterchain(&m, &meta_16, Some("app.example.com")).unwrap().copied(), Some(1));
+
+        // 10.2.2.3 matches /8 (chains 0 and 2), and peer 192.168.1.10:5000 selects chain 0
+        let meta_8_specific_src = DownstreamConnectionMetadata::FromSocket {
+            peer_address: (Ipv4Addr::new(192, 168, 1, 10), 5000).into(),
+            local_address: (Ipv4Addr::new(10, 2, 2, 3), 8443).into(),
+        };
+        assert_eq!(
+            Listener::select_filterchain(&m, &meta_8_specific_src, Some("app.example.com")).unwrap().copied(),
+            Some(0)
+        );
+
+        // 10.2.2.3 matches /8 (chains 0 and 2), peer 192.168.2.10 falls back to chain 2 (no source_prefix_ranges)
+        let meta_8_fallback_src = DownstreamConnectionMetadata::FromSocket {
+            peer_address: (Ipv4Addr::new(192, 168, 2, 10), 5000).into(),
+            local_address: (Ipv4Addr::new(10, 2, 2, 3), 8443).into(),
+        };
+        assert_eq!(
+            Listener::select_filterchain(&m, &meta_8_fallback_src, Some("app.example.com")).unwrap().copied(),
+            Some(2)
+        );
+
+        // Different destination IP on port 8443 falls back to chain 3
+        let meta_port_8443_other_ip = DownstreamConnectionMetadata::FromSocket {
+            peer_address: (Ipv4Addr::LOCALHOST, 5000).into(),
+            local_address: (Ipv4Addr::LOCALHOST, 8443).into(),
+        };
+        assert_eq!(
+            Listener::select_filterchain(&m, &meta_port_8443_other_ip, Some("app.example.com")).unwrap().copied(),
+            Some(3)
+        );
+
+        // Different destination port falls back to chain 4
+        let meta_other_port = DownstreamConnectionMetadata::FromSocket {
+            peer_address: (Ipv4Addr::LOCALHOST, 5000).into(),
+            local_address: (Ipv4Addr::LOCALHOST, 9000).into(),
+        };
+        assert_eq!(Listener::select_filterchain(&m, &meta_other_port, None).unwrap().copied(), Some(4));
     }
 }

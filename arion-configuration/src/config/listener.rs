@@ -194,6 +194,18 @@ pub struct ServerNameMatch {
     match_subdomains: bool,
 }
 
+impl ServerNameMatch {
+    #[must_use]
+    pub fn name(&self) -> &SmolStr {
+        &self.name
+    }
+
+    #[must_use]
+    pub fn match_subdomains(&self) -> bool {
+        self.match_subdomains
+    }
+}
+
 impl FromStr for ServerNameMatch {
     type Err = GenericError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
