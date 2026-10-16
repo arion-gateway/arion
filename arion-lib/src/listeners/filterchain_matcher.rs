@@ -17,7 +17,7 @@ use ahash::AHashMap;
 use arion_configuration::config::listener::FilterChainMatch;
 use ipnet::IpNet;
 use smol_str::SmolStr;
-use std::{collections::BTreeMap, net::IpAddr};
+use std::{collections::BTreeMap, hash::Hash, net::IpAddr};
 use triomphe::Arc;
 
 /// Pre-compiled collection of filter chains and their hierarchical Envoy matcher tree.
@@ -95,6 +95,26 @@ impl<T> FilterChains<T> {
 
 type Candidate<'a> = (usize, &'a FilterChainMatch);
 
+/// Appends `candidate` to `group` if it is not already the last entry, preventing duplicate
+/// rules within the same [`FilterChainMatch`] from appearing as multiple distinct candidates.
+#[inline]
+fn push_unique_candidate<'a>(group: &mut Vec<Candidate<'a>>, candidate: Candidate<'a>) {
+    if group.last().map(|(idx, _)| *idx) != Some(candidate.0) {
+        group.push(candidate);
+    }
+}
+
+/// Compiles each candidate group in `groups` into a next-level matcher node.
+fn build_group_map<'a, K, Next>(
+    groups: AHashMap<K, Vec<Candidate<'a>>>,
+    build_next: fn(&[Candidate<'a>]) -> Option<Next>,
+) -> AHashMap<K, Next>
+where
+    K: Eq + Hash,
+{
+    groups.into_iter().filter_map(|(key, group)| build_next(&group).map(|next| (key, next))).collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MatchLeaf {
     Single(usize),
@@ -166,8 +186,7 @@ impl DestPortMatcher {
 
         let has_exact = candidates.iter().any(|(_, m)| m.destination_port.is_some());
         if !has_exact {
-            return DestIpMatcher::build(candidates, |m| &m.destination_prefix_ranges, ServerNameMatcher::build)
-                .map(Self::WildcardOnly);
+            return DestIpMatcher::build_dest(candidates).map(Self::WildcardOnly);
         }
 
         let mut port_groups: AHashMap<u16, Vec<Candidate<'_>>> = AHashMap::new();
@@ -181,17 +200,8 @@ impl DestPortMatcher {
             }
         }
 
-        let exact = port_groups
-            .into_iter()
-            .filter_map(|(port, group)| {
-                DestIpMatcher::build(&group, |m| &m.destination_prefix_ranges, ServerNameMatcher::build)
-                    .map(|matcher| (port, matcher))
-            })
-            .collect();
-
-        let wildcard =
-            DestIpMatcher::build(&wildcard_candidates, |m| &m.destination_prefix_ranges, ServerNameMatcher::build)
-                .map(Box::new);
+        let exact = build_group_map(port_groups, DestIpMatcher::build_dest);
+        let wildcard = DestIpMatcher::build_dest(&wildcard_candidates).map(Box::new);
 
         Some(Self::WithExact { exact, wildcard })
     }
@@ -234,6 +244,18 @@ const fn ipv6_mask(prefix_len: u8) -> u128 {
     if prefix_len == 0 { 0 } else { u128::MAX << (128 - prefix_len) }
 }
 
+impl DestIpMatcher {
+    fn build_dest(candidates: &[Candidate<'_>]) -> Option<Self> {
+        Self::build(candidates, |m| &m.destination_prefix_ranges, ServerNameMatcher::build)
+    }
+}
+
+impl SourceIpMatcher {
+    fn build_source(candidates: &[Candidate<'_>]) -> Option<Self> {
+        Self::build(candidates, |m| &m.source_prefix_ranges, SourcePortMatcher::build)
+    }
+}
+
 impl<Next> IpMatcher<Next> {
     fn build<'a>(
         candidates: &[Candidate<'a>],
@@ -253,7 +275,7 @@ impl<Next> IpMatcher<Next> {
         let mut v6_groups: BTreeMap<u8, AHashMap<u128, Vec<Candidate<'a>>>> = BTreeMap::new();
         let mut wildcard_candidates: Vec<Candidate<'a>> = Vec::new();
 
-        for &candidate @ (i, m) in candidates {
+        for &candidate @ (_, m) in candidates {
             let ranges = get_ranges(m);
             if ranges.is_empty() {
                 wildcard_candidates.push(candidate);
@@ -267,9 +289,7 @@ impl<Next> IpMatcher<Next> {
                             .or_default()
                             .entry(v4net.network().to_bits())
                             .or_default();
-                        if group.last().map(|(idx, _)| *idx) != Some(i) {
-                            group.push(candidate);
-                        }
+                        push_unique_candidate(group, candidate);
                     },
                     IpNet::V6(v6net) => {
                         let group = v6_groups
@@ -277,9 +297,7 @@ impl<Next> IpMatcher<Next> {
                             .or_default()
                             .entry(v6net.network().to_bits())
                             .or_default();
-                        if group.last().map(|(idx, _)| *idx) != Some(i) {
-                            group.push(candidate);
-                        }
+                        push_unique_candidate(group, candidate);
                     },
                 }
             }
@@ -290,10 +308,7 @@ impl<Next> IpMatcher<Next> {
             .into_iter()
             .rev()
             .filter_map(|(prefix_len, net_map)| {
-                let prefixes: AHashMap<u32, Next> = net_map
-                    .into_iter()
-                    .filter_map(|(net_bits, group)| build_next(&group).map(|next| (net_bits, next)))
-                    .collect();
+                let prefixes = build_group_map(net_map, build_next);
                 (!prefixes.is_empty()).then(|| Ipv4PrefixLevel { mask: ipv4_mask(prefix_len), prefixes })
             })
             .collect();
@@ -302,10 +317,7 @@ impl<Next> IpMatcher<Next> {
             .into_iter()
             .rev()
             .filter_map(|(prefix_len, net_map)| {
-                let prefixes: AHashMap<u128, Next> = net_map
-                    .into_iter()
-                    .filter_map(|(net_bits, group)| build_next(&group).map(|next| (net_bits, next)))
-                    .collect();
+                let prefixes = build_group_map(net_map, build_next);
                 (!prefixes.is_empty()).then(|| Ipv6PrefixLevel { mask: ipv6_mask(prefix_len), prefixes })
             })
             .collect();
@@ -319,27 +331,17 @@ impl<Next> IpMatcher<Next> {
     fn select_next(&self, ip: IpAddr) -> Option<&Next> {
         match self {
             Self::WildcardOnly(next) => Some(next),
-            Self::WithPrefixes { v4, v6, wildcard } => {
-                match ip {
-                    IpAddr::V4(ipv4) => {
-                        let bits = ipv4.to_bits();
-                        for level in v4 {
-                            if let Some(next) = level.prefixes.get(&(bits & level.mask)) {
-                                return Some(next);
-                            }
-                        }
-                    },
-                    IpAddr::V6(ipv6) => {
-                        let bits = ipv6.to_bits();
-                        for level in v6 {
-                            if let Some(next) = level.prefixes.get(&(bits & level.mask)) {
-                                return Some(next);
-                            }
-                        }
-                    },
-                }
-                wildcard.as_deref()
-            },
+            Self::WithPrefixes { v4, v6, wildcard } => match ip {
+                IpAddr::V4(ipv4) => {
+                    let bits = ipv4.to_bits();
+                    v4.iter().find_map(|level| level.prefixes.get(&(bits & level.mask)))
+                },
+                IpAddr::V6(ipv6) => {
+                    let bits = ipv6.to_bits();
+                    v6.iter().find_map(|level| level.prefixes.get(&(bits & level.mask)))
+                },
+            }
+            .or(wildcard.as_deref()),
         }
     }
 }
@@ -363,51 +365,28 @@ impl ServerNameMatcher {
 
         let has_rules = candidates.iter().any(|(_, m)| !m.server_names.is_empty());
         if !has_rules {
-            return SourceIpMatcher::build(candidates, |m| &m.source_prefix_ranges, SourcePortMatcher::build)
-                .map(Self::WildcardOnly);
+            return SourceIpMatcher::build_source(candidates).map(Self::WildcardOnly);
         }
 
         let mut exact_groups: AHashMap<SmolStr, Vec<Candidate<'_>>> = AHashMap::new();
         let mut wildcard_groups: AHashMap<SmolStr, Vec<Candidate<'_>>> = AHashMap::new();
         let mut fallback_candidates: Vec<Candidate<'_>> = Vec::new();
 
-        for &candidate @ (i, m) in candidates {
+        for &candidate @ (_, m) in candidates {
             let server_names = &m.server_names;
             if server_names.is_empty() {
                 fallback_candidates.push(candidate);
                 continue;
             }
             for sn in server_names {
-                let group = if sn.match_subdomains() {
-                    wildcard_groups.entry(sn.name().clone()).or_default()
-                } else {
-                    exact_groups.entry(sn.name().clone()).or_default()
-                };
-                if group.last().map(|(idx, _)| *idx) != Some(i) {
-                    group.push(candidate);
-                }
+                let groups = if sn.match_subdomains() { &mut wildcard_groups } else { &mut exact_groups };
+                push_unique_candidate(groups.entry(sn.name().clone()).or_default(), candidate);
             }
         }
 
-        let exact = exact_groups
-            .into_iter()
-            .filter_map(|(name, group)| {
-                SourceIpMatcher::build(&group, |m| &m.source_prefix_ranges, SourcePortMatcher::build)
-                    .map(|next| (name, next))
-            })
-            .collect();
-
-        let wildcard_suffixes = wildcard_groups
-            .into_iter()
-            .filter_map(|(suffix, group)| {
-                SourceIpMatcher::build(&group, |m| &m.source_prefix_ranges, SourcePortMatcher::build)
-                    .map(|next| (suffix, next))
-            })
-            .collect();
-
-        let fallback =
-            SourceIpMatcher::build(&fallback_candidates, |m| &m.source_prefix_ranges, SourcePortMatcher::build)
-                .map(Box::new);
+        let exact = build_group_map(exact_groups, SourceIpMatcher::build_source);
+        let wildcard_suffixes = build_group_map(wildcard_groups, SourceIpMatcher::build_source);
+        let fallback = SourceIpMatcher::build_source(&fallback_candidates).map(Box::new);
 
         Some(Self::WithRules { exact, wildcard_suffixes, fallback })
     }
@@ -424,15 +403,12 @@ impl ServerNameMatcher {
                 // 2. Subdomain wildcard match (e.g. ".more.specific" then ".specific")
                 // Scanning dots from left to right checks suffixes from longest (fewest wildcard labels)
                 // to shortest (most wildcard labels).
-                if !wildcard_suffixes.is_empty() {
-                    for (idx, byte) in server_name.bytes().enumerate() {
-                        if byte == b'.'
-                            && let Some(suffix) = server_name.get(idx..)
-                            && let Some(next) = wildcard_suffixes.get(suffix)
-                        {
-                            return Some(next);
-                        }
-                    }
+                if !wildcard_suffixes.is_empty()
+                    && let Some(next) = server_name
+                        .match_indices('.')
+                        .find_map(|(idx, _)| server_name.get(idx..).and_then(|suffix| wildcard_suffixes.get(suffix)))
+                {
+                    return Some(next);
                 }
                 // 3. Fallback (NoRule)
                 fallback.as_deref()
@@ -462,25 +438,18 @@ impl SourcePortMatcher {
         let mut port_groups: AHashMap<u16, Vec<Candidate<'_>>> = AHashMap::new();
         let mut wildcard_candidates: Vec<Candidate<'_>> = Vec::new();
 
-        for &candidate @ (i, m) in candidates {
+        for &candidate @ (_, m) in candidates {
             let ports = &m.source_ports;
             if ports.is_empty() {
                 wildcard_candidates.push(candidate);
                 continue;
             }
             for &port in ports {
-                let group = port_groups.entry(port).or_default();
-                if group.last().map(|(idx, _)| *idx) != Some(i) {
-                    group.push(candidate);
-                }
+                push_unique_candidate(port_groups.entry(port).or_default(), candidate);
             }
         }
 
-        let exact = port_groups
-            .into_iter()
-            .filter_map(|(port, group)| MatchLeaf::from_candidates(&group).map(|leaf| (port, leaf)))
-            .collect();
-
+        let exact = build_group_map(port_groups, MatchLeaf::from_candidates);
         let wildcard = MatchLeaf::from_candidates(&wildcard_candidates);
 
         Some(Self::WithExact { exact, wildcard })
