@@ -19,6 +19,7 @@
 //
 
 pub(crate) mod filterchain;
+pub(crate) mod filterchain_matcher;
 pub(crate) mod http_connection_manager;
 pub(crate) mod http_filters;
 pub mod internal_registry;
