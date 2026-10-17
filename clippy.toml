@@ -10,3 +10,4 @@ allow-print-in-tests = true
 allow-unwrap-in-tests = true
 allow-panic-in-tests = true
 check-private-items = false
+allow-indexing-slicing-in-tests = true

@@ -388,7 +388,7 @@ route_config:
 
         let vh = route_config.virtual_hosts.first().unwrap();
         let ext_proc_runs = |route_idx: usize| {
-            let route = vh.routes.get(route_idx).unwrap();
+            let route = &vh.routes[route_idx];
             let filters = compile_route_http_filters(route, &hcm_filters);
             filters
                 .first()

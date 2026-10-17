@@ -2685,6 +2685,7 @@ mod tests {
         ];
 
         // Iterate over all 2^9 = 512 subsets of rules!
+        #[allow(clippy::filter_map_bool_then)]
         for mask in 0..(1usize << archetypes.len()) {
             let vhs: Vec<VirtualHost> = archetypes
                 .iter()
@@ -2825,6 +2826,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_header_mutations_cartesian_all_8_level_combinations_and_precedence() {
         let make_overwrite = |key: &'static str, val: &str| {
             HeaderModifiersAdd(vec![HeaderValueOption {
@@ -2921,8 +2923,8 @@ mod tests {
                 {
                     let cached = state.match_request_route(&req).unwrap();
                     apply_mutations_on_request(&mut req, &state, &cached, most_specific_wins, &conn);
-                    apply_mutations_on_response(&mut resp, &state, &cached, most_specific_wins, &conn);
-                }
+                    apply_mutations_on_response(&mut resp, &state, &cached, most_specific_wins, &conn)
+                };
 
                 let expected = if most_specific_wins {
                     if route_has {
