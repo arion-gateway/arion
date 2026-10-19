@@ -129,7 +129,10 @@ pub struct Session {
     pub session_id: SessionId,
     pub session_id_header: HeaderValue,
     pub last_activity: AtomicInstant,
-    pub mcp_upstreams: PapayaMap<InternedStr, StdArc<McpUpstreamClient>, ahash::RandomState>,
+    /// Keyed by `(cluster, path)`: two upstream MCP servers can share the same request path
+    /// (e.g. "/mcp"), so the cluster name must be part of the key to avoid reusing a client
+    /// connected to the wrong upstream.
+    pub mcp_upstreams: PapayaMap<(InternedStr, InternedStr), StdArc<McpUpstreamClient>, ahash::RandomState>,
     pub prompt: Mutex<Option<String>>,
     pub active_tools: PapayaSet<SmolStr, ahash::RandomState>,
 }

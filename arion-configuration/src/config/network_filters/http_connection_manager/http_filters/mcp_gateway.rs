@@ -66,8 +66,8 @@ pub struct DynamicMcpServer {
     pub name: SmolStr,
     pub description: String,
     pub transport: McpBackendTransportUpstream,
-    pub url: String,
-    /// Cluster used to reach the MCP server (endpoints, TLS, HTTP/1 or HTTP/2).
+    pub path: String,
+    /// Cluster used to reach the MCP server (endpoints, TLS, HTTP/1 or HTTP/2, Host/:authority).
     pub cluster: SmolStr,
     pub cache_duration: Option<Duration>,
     pub rbac: Option<McpToolRbac>,
@@ -145,8 +145,8 @@ pub enum UpstreamBackend {
     },
     McpServer {
         transport: McpBackendTransportUpstream,
-        url: String,
-        /// Cluster used to reach the MCP server (endpoints, TLS, HTTP/1 or HTTP/2).
+        path: String,
+        /// Cluster used to reach the MCP server (endpoints, TLS, HTTP/1 or HTTP/2, Host/:authority).
         cluster: SmolStr,
     },
 }
@@ -352,12 +352,12 @@ mod envoy_conversions {
         type Error = GenericError;
         fn try_from(arion: ArionDynamicMcpServer) -> Result<Self, Self::Error> {
             let transport = arion.transport().into();
-            let ArionDynamicMcpServer { name, description, url, cluster, cache_duration, rbac, .. } = arion;
+            let ArionDynamicMcpServer { name, description, path, cluster, cache_duration, rbac, .. } = arion;
             if name.is_empty() {
                 return Err(GenericError::from_msg("DynamicMcpServer.name must not be empty"));
             }
-            if url.is_empty() {
-                return Err(GenericError::from_msg("DynamicMcpServer.url must not be empty"));
+            if path.is_empty() {
+                return Err(GenericError::from_msg("DynamicMcpServer.path must not be empty"));
             }
             if cluster.is_empty() {
                 return Err(GenericError::from_msg("DynamicMcpServer.cluster must not be empty"));
@@ -373,7 +373,7 @@ mod envoy_conversions {
                 name: name.into(),
                 description,
                 transport,
-                url,
+                path,
                 cluster: cluster.into(),
                 cache_duration,
                 rbac: rbac.map(TryInto::try_into).transpose()?,
@@ -480,15 +480,15 @@ mod envoy_conversions {
                     })
                 },
                 ArionUpstreamBackend::McpServerBackend(be) => {
-                    if be.url.is_empty() {
-                        return Err(GenericError::from_msg("McpServerBackend.url must not be empty"));
+                    if be.path.is_empty() {
+                        return Err(GenericError::from_msg("McpServerBackend.path must not be empty"));
                     }
                     if be.cluster.is_empty() {
                         return Err(GenericError::from_msg("McpServerBackend.cluster must not be empty"));
                     }
                     Ok(UpstreamBackend::McpServer {
                         transport: be.transport().into(),
-                        url: be.url,
+                        path: be.path,
                         cluster: be.cluster.into(),
                     })
                 },

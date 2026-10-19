@@ -306,14 +306,14 @@ pub struct McpServerBackendBuilder {
 }
 
 impl McpServerBackendBuilder {
-    /// `cluster` is the Arion cluster used to reach the MCP server (endpoints, TLS, h1/h2);
-    /// `url` provides the request path.
+    /// `cluster` is the Arion cluster used to reach the MCP server (endpoints, TLS, h1/h2,
+    /// Host/:authority); `path` is the request path (and query) sent upstream.
     #[must_use]
-    pub fn new(cluster: impl Into<String>, url: impl Into<String>) -> Self {
+    pub fn new(cluster: impl Into<String>, path: impl Into<String>) -> Self {
         Self {
             proto: McpServerBackend {
                 transport: McpTransport::StreamableHttp.to_proto(),
-                url: url.into(),
+                path: path.into(),
                 cluster: cluster.into(),
             },
         }
@@ -359,21 +359,21 @@ pub struct DynamicMcpServerBuilder {
 }
 
 impl DynamicMcpServerBuilder {
-    /// `cluster` is the Arion cluster used to reach the MCP server (endpoints, TLS, h1/h2);
-    /// `url` provides the request path.
+    /// `cluster` is the Arion cluster used to reach the MCP server (endpoints, TLS, h1/h2,
+    /// Host/:authority); `path` is the request path (and query) sent upstream.
     #[must_use]
     pub fn new(
         name: impl Into<String>,
         description: impl Into<String>,
         cluster: impl Into<String>,
-        url: impl Into<String>,
+        path: impl Into<String>,
     ) -> Self {
         Self {
             proto: DynamicMcpServer {
                 name: name.into(),
                 description: description.into(),
                 transport: McpTransport::StreamableHttp.to_proto(),
-                url: url.into(),
+                path: path.into(),
                 cluster: cluster.into(),
                 ..Default::default()
             },

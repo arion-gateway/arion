@@ -17,7 +17,8 @@
 //!
 //! Every request goes through the `HttpChannel` of the configured cluster, so endpoints, TLS
 //! context, HTTP/1 or HTTP/2 codec, connection pools and circuit breaker all come from the cluster
-//! configuration. The MCP `url` only provides the request path (and query).
+//! configuration. The MCP `path` only provides the request path (and query); the Host/:authority
+//! header is resolved from the cluster's endpoint on every request (same source TLS SNI uses).
 //!
 //! [`McpUpstreamClient`] executes all MCP client operations (`initialize`, `tools/call`,
 //! `tools/list`, `prompts/*`, `resources/*`, `ping`, notifications, etc.) directly in the caller's
@@ -38,7 +39,6 @@ use futures::{Stream, StreamExt, stream::BoxStream};
 use http::{
     HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri,
     header::{ACCEPT, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HOST, WWW_AUTHENTICATE},
-    uri::Scheme,
 };
 use http_body_util::{BodyExt, Empty, Full};
 use pin_project::pin_project;
@@ -97,13 +97,19 @@ const JSON_RPC_BODY_PREVIEW_LEN: usize = 256;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum UpstreamClientError {
-    #[error("invalid MCP upstream url '{url}': {reason}")]
-    InvalidUrl { url: String, reason: String },
+    #[error("invalid MCP upstream path '{path}': {reason}")]
+    InvalidPath { path: String, reason: String },
     #[error("cluster '{cluster}' unavailable: {source}")]
     Cluster {
         cluster: InternedStr,
         #[source]
         source: Box<crate::Error>,
+    },
+    #[error("invalid upstream authority resolved from cluster '{cluster}': {source}")]
+    InvalidAuthority {
+        cluster: InternedStr,
+        #[source]
+        source: http::header::InvalidHeaderValue,
     },
     #[error("upstream request failed: {0}")]
     Upstream(#[source] Box<crate::Error>),
@@ -120,34 +126,29 @@ type ClientError = StreamableHttpError<UpstreamClientError>;
 /// `StreamableHttpClient` sending MCP traffic through the `HttpChannel` of a cluster.
 ///
 /// The client is bound to a single endpoint: the `uri` argument of the trait methods is
-/// ignored in favor of the target parsed once at construction. The `Host` header is taken from
-/// the MCP url; `HttpChannel::send_request` rewrites it into `:authority` for HTTP/2.
+/// ignored in favor of the target parsed once at construction. The `Host` header is resolved
+/// from the cluster's endpoint authority on every request (see `send`), not from configuration,
+/// because the selected endpoint is only known after resolving the upstream channel.
+/// `HttpChannel::send_request` rewrites it into `:authority` for HTTP/2.
 #[derive(Clone, Debug)]
 pub(crate) struct McpHttpClient {
     cluster_id: InternedStr,
-    host_header: HeaderValue,
     target: Uri,
     #[cfg(feature = "instrumentation")]
     clock: quanta::Clock,
 }
 
 impl McpHttpClient {
-    pub(crate) fn try_new(cluster: &str, url: &str) -> Result<Self, UpstreamClientError> {
-        let invalid = |reason: String| UpstreamClientError::InvalidUrl { url: url.to_owned(), reason };
+    pub(crate) fn try_new(cluster: &str, path: &str) -> Result<Self, UpstreamClientError> {
+        let invalid = |reason: String| UpstreamClientError::InvalidPath { path: path.to_owned(), reason };
 
-        let uri = Uri::from_str(url).map_err(|e| invalid(e.to_string()))?;
-        let parts = uri.into_parts();
-        match parts.scheme {
-            Some(ref s) if *s == Scheme::HTTPS || *s == Scheme::HTTP => {},
-            _ => return Err(invalid("scheme must be http or https".to_owned())),
+        let target = Uri::from_str(path).map_err(|e| invalid(e.to_string()))?;
+        if target.scheme().is_some() || target.authority().is_some() {
+            return Err(invalid("must be a request path, not an absolute URL".to_owned()));
         }
-        let authority = parts.authority.ok_or_else(|| invalid("missing host".to_owned()))?;
-        let host_header = HeaderValue::from_str(authority.as_str()).map_err(|e| invalid(e.to_string()))?;
-        let target = parts.path_and_query.map_or(Uri::from_static("/"), Uri::from);
 
         Ok(Self {
             cluster_id: cluster.to_interned_str(),
-            host_header,
             target,
             #[cfg(feature = "instrumentation")]
             clock: quanta::Clock::new(),
@@ -169,8 +170,7 @@ impl McpHttpClient {
         *request.uri_mut() = self.target.clone();
 
         let headers = request.headers_mut();
-        headers.reserve(5);
-        headers.insert(HOST, self.host_header.clone());
+        headers.reserve(4);
         headers.insert(ACCEPT, ACCEPT_EVENT_STREAM_AND_JSON);
         headers.insert(CONTENT_TYPE, CONTENT_TYPE_JSON);
         if let Some(pv) = protocol_version {
@@ -199,8 +199,7 @@ impl McpHttpClient {
         *request.uri_mut() = self.target.clone();
 
         let headers = request.headers_mut();
-        headers.reserve(custom_headers.len() + 5);
-        headers.insert(HOST, self.host_header.clone());
+        headers.reserve(custom_headers.len() + 4);
         if accept {
             headers.insert(ACCEPT, ACCEPT_EVENT_STREAM_AND_JSON);
         }
@@ -234,10 +233,18 @@ impl McpHttpClient {
 
     /// Resolve the cluster channel and send. The cluster lookup happens on every call: the
     /// cluster map is thread-local and may be replaced by xDS updates while the client lives.
-    async fn send(&self, request: Request<ArionRequestBody>) -> Result<Response<ArionResponseBody>, ClientError> {
+    ///
+    /// The `Host` header is set here from the resolved channel's endpoint authority (the same
+    /// source used for TLS SNI), since the selected endpoint is only known after resolving the
+    /// channel.
+    async fn send(&self, mut request: Request<ArionRequestBody>) -> Result<Response<ArionResponseBody>, ClientError> {
         let channels = clusters_manager::get_http_connection(&self.cluster_id, RoutingContext::None).map_err(|e| {
             StreamableHttpError::Client(UpstreamClientError::Cluster { cluster: self.cluster_id, source: Box::new(e) })
         })?;
+        let host = HeaderValue::from_str(channels.upstream_authority().as_str()).map_err(|source| {
+            StreamableHttpError::Client(UpstreamClientError::InvalidAuthority { cluster: self.cluster_id, source })
+        })?;
+        request.headers_mut().insert(HOST, host);
         channels
             .channel()
             .send_request(
@@ -438,14 +445,14 @@ enum SseFrameAction<R> {
 }
 
 impl McpUpstreamClient {
-    /// Connect to the upstream MCP server at `(cluster, url)` and perform the `initialize` +
+    /// Connect to the upstream MCP server at `(cluster, path)` and perform the `initialize` +
     /// `notifications/initialized` handshake directly in the current task.
     pub(crate) async fn connect(
         cluster: &str,
-        url: &str,
+        path: &str,
         client_info: InitializeRequestParams,
     ) -> Result<Self, Box<ClientInitializeError>> {
-        let http = McpHttpClient::try_new(cluster, url).map_err(|err| {
+        let http = McpHttpClient::try_new(cluster, path).map_err(|err| {
             Box::new(ClientInitializeError::TransportError {
                 error: DynamicTransportError::from_parts(
                     "arion-cluster",
@@ -1821,29 +1828,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn try_new_accepts_plain_and_tls_urls() {
-        McpHttpClient::try_new("c", "http://127.0.0.1:9000/mcp").unwrap();
-        McpHttpClient::try_new("c", "https://example.com/mcp?x=1").unwrap();
+    fn try_new_accepts_bare_paths() {
+        McpHttpClient::try_new("c", "/mcp").unwrap();
+        McpHttpClient::try_new("c", "/mcp?x=1").unwrap();
     }
 
     #[test]
-    fn try_new_rejects_unsupported_scheme_and_missing_host() {
+    fn try_new_rejects_absolute_urls() {
+        assert!(matches!(
+            McpHttpClient::try_new("c", "http://127.0.0.1:9000/mcp"),
+            Err(UpstreamClientError::InvalidPath { .. })
+        ));
+        assert!(matches!(
+            McpHttpClient::try_new("c", "https://example.com/mcp?x=1"),
+            Err(UpstreamClientError::InvalidPath { .. })
+        ));
         assert!(matches!(
             McpHttpClient::try_new("c", "ftp://example.com/mcp"),
-            Err(UpstreamClientError::InvalidUrl { .. })
+            Err(UpstreamClientError::InvalidPath { .. })
         ));
-        assert!(matches!(McpHttpClient::try_new("c", "/mcp"), Err(UpstreamClientError::InvalidUrl { .. })));
     }
 
     #[test]
-    fn try_new_keeps_path_and_query_and_host_header() {
-        let client = McpHttpClient::try_new("c", "http://127.0.0.1:9000/mcp?x=1").unwrap();
+    fn try_new_keeps_path_and_query() {
+        let client = McpHttpClient::try_new("c", "/mcp?x=1").unwrap();
         assert_eq!(client.target.to_string(), "/mcp?x=1");
-        assert_eq!(client.host_header, "127.0.0.1:9000");
         assert_eq!(client.cluster_id.as_str(), "c");
-        let client = McpHttpClient::try_new("c", "http://localhost").unwrap();
-        assert_eq!(client.target.to_string(), "/");
-        assert_eq!(client.host_header, "localhost");
     }
 
     #[test]
@@ -2062,11 +2072,11 @@ load_assignment:
         async fn run_list_tools_scenario(cluster: &str, http2: bool) {
             let (addr, stats) = spawn_fake_mcp_server().await;
             register_static_cluster(cluster, addr, http2);
-            let url = format!("http://{addr}/mcp");
 
             let info = ClientConfig::new(ClientCapabilities::default(), Implementation::new("test", "0.1.0"));
-            let client =
-                McpUpstreamClient::connect(cluster, &url, info).await.expect("initialize must succeed through cluster");
+            let client = McpUpstreamClient::connect(cluster, "/mcp", info)
+                .await
+                .expect("initialize must succeed through cluster");
 
             for _ in 0..3 {
                 let tools = client.list_tools(Option::default()).await.expect("tools/list must succeed");

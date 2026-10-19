@@ -148,10 +148,11 @@ envoy_bootstrap:
                           # --- tools served by an upstream MCP server ---
                           # Pinned by name rather than discovered: the gateway
                           # reaches the upstream through `cluster` (endpoints,
-                          # TLS and HTTP/1 or HTTP/2 come from the cluster; `url`
-                          # only provides the path and Host header) and sends
-                          # `name` upstream verbatim in tools/call, so it must
-                          # match the upstream tool name exactly. Set `transport` explicitly, the proto
+                          # TLS, HTTP/1 or HTTP/2 and the Host/:authority header
+                          # all come from the cluster; `path` only provides the
+                          # request path and query) and sends `name` upstream
+                          # verbatim in tools/call, so it must match the
+                          # upstream tool name exactly. Set `transport` explicitly, the proto
                           # default is Sse and only StreamableHttp is
                           # implemented. Schemas are optional here: omitted,
                           # tools/list advertises an empty input schema;
@@ -164,13 +165,13 @@ envoy_bootstrap:
                             description: "Echo back the supplied message"
                             mcp_server_backend:
                               transport: StreamableHttp
-                              url: http://127.0.0.1:3001/mcp
+                              path: /mcp
                               cluster: mcp_upstream_cluster
                           - name: "add"
                             description: "Add two numbers"
                             mcp_server_backend:
                               transport: StreamableHttp
-                              url: http://127.0.0.1:3001/mcp
+                              path: /mcp
                               cluster: mcp_upstream_cluster
                         # Upstream MCP servers whose tools are discovered at
                         # runtime. Each server materialises one registry entry
@@ -179,7 +180,7 @@ envoy_bootstrap:
                           - name: "everything"
                             description: "everything mcp server"
                             transport: StreamableHttp
-                            url: http://127.0.0.1:3001/mcp
+                            path: /mcp
                             cluster: mcp_upstream_cluster
                             cache_duration: 10s
                         # Uncomment to bind this filter to an xDS Tool Discovery

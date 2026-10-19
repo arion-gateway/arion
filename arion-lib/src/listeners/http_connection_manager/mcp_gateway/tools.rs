@@ -68,11 +68,12 @@ const DYNAMIC_TOOL_SEPARATOR: &str = "__";
 const INDEFINITE_CACHE_LIFETIME: Duration = Duration::from_secs(100 * 365 * 24 * 3600);
 
 const SEMANTIC_SEARCH_TOOL_NAME: &str = "semantic_search";
-/// Build the upstream MCP HTTP client for `url`, sending through the `HttpChannel` of `cluster`
-/// (endpoints, TLS, HTTP/1 or HTTP/2 and connection pools come from the cluster).
+/// Build the upstream MCP HTTP client for `path`, sending through the `HttpChannel` of `cluster`
+/// (endpoints, TLS, HTTP/1 or HTTP/2, connection pools and the Host/:authority header all come
+/// from the cluster).
 #[cfg(test)]
-fn upstream_http_client(cluster: &str, url: &str) -> Result<McpHttpClient, Box<ClientInitializeError>> {
-    McpHttpClient::try_new(cluster, url).map_err(|err| {
+fn upstream_http_client(cluster: &str, path: &str) -> Result<McpHttpClient, Box<ClientInitializeError>> {
+    McpHttpClient::try_new(cluster, path).map_err(|err| {
         Box::new(ClientInitializeError::TransportError {
             error: DynamicTransportError::from_parts(
                 "arion-cluster",
@@ -618,8 +619,8 @@ impl ToolsRegistry {
     async fn fetch_dynamic_server_tools(server: &DynamicMcpServerEntry) -> Result<Vec<ToolEntry>, ListToolsError> {
         let server_name = &server.conf.name;
         let upstream_tools =
-            Self::list_upstream_tools(&server.conf.transport, &server.conf.cluster, &server.conf.url).await?;
-        let upstream_target = server.conf.url.to_interned_str();
+            Self::list_upstream_tools(&server.conf.transport, &server.conf.cluster, &server.conf.path).await?;
+        let upstream_target = server.conf.path.to_interned_str();
 
         let entries = upstream_tools
             .into_iter()
@@ -638,7 +639,7 @@ impl ToolsRegistry {
                     output_schema: serde_json::Map::new(),
                     backend: UpstreamBackend::McpServer {
                         transport: server.conf.transport.clone(),
-                        url: server.conf.url.clone(),
+                        path: server.conf.path.clone(),
                         cluster: server.conf.cluster.clone(),
                     },
                     rbac: server.conf.rbac.clone(),
@@ -674,12 +675,12 @@ impl ToolsRegistry {
     async fn list_upstream_tools(
         transport: &McpBackendTransportUpstream,
         cluster: &str,
-        url: &str,
+        path: &str,
     ) -> Result<Vec<Tool>, ListToolsError> {
-        debug!(target: "mcp_gateway", "Listing tools from upstream with transport {transport:?} at {url} (cluster {cluster})");
+        debug!(target: "mcp_gateway", "Listing tools from upstream with transport {transport:?} at {path} (cluster {cluster})");
         match transport {
             McpBackendTransportUpstream::StreamableHttp => {
-                let client = Self::get_mcp_client(cluster, url).await?;
+                let client = Self::get_mcp_client(cluster, path).await?;
                 let tools = client.list_tools(Option::default()).await?;
                 Ok(tools.tools)
             },
@@ -687,11 +688,11 @@ impl ToolsRegistry {
         }
     }
 
-    async fn get_mcp_client(cluster: &str, url: &str) -> Result<McpUpstreamClient, Box<ClientInitializeError>> {
-        debug!(target: "mcp_gateway", "Creating MCP client for URL: {url} (cluster {cluster})...");
+    async fn get_mcp_client(cluster: &str, path: &str) -> Result<McpUpstreamClient, Box<ClientInitializeError>> {
+        debug!(target: "mcp_gateway", "Creating MCP client for path: {path} (cluster {cluster})...");
         let client_info =
             ClientConfig::new(ClientCapabilities::default(), Implementation::new(DEFAULT_USER_AGENT, "0.1.0"));
-        McpUpstreamClient::connect(cluster, url, client_info).await.inspect_err(|e| {
+        McpUpstreamClient::connect(cluster, path, client_info).await.inspect_err(|e| {
             info!(target: "mcp_gateway", "get_mcp_client error: {}!", e);
         })
     }
@@ -908,9 +909,11 @@ impl ToolsRegistry {
                 let (bytes, _) = upstream::serialize_json_rpc_response(&rpc.id, &outcome.into_call_tool_result())?;
                 Ok(MessageResult::JsonRpcResponse(bytes))
             },
-            (UpstreamBackend::McpServer { url, cluster, .. }, TranscoderType::NoTranscoder) => {
+            (UpstreamBackend::McpServer { path, cluster, .. }, TranscoderType::NoTranscoder) => {
                 let upstream_tool_name = entry.upstream_tool_name.as_ref();
-                let upstream_key = entry.upstream_target;
+                // Keyed by (cluster, path): path alone is not enough to tell two different
+                // upstream MCP servers apart (many of them mount at the same conventional path).
+                let upstream_key = (cluster.to_interned_str(), path.to_interned_str());
                 let arguments = rpc.request.params.get("arguments").and_then(Value::as_object);
 
                 let invocation = async {
@@ -918,7 +921,7 @@ impl ToolsRegistry {
                     let client = if let Some(client) = cached {
                         client
                     } else {
-                        let new_client = StdArc::new(Self::get_mcp_client(cluster, url).await?);
+                        let new_client = StdArc::new(Self::get_mcp_client(cluster, path).await?);
                         StdArc::clone(session.mcp_upstreams.pin().get_or_insert_with(upstream_key, || new_client))
                     };
 
@@ -926,7 +929,7 @@ impl ToolsRegistry {
                         Ok(result) => Ok::<_, CallToolError>(result),
                         Err(err) => {
                             if matches!(&err, ServiceError::TransportSend(_) | ServiceError::TransportClosed) {
-                                info!(target: "mcp_gateway", "removing MCP client for URL {url} due to transport error!");
+                                info!(target: "mcp_gateway", "removing MCP client for path {path} (cluster {cluster}) due to transport error!");
                                 session.mcp_upstreams.pin().remove(&upstream_key);
                             }
                             Err(CallToolError::ServiceError(Box::new(err)))
@@ -935,7 +938,7 @@ impl ToolsRegistry {
                 };
 
                 let started = Instant::now();
-                let mut span = req_ctx.begin_upstream_span(url);
+                let mut span = req_ctx.begin_upstream_span(path);
                 span.set_attributes([
                     KeyValue::new("mcp.tool.name", entry.interned_name.as_str()),
                     KeyValue::new("mcp.backend", "mcp_server"),
@@ -1033,7 +1036,7 @@ fn build_tool_entry(tool_conf: McpTool, source: ToolSource) -> Result<ToolEntry,
             cluster.to_interned_str(),
             upstream_policy.authority.as_ref().map(|authority| http::HeaderValue::from_str(authority.as_str())),
         ),
-        UpstreamBackend::McpServer { url, .. } => (TranscoderType::NoTranscoder, url.to_interned_str(), None),
+        UpstreamBackend::McpServer { path, .. } => (TranscoderType::NoTranscoder, path.to_interned_str(), None),
     };
     let embedding = {
         let supplied = tool_conf.embedding.as_slice();
@@ -1437,7 +1440,7 @@ mod tests {
             output_schema: serde_json::Map::new(),
             backend: UpstreamBackend::McpServer {
                 transport: McpBackendTransportUpstream::StreamableHttp,
-                url: "http://localhost/mcp".into(),
+                path: "/mcp".into(),
                 cluster: "mcp".into(),
             },
             rbac: None,
@@ -1471,7 +1474,7 @@ mod tests {
             name: "srv".into(),
             description: String::new(),
             transport: McpBackendTransportUpstream::StreamableHttp,
-            url: "http://localhost/mcp".into(),
+            path: "/mcp".into(),
             cluster: "mcp".into(),
             cache_duration: None,
             rbac: None,
@@ -1487,7 +1490,7 @@ mod tests {
                 output_schema: serde_json::Map::new(),
                 backend: UpstreamBackend::McpServer {
                     transport: McpBackendTransportUpstream::StreamableHttp,
-                    url: "http://localhost/mcp".into(),
+                    path: "/mcp".into(),
                     cluster: "mcp".into(),
                 },
                 rbac: None,
@@ -1796,12 +1799,12 @@ mod tests {
 
     #[test]
     fn test_upstream_http_client_initialization() {
-        upstream_http_client("mcp", "http://127.0.0.1:9/mcp").expect("valid url must build a client");
+        upstream_http_client("mcp", "/mcp").expect("valid path must build a client");
     }
 
     #[test]
-    fn test_upstream_http_client_rejects_invalid_url() {
-        assert!(upstream_http_client("mcp", "not a url").is_err());
-        assert!(upstream_http_client("mcp", "ftp://example.com/mcp").is_err());
+    fn test_upstream_http_client_rejects_invalid_path() {
+        assert!(upstream_http_client("mcp", "not a path").is_err());
+        assert!(upstream_http_client("mcp", "http://example.com/mcp").is_err());
     }
 }
