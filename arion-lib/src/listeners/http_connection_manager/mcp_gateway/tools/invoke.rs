@@ -89,7 +89,6 @@ impl ToolsRegistry {
         match &entry.backend {
             ToolBackend::Rest(backend) => backend.invoke(&entry, arguments, cx).await,
             ToolBackend::McpServer(backend) => invoke_mcp_server(&entry, backend, &arguments, cx).await,
-            ToolBackend::FunctionGraph => Err(CallToolError::FunctionGraphNotImplemented),
         }
     }
 }

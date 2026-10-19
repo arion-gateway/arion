@@ -80,7 +80,6 @@ message Tool {
     envoy.config.core.v3.DataSource output_schema = 5;
     oneof upstream_backend {
         RestBackend rest_backend = 6;
-        FunctionGraphBackend function_graph_backend = 7;
         McpServerBackend mcp_server_backend = 8;
     };
     optional ToolRbac rbac = 9;
@@ -117,9 +116,6 @@ message HttpUpstreamPolicy {
 message QueryParam {
   string name = 1;
   string source = 2;
-}
-
-message FunctionGraphBackend {
 }
 
 message McpServerBackend {

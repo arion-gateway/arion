@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use arion_data_plane_api::envoy_data_plane_api::{
     arion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        CodeMode, DisclosureMode, DynamicMcpServer, FunctionGraphBackend, HttpUpstreamPolicy, JwtClaimMatcher,
+        CodeMode, DisclosureMode, DynamicMcpServer, HttpUpstreamPolicy, JwtClaimMatcher,
         JwtHeaderMatcher, McpGateway, McpServerBackend, OpenApiToolSource, Permission, QueryParam, RemoteEmbeddings,
         RestBackend, ServerInfo, TdsSpecifier, Tool, ToolRbac, ToolSearch, Toolkit, ToolkitToolRef, ToolsMode,
         mcp_gateway, mcp_server_backend, permission::PermissionType, rest_backend, tool, tool_rbac,
@@ -215,12 +215,6 @@ impl McpToolBuilder {
     #[must_use]
     pub fn mcp_server_backend(mut self, backend: impl Into<McpServerBackend>) -> Self {
         self.proto.upstream_backend = Some(tool::UpstreamBackend::McpServerBackend(backend.into()));
-        self
-    }
-
-    #[must_use]
-    pub fn function_graph_backend(mut self) -> Self {
-        self.proto.upstream_backend = Some(tool::UpstreamBackend::FunctionGraphBackend(FunctionGraphBackend {}));
         self
     }
 
