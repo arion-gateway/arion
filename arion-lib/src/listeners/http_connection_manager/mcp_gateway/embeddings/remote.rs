@@ -20,7 +20,7 @@ use std::time::Duration;
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::RemoteEmbeddings;
 use arion_interner::{InternedStr, StringInterner};
 use bytes::Bytes;
-use http::{Method, Request, header};
+use http::{HeaderValue, Method, Request, Uri, header};
 use http_body_util::{BodyExt, Full};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -37,6 +37,8 @@ use crate::{body::instrumented_body::InstrumentedBody, listeners::http_connectio
 use super::{Embedding, EmbeddingError, normalise_in_place};
 
 const DEFAULT_EMBEDDINGS_TIMEOUT: Duration = Duration::from_secs(5);
+const CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static("application/json");
+const USER_AGENT_EMBEDDINGS: HeaderValue = HeaderValue::from_static("arion/embeddings");
 
 #[derive(Debug)]
 pub struct EmbeddingsClient {
@@ -44,6 +46,7 @@ pub struct EmbeddingsClient {
     cluster_label: SmolStr,
     model_id: SmolStr,
     path: SmolStr,
+    static_uri: Option<Uri>,
     timeout: Duration,
     description: String,
     dimensions: AtomicUsize,
@@ -66,11 +69,13 @@ impl EmbeddingsClient {
         let description = format!("remote://{cluster}{path} ({model_id})");
         let dimensions = AtomicUsize::new(dimensions);
         let cluster_id = cluster.as_str().to_interned_str();
+        let static_uri = Uri::try_from(path.as_str()).ok();
         Self {
             cluster_id,
             cluster_label: cluster,
             model_id,
             path,
+            static_uri,
             timeout: timeout.unwrap_or(DEFAULT_EMBEDDINGS_TIMEOUT),
             description,
             dimensions,
@@ -91,6 +96,13 @@ impl EmbeddingsClient {
             .map_err(|e| EmbeddingError::Service(format!("cluster '{}' lookup failed: {e}", self.cluster_label)))?;
         let upstream_authority = channels.upstream_authority().as_str();
 
+        let uri = match &self.static_uri {
+            Some(uri) => uri.clone(),
+            None => Uri::try_from(self.path.as_str()).map_err(|e| EmbeddingError::Service(format!("request: {e}")))?,
+        };
+        let host =
+            HeaderValue::from_str(upstream_authority).map_err(|e| EmbeddingError::Service(format!("request: {e}")))?;
+
         let body: ArionRequestBody = InstrumentedBody::new(
             BodyKind::Request,
             TimeoutBody::new(Some(self.timeout), PolyBody::from(Full::new(Bytes::from(body_bytes)))),
@@ -98,15 +110,14 @@ impl EmbeddingsClient {
             |_, _, _, _| {},
         );
 
-        let request = Request::builder()
-            .method(Method::POST)
-            .uri(self.path.as_str())
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::ACCEPT, "application/json")
-            .header(header::HOST, upstream_authority)
-            .header(header::USER_AGENT, "arion/embeddings")
-            .body(body)
-            .map_err(|e| EmbeddingError::Service(format!("request: {e}")))?;
+        let mut request = Request::new(body);
+        *request.method_mut() = Method::POST;
+        *request.uri_mut() = uri;
+        let headers = request.headers_mut();
+        headers.insert(header::CONTENT_TYPE, CONTENT_TYPE_JSON);
+        headers.insert(header::ACCEPT, CONTENT_TYPE_JSON);
+        headers.insert(header::HOST, host);
+        headers.insert(header::USER_AGENT, USER_AGENT_EMBEDDINGS);
 
         let upstream_call_opts =
             UpstreamCallOpts { route_timeout: Some(self.timeout), retry_policy: None, ..Default::default() };
@@ -217,6 +228,7 @@ impl EmbeddingsClient {
             cluster_label: "test".into(),
             model_id: "test-model".into(),
             path: SmolStr::new_inline(REMOTE_EMBEDDINGS_PATH),
+            static_uri: Some(Uri::from_static(REMOTE_EMBEDDINGS_PATH)),
             timeout: DEFAULT_EMBEDDINGS_TIMEOUT,
             description: description.to_owned(),
             dimensions: AtomicUsize::new(3),

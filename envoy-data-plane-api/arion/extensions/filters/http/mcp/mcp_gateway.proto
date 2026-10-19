@@ -42,7 +42,6 @@ message Tool {
     envoy.config.core.v3.DataSource output_schema = 4;
     oneof upstream_backend {
         RestBackend rest_backend = 5;
-        FunctionGraphBackend function_graph_backend = 6;
         McpServerBackend mcp_server_backend = 7;
     };
     optional ToolRbac rbac = 8;
@@ -71,9 +70,6 @@ message QueryParam {
   string source = 2 [(validate.rules).string = {min_bytes: 1}];
 }
 
-message FunctionGraphBackend {
-}
-
 message McpServerBackend {
 // Use a oneof to represent the transport type
   enum TransportUpstream {
@@ -81,7 +77,12 @@ message McpServerBackend {
     StreamableHttp = 1;
   }
   TransportUpstream transport = 1;
-  string url = 2 [(validate.rules).string = {min_bytes: 1}];
+  // Request path (and optional query) sent to the upstream MCP server, e.g. "/mcp".
+  string path = 2 [(validate.rules).string = {min_bytes: 1}];
+  // Cluster used to reach the MCP server. The cluster endpoints, TLS context,
+  // HTTP protocol options (HTTP/1 or HTTP/2) and the Host/:authority header
+  // sent upstream are all taken from its configuration.
+  string cluster = 3 [(validate.rules).string = {min_bytes: 1}];
 }
 
 // Source of dynamically discovered tools. The gateway calls tools/list on the
@@ -91,11 +92,14 @@ message DynamicMcpServer {
   string name = 1 [(validate.rules).string = {min_bytes: 1}];
   string description = 2;
   McpServerBackend.TransportUpstream transport = 3;
-  string url = 4 [(validate.rules).string = {min_bytes: 1}];
+  // Request path (and optional query) sent to the upstream MCP server, e.g. "/mcp".
+  string path = 4 [(validate.rules).string = {min_bytes: 1}];
   // If unset, the first fetch is cached indefinitely.
   google.protobuf.Duration cache_duration = 5;
   // Applied to every tool materialised from this server.
   optional ToolRbac rbac = 6;
+  // Cluster used to reach the MCP server, see McpServerBackend.cluster.
+  string cluster = 7 [(validate.rules).string = {min_bytes: 1}];
 }
 
 // Tool Discovery Service binding. config_name selects which TDS stream's

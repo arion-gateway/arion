@@ -286,13 +286,16 @@ If `output_schema` is configured, Arion parses successful REST responses as JSON
 
 Static MCP-server tools forward `tools/call` to an upstream MCP server. Upstream MCP server communication is Streamable HTTP by design, so configure `transport: StreamableHttp`; upstream SSE is not supported. This is distinct from Arion's legacy downstream `/sse` support for clients.
 
+The upstream is reached through `cluster`: endpoints, TLS, HTTP/1 or HTTP/2, and the `Host`/`:authority` header sent upstream all come from the cluster configuration, exactly as for REST backends. `path` only provides the request path (and query).
+
 ```yaml
 tools:
   - name: echo
     description: Forward an echo call to the upstream MCP server.
     mcp_server_backend:
       transport: StreamableHttp
-      url: http://127.0.0.1:3001/mcp
+      path: /mcp
+      cluster: mcp_upstream
 ```
 
 For a static MCP-server backend, the exposed tool name is also the upstream tool name. If the client calls `echo`, Arion calls `echo` on the upstream MCP server.
@@ -309,7 +312,8 @@ dynamic_mcp_servers:
   - name: github
     description: GitHub repository and pull request tools.
     transport: StreamableHttp
-    url: http://127.0.0.1:3001/mcp
+    path: /mcp
+    cluster: github_mcp
     cache_duration: 30s
 ```
 
@@ -328,7 +332,8 @@ Dynamic server fields:
 | `name` | Namespace prefix for materialised tools. |
 | `description` | Human-readable server description. |
 | `transport` | Configure `StreamableHttp` for upstream MCP communication. Dynamic discovery does not support upstream SSE. |
-| `url` | Upstream MCP endpoint. |
+| `path` | Request path (and query) sent to the upstream MCP server. |
+| `cluster` | Required. Cluster used to reach the upstream (endpoints, TLS, HTTP/1 or HTTP/2, Host/:authority). |
 | `cache_duration` | Optional TTL for the discovered tool list. If unset, a successful first fetch is cached indefinitely. |
 | `rbac` | Optional RBAC policy applied to every materialised tool. |
 
@@ -757,7 +762,8 @@ dynamic_mcp_servers:
   - name: repo
     description: Repository management tools.
     transport: StreamableHttp
-    url: http://repo-mcp.internal:3001/mcp
+    path: /mcp
+    cluster: repo_mcp
     cache_duration: 5m
     rbac:
       action: ALLOW

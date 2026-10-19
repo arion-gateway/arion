@@ -20,4 +20,5 @@ pub mod transcoder;
 pub mod transport;
 pub mod uniqueness;
 pub mod upstream;
+pub(crate) mod upstream_client;
 pub mod xds_handler;

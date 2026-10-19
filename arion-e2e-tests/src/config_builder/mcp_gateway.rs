@@ -19,10 +19,9 @@ use std::time::Duration;
 
 use arion_data_plane_api::envoy_data_plane_api::{
     arion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        DynamicMcpServer, FunctionGraphBackend, HttpUpstreamPolicy, JwtClaimMatcher, JwtHeaderMatcher, McpGateway,
-        McpServerBackend, Permission, QueryParam, RemoteEmbeddings, RestBackend, SemanticSearch, ServerInfo,
-        SimilarityConfig, TdsSpecifier, Tool, ToolRbac, mcp_server_backend, permission::PermissionType, tool,
-        tool_rbac,
+        DynamicMcpServer, HttpUpstreamPolicy, JwtClaimMatcher, JwtHeaderMatcher, McpGateway, McpServerBackend,
+        Permission, QueryParam, RemoteEmbeddings, RestBackend, SemanticSearch, ServerInfo, SimilarityConfig,
+        TdsSpecifier, Tool, ToolRbac, mcp_server_backend, permission::PermissionType, tool, tool_rbac,
     },
     envoy::{
         config::core::v3::{DataSource, data_source::Specifier},
@@ -196,12 +195,6 @@ impl McpToolBuilder {
     }
 
     #[must_use]
-    pub fn function_graph_backend(mut self) -> Self {
-        self.proto.upstream_backend = Some(tool::UpstreamBackend::FunctionGraphBackend(FunctionGraphBackend {}));
-        self
-    }
-
-    #[must_use]
     pub fn rbac(mut self, rbac: impl Into<ToolRbac>) -> Self {
         self.proto.rbac = Some(rbac.into());
         self
@@ -313,9 +306,17 @@ pub struct McpServerBackendBuilder {
 }
 
 impl McpServerBackendBuilder {
+    /// `cluster` is the Arion cluster used to reach the MCP server (endpoints, TLS, h1/h2,
+    /// Host/:authority); `path` is the request path (and query) sent upstream.
     #[must_use]
-    pub fn new(url: impl Into<String>) -> Self {
-        Self { proto: McpServerBackend { transport: McpTransport::StreamableHttp.to_proto(), url: url.into() } }
+    pub fn new(cluster: impl Into<String>, path: impl Into<String>) -> Self {
+        Self {
+            proto: McpServerBackend {
+                transport: McpTransport::StreamableHttp.to_proto(),
+                path: path.into(),
+                cluster: cluster.into(),
+            },
+        }
     }
 
     #[must_use]
@@ -358,14 +359,22 @@ pub struct DynamicMcpServerBuilder {
 }
 
 impl DynamicMcpServerBuilder {
+    /// `cluster` is the Arion cluster used to reach the MCP server (endpoints, TLS, h1/h2,
+    /// Host/:authority); `path` is the request path (and query) sent upstream.
     #[must_use]
-    pub fn new(name: impl Into<String>, description: impl Into<String>, url: impl Into<String>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        cluster: impl Into<String>,
+        path: impl Into<String>,
+    ) -> Self {
         Self {
             proto: DynamicMcpServer {
                 name: name.into(),
                 description: description.into(),
                 transport: McpTransport::StreamableHttp.to_proto(),
-                url: url.into(),
+                path: path.into(),
+                cluster: cluster.into(),
                 ..Default::default()
             },
         }

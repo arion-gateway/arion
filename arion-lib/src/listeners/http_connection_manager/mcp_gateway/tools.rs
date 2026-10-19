@@ -14,6 +14,8 @@
 
 #[cfg(feature = "metrics")]
 use crate::get_shard_id;
+#[cfg(test)]
+use crate::listeners::http_connection_manager::mcp_gateway::upstream_client::McpHttpClient;
 use crate::listeners::http_connection_manager::{
     RequestCtx,
     mcp_gateway::{
@@ -23,8 +25,9 @@ use crate::listeners::http_connection_manager::{
             Action as RbacAction, JwtClaimField, JwtHeaderField, JwtHeaderMatcher, JwtPayloadMatcher,
             Permission as RbacPermission, ToolRbac,
         },
-        transcoder::{FunctionGraphTranscoder, RestTranscoder, Transcoder, TranscoderType, rest::DEFAULT_USER_AGENT},
+        transcoder::{RestTranscoder, Transcoder, TranscoderType, rest::DEFAULT_USER_AGENT},
         upstream::{self, ToolInvocationFailure, ToolInvocationOutcome},
+        upstream_client::McpUpstreamClient,
     },
 };
 use crate::with_metric;
@@ -32,26 +35,25 @@ use arion_configuration::config::network_filters::http_connection_manager::http_
     DynamicMcpServer, EmbeddingVector, McpBackendTransportUpstream, McpSemanticSearch, McpTool, UpstreamBackend,
     UpstreamLimits,
 };
-use arion_interner::StringInterner;
+use arion_interner::{InternedStr, StringInterner};
 use atomic_time::AtomicInstant;
 use jsonschema::Validator;
 use opentelemetry::KeyValue;
 use papaya::HashMap as PapayaMap;
 use pingora_timeout::fast_timeout::fast_timeout;
-use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-use rmcp::transport::{DynamicTransportError, StreamableHttpClientTransport};
+#[cfg(test)]
+use rmcp::transport::DynamicTransportError;
 use rmcp::{
-    ServiceError, ServiceExt,
+    ServiceError,
     model::{
-        CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, ContentBlock, Implementation,
-        InitializeRequestParams, JsonRpcNotification, ServerNotification, ToolListChangedNotification,
+        CallToolResult, ClientCapabilities, ClientConfig, ContentBlock, Implementation, JsonRpcNotification,
+        ServerNotification, ToolListChangedNotification,
     },
     service::ClientInitializeError,
 };
 
 use rmcp::model;
 use rmcp::model::{ListToolsResult, Tool};
-use rmcp::service::{RoleClient, RunningService};
 use scopeguard::defer;
 use serde_json::{Value, json};
 use smol_str::{SmolStr, format_smolstr};
@@ -66,51 +68,39 @@ const DYNAMIC_TOOL_SEPARATOR: &str = "__";
 const INDEFINITE_CACHE_LIFETIME: Duration = Duration::from_secs(100 * 365 * 24 * 3600);
 
 const SEMANTIC_SEARCH_TOOL_NAME: &str = "semantic_search";
-thread_local! {
-    /// One HTTP client per OS thread for upstream MCP transports.
-    ///
-    /// `rmcp`'s `StreamableHttpClientTransport::from_uri`/`from_config` build a private
-    /// `reqwest::Client` with `pool_max_idle_per_host(0)`, so each POST opens a fresh
-    /// TCP (+TLS) connection even when the `RunningService` is reused. Each thread-local
-    /// client keeps its own keep-alive pool, while each transport keeps its own MCP
-    /// session state (session id, protocol version) in its worker.
-    static UPSTREAM_REQWEST_CLIENT: Result<reqwest::Client, StdArc<reqwest::Error>> = reqwest::Client::builder()
-        // Keep-alive pool enabled (rmcp's default disables it with
-        // `pool_max_idle_per_host(0)`; omitting that call restores reuse).
-        // Values below mirror reqwest defaults; written out so the intent
-        // is visible instead of relying on the bypassed rmcp default.
-        .pool_max_idle_per_host(usize::MAX)
-        .pool_idle_timeout(Duration::from_secs(90))
-        // Same as rmcp's default: never replay caller headers to a redirect target.
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(StdArc::new);
-}
-
-/// Clone the calling thread's HTTP client. Clones share that thread's keep-alive
-/// pool; pools are never shared across OS threads.
-fn upstream_http_client() -> Result<reqwest::Client, Box<ClientInitializeError>> {
-    UPSTREAM_REQWEST_CLIENT.with(|res| match res {
-        Ok(client) => Ok(client.clone()),
-        Err(err) => Err(Box::new(ClientInitializeError::TransportError {
+/// Build the upstream MCP HTTP client for `path`, sending through the `HttpChannel` of `cluster`
+/// (endpoints, TLS, HTTP/1 or HTTP/2, connection pools and the Host/:authority header all come
+/// from the cluster).
+#[cfg(test)]
+fn upstream_http_client(cluster: &str, path: &str) -> Result<McpHttpClient, Box<ClientInitializeError>> {
+    McpHttpClient::try_new(cluster, path).map_err(|err| {
+        Box::new(ClientInitializeError::TransportError {
             error: DynamicTransportError::from_parts(
-                "reqwest",
-                std::any::TypeId::of::<reqwest::Client>(),
-                Box::new(StdArc::clone(err)),
+                "arion-cluster",
+                std::any::TypeId::of::<McpHttpClient>(),
+                Box::new(err),
             ),
-            context: "failed to build upstream reqwest client".into(),
-        })),
+            context: "failed to build upstream MCP http client".into(),
+        })
     })
 }
 
-static SEMANTIC_SEARCH_TOOL_INPUT_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
-    json!({
+static SEMANTIC_SEARCH_TOOL: LazyLock<Tool> = LazyLock::new(|| {
+    let Value::Object(semantic_search_input_schema) = json!({
         "type": "object",
         "properties": {
             "user_query": { "type": "string", "description": "The prompt or summary text." }
         },
         "required": ["user_query"],
-    })
+    }) else {
+        unreachable!()
+    };
+
+    Tool::new(
+        SEMANTIC_SEARCH_TOOL_NAME,
+        "Pass the user prompt or a summary to discover relevant tools.",
+        StdArc::new(semantic_search_input_schema),
+    )
 });
 
 #[derive(Debug)]
@@ -131,6 +121,11 @@ pub enum ToolSource {
 #[derive(Debug)]
 pub struct ToolEntry {
     pub conf: McpTool,
+    pub interned_name: InternedStr,
+    pub upstream_target: InternedStr,
+    pub upstream_tool_name: Cow<'static, str>,
+    pub rest_authority_header: Option<Result<http::HeaderValue, http::header::InvalidHeaderValue>>,
+    pub tool: Tool,
     pub source: ToolSource,
     pub transcoder: TranscoderType,
     pub input_schema_validator: Option<Validator>,
@@ -185,8 +180,6 @@ pub enum CallToolError {
     ToolNotFound(SmolStr),
     #[error("access to tool '{0}' denied by RBAC policy")]
     RbacDenied(SmolStr),
-    #[error("FunctionGraph transcoding is not yet implemented")]
-    FunctionGraphNotImplemented,
     #[error("Transcoder: tool: {tool} reason: {reason}")]
     TranscoderError { tool: SmolStr, reason: String },
     #[error("Client initialization error: {0}")]
@@ -372,9 +365,12 @@ impl ToolsRegistry {
         self.semantic_search.as_ref().map(|s| s.similarity.top_k).unwrap_or(10)
     }
 
-    pub async fn bootstrap(&self, req_ctx: &RequestCtx) -> Result<(), CallToolError> {
+    async fn bootstrap_dynamic_servers(&self) {
         self.bootstrapped
             .get_or_init(|| async {
+                if self.dynamic_mcp_servers.is_empty() {
+                    return;
+                }
                 // Snapshot the servers first so the papaya guard is not held across `.await`.
                 let servers: Vec<StdArc<DynamicMcpServerEntry>> = {
                     let pinned = self.dynamic_mcp_servers.pin();
@@ -385,12 +381,16 @@ impl ToolsRegistry {
                 }
             })
             .await;
+    }
+
+    pub async fn bootstrap(&self, req_ctx: &RequestCtx) -> Result<(), CallToolError> {
+        self.bootstrap_dynamic_servers().await;
         self.embed_unembedded_tools(None, req_ctx).await;
         Ok(())
     }
 
     async fn ensure_tools_current(&self, req_ctx: &RequestCtx) -> Result<(), CallToolError> {
-        self.bootstrap(req_ctx).await?;
+        self.bootstrap_dynamic_servers().await;
         self.refresh_expired_dynamic_servers().await;
         self.embed_unembedded_tools(None, req_ctx).await;
         Ok(())
@@ -411,7 +411,7 @@ impl ToolsRegistry {
                 {
                     continue;
                 }
-                if entry.embedding.load_full().is_some() {
+                if entry.embedding.load().is_some() {
                     continue;
                 }
                 names.push(entry.conf.name.clone());
@@ -521,15 +521,7 @@ impl ToolsRegistry {
         let mut tools = Vec::with_capacity(self.tools.len() + 1);
 
         if self.semantic_search.is_some() {
-            let Value::Object(semantic_search_input_schema) = &*SEMANTIC_SEARCH_TOOL_INPUT_SCHEMA else {
-                unreachable!()
-            };
-
-            tools.push(Tool::new(
-                SEMANTIC_SEARCH_TOOL_NAME,
-                "Pass the user prompt or a summary to discover relevant tools.",
-                StdArc::new(semantic_search_input_schema.clone()),
-            ));
+            tools.push(SEMANTIC_SEARCH_TOOL.clone());
         }
 
         // Handle different semantic search modes:
@@ -551,10 +543,10 @@ impl ToolsRegistry {
     fn fill_list_tools(&self, req_ext: &http::Extensions, session: &StdArc<Session>, tools: &mut Vec<Tool>) {
         let session = session.as_ref();
 
-        let restrict_to_active = self.semantic_search.is_some() && !session.active_tools.pin().is_empty();
-
         let pinned = self.tools.pin();
         let active = session.active_tools.pin();
+        let restrict_to_active = self.semantic_search.is_some() && !active.is_empty();
+
         for (_, entry) in &pinned {
             if !entry.rbac.as_ref().is_none_or(|rbac| rbac.is_permitted(req_ext)) {
                 continue;
@@ -562,11 +554,14 @@ impl ToolsRegistry {
             if restrict_to_active && !active.contains(&entry.conf.name) {
                 continue;
             }
-            tools.push(tool_from_entry(entry));
+            tools.push(entry.tool.clone());
         }
     }
 
     async fn refresh_expired_dynamic_servers(&self) {
+        if self.dynamic_mcp_servers.is_empty() {
+            return;
+        }
         let now = Instant::now();
         let expired: Vec<StdArc<DynamicMcpServerEntry>> = {
             let pinned = self.dynamic_mcp_servers.pin();
@@ -622,16 +617,21 @@ impl ToolsRegistry {
     }
 
     async fn fetch_dynamic_server_tools(server: &DynamicMcpServerEntry) -> Result<Vec<ToolEntry>, ListToolsError> {
-        let server_name = server.conf.name.clone();
-        let upstream_tools = Self::list_upstream_tools(&server.conf.transport, &server.conf.url).await?;
+        let server_name = &server.conf.name;
+        let upstream_tools =
+            Self::list_upstream_tools(&server.conf.transport, &server.conf.cluster, &server.conf.path).await?;
+        let upstream_target = server.conf.path.to_interned_str();
 
         let entries = upstream_tools
             .into_iter()
             .map(|tool| {
                 let upstream_tool_name: SmolStr = tool.name.as_ref().into();
+                let upstream_tool_name_cow = static_or_owned_cow(&upstream_tool_name);
                 let exposed_name = format_smolstr!("{server_name}{DYNAMIC_TOOL_SEPARATOR}{upstream_tool_name}");
+                let interned_name = exposed_name.to_interned_str();
                 let description = tool.description.as_deref().map(str::to_owned).unwrap_or_default();
-                let input_schema = tool.input_schema.as_ref().clone();
+                let input_schema_arc = tool.input_schema;
+                let input_schema = input_schema_arc.as_ref().clone();
                 let conf = McpTool {
                     name: exposed_name,
                     description,
@@ -639,14 +639,25 @@ impl ToolsRegistry {
                     output_schema: serde_json::Map::new(),
                     backend: UpstreamBackend::McpServer {
                         transport: server.conf.transport.clone(),
-                        url: server.conf.url.clone(),
+                        path: server.conf.path.clone(),
+                        cluster: server.conf.cluster.clone(),
                     },
                     rbac: server.conf.rbac.clone(),
                     embedding: EmbeddingVector::default(),
                 };
+                let rmcp_tool = Tool::new(
+                    static_or_owned_cow(&conf.name),
+                    static_or_owned_cow(&conf.description),
+                    input_schema_arc,
+                );
                 let bm25_doc = Bm25Document::from_tool_parts(&conf.name, &conf.description, &conf.input_schema);
                 ToolEntry {
                     conf,
+                    interned_name,
+                    upstream_target,
+                    upstream_tool_name: upstream_tool_name_cow,
+                    rest_authority_header: None,
+                    tool: rmcp_tool,
                     source: ToolSource::Dynamic { server_name: server_name.clone(), upstream_tool_name },
                     transcoder: TranscoderType::NoTranscoder,
                     input_schema_validator: None,
@@ -663,12 +674,13 @@ impl ToolsRegistry {
 
     async fn list_upstream_tools(
         transport: &McpBackendTransportUpstream,
-        url: &str,
+        cluster: &str,
+        path: &str,
     ) -> Result<Vec<Tool>, ListToolsError> {
-        debug!(target: "mcp_gateway", "Listing tools from upstream with transport {transport:?} at {url}");
+        debug!(target: "mcp_gateway", "Listing tools from upstream with transport {transport:?} at {path} (cluster {cluster})");
         match transport {
             McpBackendTransportUpstream::StreamableHttp => {
-                let client = Self::get_mcp_client(url).await?;
+                let client = Self::get_mcp_client(cluster, path).await?;
                 let tools = client.list_tools(Option::default()).await?;
                 Ok(tools.tools)
             },
@@ -676,40 +688,27 @@ impl ToolsRegistry {
         }
     }
 
-    async fn get_mcp_client(
-        url: &str,
-    ) -> Result<RunningService<RoleClient, InitializeRequestParams>, Box<ClientInitializeError>> {
-        debug!(target: "mcp_gateway", "Creating MCP client for URL: {url}...");
-        let transport = StreamableHttpClientTransport::with_client(
-            upstream_http_client()?,
-            StreamableHttpClientTransportConfig::with_uri(url),
-        );
+    async fn get_mcp_client(cluster: &str, path: &str) -> Result<McpUpstreamClient, Box<ClientInitializeError>> {
+        debug!(target: "mcp_gateway", "Creating MCP client for path: {path} (cluster {cluster})...");
         let client_info =
             ClientConfig::new(ClientCapabilities::default(), Implementation::new(DEFAULT_USER_AGENT, "0.1.0"));
-        client_info
-            .serve(transport)
-            .await
-            .inspect_err(|e| {
-                info!(target: "mcp_gateway", "get_mcp_client error: {}!", e);
-            })
-            .map_err(Box::new)
+        McpUpstreamClient::connect(cluster, path, client_info).await.inspect_err(|e| {
+            info!(target: "mcp_gateway", "get_mcp_client error: {}!", e);
+        })
     }
 
     pub async fn call_semantic_search_tool(
         &self,
         req_ext: &http::Extensions,
         req_ctx: &RequestCtx,
-        rpc: &model::JsonRpcRequest,
+        mut rpc: model::JsonRpcRequest,
         session: &StdArc<Session>,
     ) -> Result<MessageResult, CallToolError> {
-        let arguments = match &rpc.request.params.get("arguments") {
-            Some(serde_json::Value::Object(o)) => o.clone(),
-            _ => {
-                return Err(CallToolError::ValidationError("call_semantic_search_tool: missing arguments".into()));
-            },
+        let Some(Value::Object(mut arguments)) = rpc.request.params.remove("arguments") else {
+            return Err(CallToolError::ValidationError("call_semantic_search_tool: missing arguments".into()));
         };
 
-        let Some(Value::String(prompt)) = arguments.get("user_query") else {
+        let Some(Value::String(prompt)) = arguments.remove("user_query") else {
             return Err(CallToolError::ValidationError(
                 "call_semantic_search_tool: invalid user_query argument".into(),
             ));
@@ -721,7 +720,7 @@ impl ToolsRegistry {
 
         self.ensure_tools_current(req_ctx).await?;
 
-        let ranked = self.rank_tools_for_query(req_ext, req_ctx, prompt).await?;
+        let ranked = self.rank_tools_for_query(req_ext, req_ctx, &prompt).await?;
         {
             let active = session.active_tools.pin();
             active.clear();
@@ -731,7 +730,7 @@ impl ToolsRegistry {
         }
         {
             let mut session_prompt = session.prompt.lock();
-            *session_prompt = Some(prompt.clone())
+            *session_prompt = Some(prompt);
         };
 
         if semantic_search.enable_assisted_discovery {
@@ -745,26 +744,22 @@ impl ToolsRegistry {
             let success_message = ContentBlock::text(
                 "Context acquired. Relevant APIs loaded. The tool list has been updated, please proceed with the new tools.",
             );
-            let json_result = serde_json::to_value(CallToolResult::success(vec![success_message]))?;
+            let result = CallToolResult::success(vec![success_message]);
 
-            let json_rpc_response =
-                model::JsonRpcResponse { jsonrpc: model::JsonRpcVersion2_0, id: rpc.id.clone(), result: json_result };
+            let json_rpc_response = model::JsonRpcResponse { jsonrpc: model::JsonRpcVersion2_0, id: rpc.id, result };
 
             Ok(MessageResult::JsonRpcNotificationResponse(json_rpc_notification, json_rpc_response))
         } else {
             // Direct call mode: serialise the ranked tools straight into the call result so the
             // client receives the discovered tools without a follow-up tools/list round-trip.
-            let tools: Vec<Tool> = ranked.iter().map(|e| tool_from_entry(e)).collect();
-            let tools_json = serde_json::to_value(&tools).unwrap_or_else(|_| serde_json::Value::Array(vec![]));
+            let tools: Vec<&Tool> = ranked.iter().map(|e| &e.tool).collect();
 
             let success_message =
-                ContentBlock::text(serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_owned()));
-            let json_result = serde_json::to_value(CallToolResult::success(vec![success_message]))?;
+                ContentBlock::text(serde_json::to_string_pretty(&tools).unwrap_or_else(|_| "[]".to_owned()));
+            let result = CallToolResult::success(vec![success_message]);
+            let (bytes, _) = upstream::serialize_json_rpc_response(&rpc.id, &result)?;
 
-            let json_rpc_response =
-                model::JsonRpcResponse { jsonrpc: model::JsonRpcVersion2_0, id: rpc.id.clone(), result: json_result };
-
-            Ok(MessageResult::JsonRpcResponse(json_rpc_response))
+            Ok(MessageResult::JsonRpcResponse(bytes))
         }
     }
 
@@ -782,11 +777,10 @@ impl ToolsRegistry {
             let pinned = self.tools.pin();
             let mut candidates = Vec::with_capacity(pinned.len());
             for (_, entry) in &pinned {
-                let entry = StdArc::clone(entry);
                 if !entry.rbac.as_ref().is_none_or(|r| r.is_permitted(req_ext)) {
                     continue;
                 }
-                candidates.push(entry);
+                candidates.push(StdArc::clone(entry));
             }
             candidates
         };
@@ -871,29 +865,33 @@ impl ToolsRegistry {
         req_ext: &http::Extensions,
         req_headers: &http::HeaderMap,
         req_ctx: &RequestCtx,
-        rpc: &model::JsonRpcRequest,
+        rpc: model::JsonRpcRequest,
         upstream_limits: &UpstreamLimits,
         session: &StdArc<Session>,
     ) -> Result<MessageResult, CallToolError> {
-        let name = rpc.request.params.get("name").and_then(Value::as_str).ok_or(CallToolError::NameNotString)?;
-        debug!(target: "mcp_gateway", "call: method:{} tool '{name}'", rpc.request.method);
+        let entry = {
+            let name = rpc.request.params.get("name").and_then(Value::as_str).ok_or(CallToolError::NameNotString)?;
+            debug!(target: "mcp_gateway", "call: method:{} tool '{name}'", rpc.request.method);
 
-        if name == SEMANTIC_SEARCH_TOOL_NAME && self.semantic_search.is_some() {
-            return self.call_semantic_search_tool(req_ext, req_ctx, rpc, session).await;
-            // todo(francesco) we should send back an error if agent is invoking semantic_search tool and none is configured
-        }
+            if name == SEMANTIC_SEARCH_TOOL_NAME && self.semantic_search.is_some() {
+                return self.call_semantic_search_tool(req_ext, req_ctx, rpc, session).await;
+                // todo(francesco) we should send back an error if agent is invoking semantic_search tool and none is configured
+            }
 
-        let filter_by_active = self.semantic_search.as_ref().is_some_and(|ss| ss.enable_assisted_discovery);
-        let entry = self
-            .get_tool_by_name(name)
-            .filter(|_| !filter_by_active || session.active_tools.pin().contains(name))
-            .ok_or_else(|| CallToolError::ToolNotFound(name.into()))?;
+            let filter_by_active = self.semantic_search.as_ref().is_some_and(|ss| ss.enable_assisted_discovery);
+            let entry = self
+                .get_tool_by_name(name)
+                .filter(|_| !filter_by_active || session.active_tools.pin().contains(name))
+                .ok_or_else(|| CallToolError::ToolNotFound(name.into()))?;
 
-        if let Some(rbac) = &entry.rbac
-            && !rbac.is_permitted(req_ext)
-        {
-            return Err(CallToolError::RbacDenied(name.into()));
-        }
+            if let Some(rbac) = &entry.rbac
+                && !rbac.is_permitted(req_ext)
+            {
+                return Err(CallToolError::RbacDenied(name.into()));
+            }
+            entry
+        };
+
         if entry.input_schema_validator.is_some() {
             match rpc.request.params.get("arguments") {
                 Some(arguments) => entry.validate_against_input_schema(arguments)?,
@@ -904,49 +902,35 @@ impl ToolsRegistry {
 
         match (&entry.conf.backend, &entry.transcoder) {
             (UpstreamBackend::Rest { .. }, TranscoderType::Rest(transcoder)) => {
-                let upstream_request = transcoder
-                    .encode(req_headers, &rpc.request)
-                    .map_err(|e| CallToolError::TranscoderError { tool: name.into(), reason: e.to_string() })?;
-                let result = upstream::invoke_rest_tool(&entry, upstream_request, upstream_limits, req_ctx)
-                    .await
-                    .into_result_value()?;
-                Ok(MessageResult::JsonRpcResponse(model::JsonRpcResponse {
-                    jsonrpc: model::JsonRpcVersion2_0,
-                    id: rpc.id.clone(),
-                    result,
-                }))
+                let upstream_request = transcoder.encode(req_headers, &rpc.request).map_err(|e| {
+                    CallToolError::TranscoderError { tool: entry.conf.name.clone(), reason: e.to_string() }
+                })?;
+                let outcome = upstream::invoke_rest_tool(&entry, upstream_request, upstream_limits, req_ctx).await;
+                let (bytes, _) = upstream::serialize_json_rpc_response(&rpc.id, &outcome.into_call_tool_result())?;
+                Ok(MessageResult::JsonRpcResponse(bytes))
             },
-            (UpstreamBackend::McpServer { url, .. }, TranscoderType::NoTranscoder) => {
-                // For dynamic tools the upstream expects the original tool
-                // name (pre-namespacing). For static McpServer-backed tools
-                // the exposed name IS the upstream name.
-                let upstream_tool_name = match &entry.source {
-                    ToolSource::Dynamic { upstream_tool_name, .. } => upstream_tool_name.clone(),
-                    ToolSource::Provided => entry.conf.name.clone(),
-                };
+            (UpstreamBackend::McpServer { path, cluster, .. }, TranscoderType::NoTranscoder) => {
+                let upstream_tool_name = entry.upstream_tool_name.as_ref();
+                // Keyed by (cluster, path): path alone is not enough to tell two different
+                // upstream MCP servers apart (many of them mount at the same conventional path).
+                let upstream_key = (cluster.to_interned_str(), path.to_interned_str());
+                let arguments = rpc.request.params.get("arguments").and_then(Value::as_object);
 
                 let invocation = async {
-                    let cached = session.mcp_upstreams.pin().get(url).map(StdArc::clone);
+                    let cached = session.mcp_upstreams.pin().get(&upstream_key).map(StdArc::clone);
                     let client = if let Some(client) = cached {
                         client
                     } else {
-                        let new_client = StdArc::new(Self::get_mcp_client(url).await?);
-                        StdArc::clone(session.mcp_upstreams.pin().get_or_insert(url.to_owned(), new_client))
+                        let new_client = StdArc::new(Self::get_mcp_client(cluster, path).await?);
+                        StdArc::clone(session.mcp_upstreams.pin().get_or_insert_with(upstream_key, || new_client))
                     };
 
-                    let call_params = match &rpc.request.params.get("arguments") {
-                        Some(serde_json::Value::Object(args)) => {
-                            CallToolRequestParams::new(upstream_tool_name.to_string()).with_arguments(args.clone())
-                        },
-                        _ => CallToolRequestParams::new(upstream_tool_name.to_string()),
-                    };
-
-                    match client.call_tool(call_params).await {
+                    match client.call_tool_borrowed(upstream_tool_name, arguments).await {
                         Ok(result) => Ok::<_, CallToolError>(result),
                         Err(err) => {
                             if matches!(&err, ServiceError::TransportSend(_) | ServiceError::TransportClosed) {
-                                info!(target: "mcp_gateway", "removing MCP client for URL {url} due to transport error!");
-                                session.mcp_upstreams.pin().remove(url);
+                                info!(target: "mcp_gateway", "removing MCP client for path {path} (cluster {cluster}) due to transport error!");
+                                session.mcp_upstreams.pin().remove(&upstream_key);
                             }
                             Err(CallToolError::ServiceError(Box::new(err)))
                         },
@@ -954,11 +938,11 @@ impl ToolsRegistry {
                 };
 
                 let started = Instant::now();
-                let mut span = req_ctx.begin_upstream_span(url);
+                let mut span = req_ctx.begin_upstream_span(path);
                 span.set_attributes([
-                    KeyValue::new("mcp.tool.name", name.to_static_str()),
+                    KeyValue::new("mcp.tool.name", entry.interned_name.as_str()),
                     KeyValue::new("mcp.backend", "mcp_server"),
-                    KeyValue::new("mcp.upstream", url.to_static_str()),
+                    KeyValue::new("mcp.upstream", entry.upstream_target.as_str()),
                 ]);
                 let mut outcome = match fast_timeout(upstream_limits.timeout, invocation).await {
                     Err(_) => ToolInvocationOutcome::failure(ToolInvocationFailure::upstream_timeout()),
@@ -969,47 +953,57 @@ impl ToolsRegistry {
                     },
                 };
 
-                let successful_value = if let ToolInvocationOutcome::Success(result) = &outcome {
-                    let value = serde_json::to_value(result)?;
-                    let result_bytes = upstream::serialized_json_size(&value)?;
-                    upstream::record_tool_response_bytes(&entry.conf.name, result_bytes);
+                let response_bytes = if let ToolInvocationOutcome::Success(result) = &outcome {
+                    let (bytes, result_bytes) = upstream::serialize_json_rpc_response(&rpc.id, result)?;
+                    upstream::record_tool_response_bytes(entry.interned_name, result_bytes);
                     if result_bytes > upstream_limits.max_response_bytes {
                         outcome = ToolInvocationOutcome::failure(ToolInvocationFailure::response_too_large(
                             upstream_limits.max_response_bytes,
                         ));
                         None
                     } else {
-                        Some(value)
+                        Some(bytes)
                     }
                 } else {
                     None
                 };
 
-                upstream::record_tool_invocation(&entry.conf.name, started, &outcome);
+                upstream::record_tool_invocation(entry.interned_name, started, &outcome);
                 if let Some(code) = upstream::outcome_failure_code(&outcome) {
                     span.set_attribute(KeyValue::new("mcp.error.code", code));
                     span.set_error(code);
                 }
                 span.complete();
 
-                let json_result = match successful_value {
-                    Some(value) => value,
-                    None => serde_json::to_value(outcome.into_call_tool_result())?,
+                let bytes = match response_bytes {
+                    Some(bytes) => bytes,
+                    None => upstream::serialize_json_rpc_response(&rpc.id, &outcome.into_call_tool_result())?.0,
                 };
 
-                let json_rcp_response = model::JsonRpcResponse {
-                    jsonrpc: model::JsonRpcVersion2_0,
-                    id: rpc.id.clone(),
-                    result: json_result,
-                };
-
-                Ok(MessageResult::JsonRpcResponse(json_rcp_response))
-            },
-            (UpstreamBackend::FunctionGraph, TranscoderType::FunctionGraph(_)) => {
-                Err(CallToolError::FunctionGraphNotImplemented)
+                Ok(MessageResult::JsonRpcResponse(bytes))
             },
             _ => unreachable!(),
         }
+    }
+}
+
+fn static_or_owned_cow(s: &str) -> Cow<'static, str> {
+    match s.try_to_static_str() {
+        Some(interned) => Cow::Borrowed(interned),
+        None => Cow::Owned(s.to_owned()),
+    }
+}
+
+fn build_rmcp_tool(conf: &McpTool) -> Tool {
+    let tool = Tool::new(
+        static_or_owned_cow(&conf.name),
+        static_or_owned_cow(&conf.description),
+        StdArc::new(conf.input_schema.clone()),
+    );
+    if conf.output_schema.is_empty() {
+        tool
+    } else {
+        tool.with_raw_output_schema(StdArc::new(conf.output_schema.clone()))
     }
 }
 
@@ -1031,12 +1025,18 @@ fn build_tool_entry(tool_conf: McpTool, source: ToolSource) -> Result<ToolEntry,
                 .map_err(|e| ToolBuilderError::InvalidOutputSchema(e.to_string()))?,
         )
     };
-    let transcoder = match &tool_conf.backend {
-        UpstreamBackend::Rest { method, path, query_params, body_template, .. } => TranscoderType::Rest(Box::new(
-            RestTranscoder::new(method.clone(), query_params.clone(), path.clone(), body_template.clone())?,
-        )),
-        UpstreamBackend::FunctionGraph => TranscoderType::FunctionGraph(FunctionGraphTranscoder {}),
-        UpstreamBackend::McpServer { .. } => TranscoderType::NoTranscoder,
+    let (transcoder, upstream_target, rest_authority_header) = match &tool_conf.backend {
+        UpstreamBackend::Rest { method, path, query_params, body_template, cluster, upstream_policy } => (
+            TranscoderType::Rest(Box::new(RestTranscoder::new(
+                method.clone(),
+                query_params.clone(),
+                path.clone(),
+                body_template.clone(),
+            )?)),
+            cluster.to_interned_str(),
+            upstream_policy.authority.as_ref().map(|authority| http::HeaderValue::from_str(authority.as_str())),
+        ),
+        UpstreamBackend::McpServer { path, .. } => (TranscoderType::NoTranscoder, path.to_interned_str(), None),
     };
     let embedding = {
         let supplied = tool_conf.embedding.as_slice();
@@ -1048,9 +1048,22 @@ fn build_tool_entry(tool_conf: McpTool, source: ToolSource) -> Result<ToolEntry,
             arc_swap::ArcSwapOption::from(Some(StdArc::new(v)))
         }
     };
+    let interned_name = tool_conf.name.to_interned_str();
+    // For dynamic tools the upstream expects the original tool name (pre-namespacing).
+    // For static McpServer-backed tools the exposed name IS the upstream name.
+    let upstream_tool_name = match &source {
+        ToolSource::Dynamic { upstream_tool_name, .. } => static_or_owned_cow(upstream_tool_name),
+        ToolSource::Provided => static_or_owned_cow(&tool_conf.name),
+    };
+    let tool = build_rmcp_tool(&tool_conf);
     let bm25_doc = Bm25Document::from_tool_parts(&tool_conf.name, &tool_conf.description, &tool_conf.input_schema);
     Ok(ToolEntry {
         conf: tool_conf,
+        interned_name,
+        upstream_target,
+        upstream_tool_name,
+        rest_authority_header,
+        tool,
         source,
         transcoder,
         rbac,
@@ -1059,19 +1072,6 @@ fn build_tool_entry(tool_conf: McpTool, source: ToolSource) -> Result<ToolEntry,
         bm25_doc,
         embedding,
     })
-}
-
-fn tool_from_entry(entry: &ToolEntry) -> Tool {
-    let tool = Tool::new(
-        entry.conf.name.to_string(),
-        entry.conf.description.clone(),
-        StdArc::new(entry.conf.input_schema.clone()),
-    );
-    if entry.conf.output_schema.is_empty() {
-        tool
-    } else {
-        tool.with_raw_output_schema(StdArc::new(entry.conf.output_schema.clone()))
-    }
 }
 
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpRbacPermission;
@@ -1440,7 +1440,8 @@ mod tests {
             output_schema: serde_json::Map::new(),
             backend: UpstreamBackend::McpServer {
                 transport: McpBackendTransportUpstream::StreamableHttp,
-                url: "http://localhost/mcp".into(),
+                path: "/mcp".into(),
+                cluster: "mcp".into(),
             },
             rbac: None,
             embedding: EmbeddingVector::default(),
@@ -1473,7 +1474,8 @@ mod tests {
             name: "srv".into(),
             description: String::new(),
             transport: McpBackendTransportUpstream::StreamableHttp,
-            url: "http://localhost/mcp".into(),
+            path: "/mcp".into(),
+            cluster: "mcp".into(),
             cache_duration: None,
             rbac: None,
         };
@@ -1488,7 +1490,8 @@ mod tests {
                 output_schema: serde_json::Map::new(),
                 backend: UpstreamBackend::McpServer {
                     transport: McpBackendTransportUpstream::StreamableHttp,
-                    url: "http://localhost/mcp".into(),
+                    path: "/mcp".into(),
+                    cluster: "mcp".into(),
                 },
                 rbac: None,
                 embedding: EmbeddingVector::default(),
@@ -1796,11 +1799,12 @@ mod tests {
 
     #[test]
     fn test_upstream_http_client_initialization() {
-        let client_res = upstream_http_client();
-        assert!(client_res.is_ok(), "upstream_http_client should initialize without error: {client_res:?}");
-        let client_a = client_res.unwrap();
-        let client_b = upstream_http_client().unwrap();
-        drop(client_a);
-        drop(client_b);
+        upstream_http_client("mcp", "/mcp").expect("valid path must build a client");
+    }
+
+    #[test]
+    fn test_upstream_http_client_rejects_invalid_path() {
+        assert!(upstream_http_client("mcp", "not a path").is_err());
+        assert!(upstream_http_client("mcp", "http://example.com/mcp").is_err());
     }
 }

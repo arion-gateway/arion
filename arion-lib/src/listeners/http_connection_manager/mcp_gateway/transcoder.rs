@@ -21,7 +21,6 @@ use upon::Engine;
 
 use crate::ArionRequestBody;
 
-pub mod function_graph;
 pub mod rest;
 
 #[derive(Debug, thiserror::Error)]
@@ -41,7 +40,6 @@ pub enum TranscoderError {
 #[derive(Debug)]
 pub enum TranscoderType {
     Rest(Box<RestTranscoder>),
-    FunctionGraph(FunctionGraphTranscoder),
     // No transcoding for MCP usptreams
     NoTranscoder,
 }
@@ -60,13 +58,12 @@ pub struct RestTranscoder {
     pub query_params: Vec<McpRestQueryParams>,
     /// Always present: `Static` (pre-normalized with leading '/') or `Dynamic`.
     pub path: CompiledTemplate<String>,
+    /// Pre-parsed URI when `path` is `Static` and `query_params` is empty.
+    pub static_uri: Option<http::Uri>,
     /// `None` = no body. Replaces the old `has_body_template` boolean.
     pub body: Option<CompiledTemplate<Bytes>>,
     template_engine: Engine<'static>,
 }
-
-#[derive(Debug)]
-pub struct FunctionGraphTranscoder;
 
 pub trait Transcoder {
     fn encode(
