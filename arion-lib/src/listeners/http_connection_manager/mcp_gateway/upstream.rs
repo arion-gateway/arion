@@ -340,7 +340,6 @@ pub(crate) fn call_tool_outcome_from_upstream(
                 return invalid_output(format!("Failed to decode upstream response: {error}"), status);
             },
         },
-        TranscoderType::FunctionGraph(_) => unreachable!("FunctionGraph backend is not implemented"),
         TranscoderType::NoTranscoder => Value::Null,
     };
 

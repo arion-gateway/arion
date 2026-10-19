@@ -767,10 +767,6 @@ impl McpGateway {
                                 format!("Access denied by RBAC policy for tool '{tool}'"),
                                 None,
                             ),
-                            CallToolError::FunctionGraphNotImplemented => model::ErrorData::internal_error(
-                                "FunctionGraph transcoding is not yet implemented",
-                                None,
-                            ),
                             CallToolError::TranscoderError { tool, reason } => model::ErrorData::internal_error(
                                 format!("Transcoder error for tool '{tool}': {reason}"),
                                 None,

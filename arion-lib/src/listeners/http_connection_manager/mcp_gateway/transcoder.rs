@@ -21,7 +21,6 @@ use upon::Engine;
 
 use crate::ArionRequestBody;
 
-pub mod function_graph;
 pub mod rest;
 
 #[derive(Debug, thiserror::Error)]
@@ -41,7 +40,6 @@ pub enum TranscoderError {
 #[derive(Debug)]
 pub enum TranscoderType {
     Rest(Box<RestTranscoder>),
-    FunctionGraph(FunctionGraphTranscoder),
     // No transcoding for MCP usptreams
     NoTranscoder,
 }
@@ -66,9 +64,6 @@ pub struct RestTranscoder {
     pub body: Option<CompiledTemplate<Bytes>>,
     template_engine: Engine<'static>,
 }
-
-#[derive(Debug)]
-pub struct FunctionGraphTranscoder;
 
 pub trait Transcoder {
     fn encode(

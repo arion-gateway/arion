@@ -25,7 +25,7 @@ use crate::listeners::http_connection_manager::{
             Action as RbacAction, JwtClaimField, JwtHeaderField, JwtHeaderMatcher, JwtPayloadMatcher,
             Permission as RbacPermission, ToolRbac,
         },
-        transcoder::{FunctionGraphTranscoder, RestTranscoder, Transcoder, TranscoderType, rest::DEFAULT_USER_AGENT},
+        transcoder::{RestTranscoder, Transcoder, TranscoderType, rest::DEFAULT_USER_AGENT},
         upstream::{self, ToolInvocationFailure, ToolInvocationOutcome},
         upstream_client::McpUpstreamClient,
     },
@@ -179,8 +179,6 @@ pub enum CallToolError {
     ToolNotFound(SmolStr),
     #[error("access to tool '{0}' denied by RBAC policy")]
     RbacDenied(SmolStr),
-    #[error("FunctionGraph transcoding is not yet implemented")]
-    FunctionGraphNotImplemented,
     #[error("Transcoder: tool: {tool} reason: {reason}")]
     TranscoderError { tool: SmolStr, reason: String },
     #[error("Client initialization error: {0}")]
@@ -981,9 +979,6 @@ impl ToolsRegistry {
 
                 Ok(MessageResult::JsonRpcResponse(bytes))
             },
-            (UpstreamBackend::FunctionGraph, TranscoderType::FunctionGraph(_)) => {
-                Err(CallToolError::FunctionGraphNotImplemented)
-            },
             _ => unreachable!(),
         }
     }
@@ -1038,7 +1033,6 @@ fn build_tool_entry(tool_conf: McpTool, source: ToolSource) -> Result<ToolEntry,
             cluster.to_interned_str(),
             upstream_policy.authority.as_ref().map(|authority| http::HeaderValue::from_str(authority.as_str())),
         ),
-        UpstreamBackend::FunctionGraph => (TranscoderType::FunctionGraph(FunctionGraphTranscoder {}), "".into(), None),
         UpstreamBackend::McpServer { url, .. } => (TranscoderType::NoTranscoder, url.to_interned_str(), None),
     };
     let embedding = {
