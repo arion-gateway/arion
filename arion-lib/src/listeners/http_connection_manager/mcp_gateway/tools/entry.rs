@@ -50,7 +50,6 @@ pub enum ToolSource {
 pub(super) enum ToolBackend {
     Rest(Box<RestBackend>),
     McpServer(McpServerBackend),
-    FunctionGraph,
 }
 
 #[derive(Debug)]
@@ -221,7 +220,6 @@ pub(super) fn build_tool_entry(
                 max_response_bytes: upstream_limits.max_response_bytes,
             })
         },
-        UpstreamBackend::FunctionGraph => ToolBackend::FunctionGraph,
     };
     let embedding = {
         let supplied = embedding.as_slice();

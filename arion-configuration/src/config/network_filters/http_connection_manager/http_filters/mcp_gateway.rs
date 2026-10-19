@@ -274,7 +274,6 @@ pub enum UpstreamBackend {
         /// Cluster used to reach the MCP server (endpoints, TLS, HTTP/1 or HTTP/2).
         cluster: InternedStr,
     },
-    FunctionGraph,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -696,10 +695,6 @@ mod envoy_conversions {
             let description = required!(description).with_node("Tool.description")?;
             let backend = required!(upstream_backend)?.try_into()?;
 
-            if let UpstreamBackend::FunctionGraph = backend {
-                unimplemented!("FunctionGraph backend is not supported yet")
-            }
-
             let validate_schema_fn = |schema, name| -> Result<Map<String, Value>, GenericError> {
                 if let Some(schema) = schema {
                     let bytes = TryInto::<DataSource>::try_into(schema)?.to_bytes_blocking()?;
@@ -718,9 +713,7 @@ mod envoy_conversions {
             };
 
             let input_schema = match backend {
-                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph => {
-                    validate_schema_fn(input_schema, "input")?
-                },
+                UpstreamBackend::Rest { .. } => validate_schema_fn(input_schema, "input")?,
                 UpstreamBackend::McpServer { .. } => {
                     // input_schema is ignored for MCP backends
                     if input_schema.is_some() {
@@ -731,9 +724,7 @@ mod envoy_conversions {
             };
 
             let output_schema = match backend {
-                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph => {
-                    validate_schema_fn(output_schema, "output")?
-                },
+                UpstreamBackend::Rest { .. } => validate_schema_fn(output_schema, "output")?,
                 UpstreamBackend::McpServer { .. } => {
                     // output_schema is ignored for MCP backends
                     if output_schema.is_some() {
@@ -803,7 +794,6 @@ mod envoy_conversions {
                         cluster: intern_identifier(&be.cluster, "McpServerBackend.cluster")?,
                     })
                 },
-                ArionUpstreamBackend::FunctionGraphBackend(_) => todo!(),
             }
         }
     }

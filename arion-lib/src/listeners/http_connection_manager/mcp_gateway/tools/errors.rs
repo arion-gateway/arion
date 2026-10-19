@@ -100,8 +100,6 @@ pub enum CallToolError {
     ToolNotFound(String),
     #[error("access to tool '{0}' denied by RBAC policy")]
     RbacDenied(String),
-    #[error("FunctionGraph transcoding is not yet implemented")]
-    FunctionGraphNotImplemented,
     #[error("Failed to encode request for tool '{tool}': {reason}")]
     RequestEncoding { tool: String, reason: String },
     #[error("Client initialization error: {0}")]
@@ -140,9 +138,6 @@ impl From<CallToolError> for model::ErrorData {
             },
             CallToolError::RbacDenied(tool) => {
                 model::ErrorData::invalid_request(format!("Access denied by RBAC policy for tool '{tool}'"), None)
-            },
-            CallToolError::FunctionGraphNotImplemented => {
-                model::ErrorData::internal_error("FunctionGraph transcoding is not yet implemented", None)
             },
             CallToolError::RequestEncoding { tool, reason } => {
                 model::ErrorData::internal_error(format!("Failed to encode request for tool '{tool}': {reason}"), None)
