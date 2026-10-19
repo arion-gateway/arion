@@ -125,10 +125,11 @@ message McpServerBackend {
     StreamableHttp = 1;
   }
   TransportUpstream transport = 1;
-  string url = 2;
-  // Cluster used to reach the MCP server. The cluster endpoints, TLS context
-  // and HTTP protocol options (HTTP/1 or HTTP/2) are taken from its
-  // configuration; `url` only provides the request path (and query).
+  // Request path (and optional query) sent to the upstream MCP server, e.g. "/mcp".
+  string path = 2;
+  // Cluster used to reach the MCP server. The cluster endpoints, TLS context,
+  // HTTP protocol options (HTTP/1 or HTTP/2) and the Host/:authority header
+  // sent upstream are all taken from its configuration.
   string cluster = 3;
 }
 
@@ -138,7 +139,8 @@ message DynamicMcpServer {
   string namespace = 1;
   string description = 2;
   McpServerBackend.TransportUpstream transport = 3;
-  string url = 4;
+  // Request path (and optional query) sent to the upstream MCP server, e.g. "/mcp".
+  string path = 4;
   // Minimum interval between refresh attempts. If unset, a successful first
   // fetch is cached indefinitely and failed attempts use a 30-second backoff.
   google.protobuf.Duration cache_duration = 5;

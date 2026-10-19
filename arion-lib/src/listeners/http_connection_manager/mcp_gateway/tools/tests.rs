@@ -65,7 +65,7 @@ fn dynamic_server_entry(namespace: &str) -> DynamicMcpServerEntry {
         description: "".into(),
         transport: McpBackendTransportUpstream::StreamableHttp,
         cluster: "mcp".into(),
-        url: "http://localhost/mcp".into(),
+        path: "/mcp".into(),
         cache_duration: None,
         rbac: None,
         tool_disclosure_mode: DisclosureMode::Progressive,
@@ -176,7 +176,7 @@ async fn failed_dynamic_refresh_retains_previous_tools() {
         description: "".into(),
         transport: McpBackendTransportUpstream::StreamableHttp,
         cluster: "mcp".into(),
-        url: "http://127.0.0.1:1/mcp".into(),
+        path: "/mcp".into(),
         cache_duration: None,
         rbac: None,
         tool_disclosure_mode: DisclosureMode::Progressive,
@@ -191,7 +191,7 @@ async fn failed_dynamic_refresh_retains_previous_tools() {
         backend: UpstreamBackend::McpServer {
             transport: McpBackendTransportUpstream::StreamableHttp,
             cluster: "mcp".into(),
-            url: "http://127.0.0.1:1/mcp".into(),
+            path: "/mcp".into(),
         },
         rbac: None,
         embedding: EmbeddingVector::default(),
@@ -557,7 +557,7 @@ fn tds_added_tools_inherit_registry_limits() {
     tool.backend = UpstreamBackend::McpServer {
         transport: McpBackendTransportUpstream::StreamableHttp,
         cluster: "mcp".into(),
-        url: "http://localhost/mcp".into(),
+        path: "/mcp".into(),
     };
 
     registry.add_tool(tool).unwrap();
@@ -628,7 +628,7 @@ fn test_remove_dynamic_server_evicts_its_tools() {
         description: "".into(),
         transport: McpBackendTransportUpstream::StreamableHttp,
         cluster: "mcp".into(),
-        url: "http://localhost/mcp".into(),
+        path: "/mcp".into(),
         cache_duration: None,
         rbac: None,
         tool_disclosure_mode: DisclosureMode::Progressive,
@@ -646,7 +646,7 @@ fn test_remove_dynamic_server_evicts_its_tools() {
             backend: UpstreamBackend::McpServer {
                 transport: McpBackendTransportUpstream::StreamableHttp,
                 cluster: "mcp".into(),
-                url: "http://localhost/mcp".into(),
+                path: "/mcp".into(),
             },
             rbac: None,
             embedding: EmbeddingVector::default(),

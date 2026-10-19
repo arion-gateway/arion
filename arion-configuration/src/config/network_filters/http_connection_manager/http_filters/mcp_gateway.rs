@@ -270,8 +270,8 @@ pub enum UpstreamBackend {
     },
     McpServer {
         transport: McpBackendTransportUpstream,
-        url: SmolStr,
-        /// Cluster used to reach the MCP server (endpoints, TLS, HTTP/1 or HTTP/2).
+        path: SmolStr,
+        /// Cluster used to reach the MCP server (endpoints, TLS, HTTP/1 or HTTP/2, Host/:authority).
         cluster: InternedStr,
     },
 }
@@ -334,8 +334,8 @@ pub struct DynamicMcpServer {
     pub namespace: InternedStr,
     pub description: SmolStr,
     pub transport: McpBackendTransportUpstream,
-    pub url: SmolStr,
-    /// Cluster used to reach the MCP server (endpoints, TLS, HTTP/1 or HTTP/2).
+    pub path: SmolStr,
+    /// Cluster used to reach the MCP server (endpoints, TLS, HTTP/1 or HTTP/2, Host/:authority).
     pub cluster: InternedStr,
     pub cache_duration: Option<Duration>,
     pub rbac: Option<McpToolRbac>,
@@ -548,14 +548,14 @@ mod envoy_conversions {
         (!duration.is_zero()).then_some(duration).ok_or_else(|| GenericError::from_msg("must be greater than zero"))
     }
 
-    fn validate_mcp_url(url: String, field: &'static str) -> Result<String, GenericError> {
-        let url = required!(url).with_node(field)?;
-        let parsed = url::Url::parse(&url)
+    fn validate_mcp_path(path: String, field: &'static str) -> Result<String, GenericError> {
+        let path = required!(path).with_node(field)?;
+        let uri = http::Uri::from_str(&path)
             .map_err(|error| GenericError::from_msg_with_cause(format!("Invalid {field}"), error))?;
-        if !matches!(parsed.scheme(), "http" | "https") || !parsed.has_host() {
-            return Err(GenericError::from_msg(format!("{field} must be an absolute HTTP(S) URL")));
+        if uri.scheme().is_some() || uri.authority().is_some() {
+            return Err(GenericError::from_msg(format!("{field} must be a request path, not an absolute URL")));
         }
-        Ok(url)
+        Ok(path)
     }
 
     fn validate_rest_path(path: String) -> Result<String, GenericError> {
@@ -595,11 +595,11 @@ mod envoy_conversions {
         fn try_from(arion: ArionDynamicMcpServer) -> Result<Self, Self::Error> {
             let transport = arion.transport().into();
             let tool_disclosure_mode = arion.tool_disclosure_mode().into();
-            let ArionDynamicMcpServer { namespace, description, url, cluster, cache_duration, rbac, .. } = arion;
+            let ArionDynamicMcpServer { namespace, description, path, cluster, cache_duration, rbac, .. } = arion;
             if namespace.is_empty() {
                 return Err(GenericError::from_msg("DynamicMcpServer.namespace must not be empty"));
             }
-            let url = validate_mcp_url(url, "DynamicMcpServer.url")?;
+            let path = validate_mcp_path(path, "DynamicMcpServer.path")?;
             if cluster.is_empty() {
                 return Err(GenericError::from_msg("DynamicMcpServer.cluster must not be empty"));
             }
@@ -609,7 +609,7 @@ mod envoy_conversions {
                 namespace: intern_identifier(&namespace, "DynamicMcpServer.namespace")?,
                 description: description.into(),
                 transport,
-                url: url.into(),
+                path: path.into(),
                 cluster: intern_identifier(&cluster, "DynamicMcpServer.cluster")?,
                 cache_duration,
                 rbac: rbac.map(TryInto::try_into).transpose()?,
@@ -784,13 +784,13 @@ mod envoy_conversions {
                 },
                 ArionUpstreamBackend::McpServerBackend(be) => {
                     let transport = be.transport().into();
-                    let url = validate_mcp_url(be.url, "McpServerBackend.url")?;
+                    let path = validate_mcp_path(be.path, "McpServerBackend.path")?;
                     if be.cluster.is_empty() {
                         return Err(GenericError::from_msg("McpServerBackend.cluster must not be empty"));
                     }
                     Ok(UpstreamBackend::McpServer {
                         transport,
-                        url: url.into(),
+                        path: path.into(),
                         cluster: intern_identifier(&be.cluster, "McpServerBackend.cluster")?,
                     })
                 },
@@ -973,16 +973,16 @@ mod envoy_conversions {
         }
 
         #[test]
-        fn dynamic_mcp_server_conversion_rejects_an_invalid_url() {
+        fn dynamic_mcp_server_conversion_rejects_an_invalid_path() {
             let result: Result<DynamicMcpServer, _> = ArionDynamicMcpServer {
                 namespace: "example".to_owned(),
-                url: "localhost:3000/mcp".to_owned(),
+                path: "localhost:3000/mcp".to_owned(),
                 cluster: "mcp".to_owned(),
                 ..Default::default()
             }
             .try_into();
 
-            assert!(result.unwrap_err().to_string().contains("DynamicMcpServer.url"));
+            assert!(result.unwrap_err().to_string().contains("DynamicMcpServer.path"));
         }
 
         #[test]

@@ -54,7 +54,7 @@ pub(super) enum ToolBackend {
 
 #[derive(Debug)]
 pub(super) struct McpServerBackend {
-    pub url: SmolStr,
+    pub path: SmolStr,
     pub cluster: InternedStr,
     pub upstream_attr: StringValue,
     pub upstream_tool_name: Cow<'static, str>,
@@ -205,14 +205,14 @@ pub(super) fn build_tool_entry(
                 upstream_limits,
             )?))
         },
-        UpstreamBackend::McpServer { url, cluster, .. } => {
+        UpstreamBackend::McpServer { path, cluster, .. } => {
             let upstream_tool_name: Cow<'static, str> = match &source {
                 ToolSource::Direct | ToolSource::OpenApi => Cow::Owned(id.name.to_string()),
                 ToolSource::Dynamic { upstream_tool_name } => Cow::Owned(upstream_tool_name.to_string()),
             };
-            let upstream_attr = StringValue::from(StdArc::<str>::from(url.as_str()));
+            let upstream_attr = StringValue::from(StdArc::<str>::from(path.as_str()));
             ToolBackend::McpServer(McpServerBackend {
-                url,
+                path,
                 cluster,
                 upstream_attr,
                 upstream_tool_name,

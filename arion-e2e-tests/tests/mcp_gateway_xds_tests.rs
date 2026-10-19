@@ -450,14 +450,14 @@ async fn test_mcp_gateway_xds_static_and_xds_coexist() {
 #[ignore]
 async fn test_mcp_gateway_xds_dynamic_server_add_materializes_tools() {
     let mock = MockMcpServer::start().await.expect("Failed to start mock MCP server");
-    let mock_url = format!("http://{}/mcp", mock.addr());
+    let mock_path = "/mcp";
 
     let (harness, listener_addr) = start_harness_with_mcp_listener().await;
     push_dyn_mcp_cluster(&harness, mock.addr()).await;
     let client = new_initialized_client(listener_addr).await;
 
     let server_proto =
-        DynamicMcpServerBuilder::new("dyn_srv", "dynamic mock", DYN_MCP_CLUSTER, &mock_url).eager_tools().build();
+        DynamicMcpServerBuilder::new("dyn_srv", "dynamic mock", DYN_MCP_CLUSTER, mock_path).eager_tools().build();
     let resource_id = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "dyn_srv");
     harness.push_dynamic_mcp_server(&resource_id, &server_proto).await.expect("push dyn server");
 
@@ -473,14 +473,14 @@ async fn test_mcp_gateway_xds_dynamic_server_add_materializes_tools() {
 #[ignore]
 async fn test_mcp_gateway_xds_dynamic_server_remove_evicts_tools() {
     let mock = MockMcpServer::start().await.expect("Failed to start mock MCP server");
-    let mock_url = format!("http://{}/mcp", mock.addr());
+    let mock_path = "/mcp";
 
     let (harness, listener_addr) = start_harness_with_mcp_listener().await;
     push_dyn_mcp_cluster(&harness, mock.addr()).await;
     let client = new_initialized_client(listener_addr).await;
 
     let server_proto =
-        DynamicMcpServerBuilder::new("dyn_srv", "dynamic mock", DYN_MCP_CLUSTER, &mock_url).eager_tools().build();
+        DynamicMcpServerBuilder::new("dyn_srv", "dynamic mock", DYN_MCP_CLUSTER, mock_path).eager_tools().build();
     let resource_id = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "dyn_srv");
     harness.push_dynamic_mcp_server(&resource_id, &server_proto).await.expect("push dyn server");
 
@@ -505,14 +505,14 @@ async fn test_mcp_gateway_xds_dynamic_server_remove_evicts_tools() {
 #[ignore]
 async fn test_mcp_gateway_xds_dynamic_server_replaces_tools_on_update() {
     let mock = MockMcpServer::start().await.expect("Failed to start mock MCP server");
-    let mock_url = format!("http://{}/mcp", mock.addr());
+    let mock_path = "/mcp";
 
     let (harness, listener_addr) = start_harness_with_mcp_listener().await;
     push_dyn_mcp_cluster(&harness, mock.addr()).await;
     let client = new_initialized_client(listener_addr).await;
 
     let server_proto =
-        DynamicMcpServerBuilder::new("dyn_srv", "dynamic mock", DYN_MCP_CLUSTER, &mock_url).eager_tools().build();
+        DynamicMcpServerBuilder::new("dyn_srv", "dynamic mock", DYN_MCP_CLUSTER, mock_path).eager_tools().build();
     let resource_id = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "dyn_srv");
     harness.push_dynamic_mcp_server(&resource_id, &server_proto).await.expect("initial push");
 
