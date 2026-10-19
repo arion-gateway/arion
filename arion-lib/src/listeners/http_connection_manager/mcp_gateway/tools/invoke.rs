@@ -99,26 +99,29 @@ async fn invoke_mcp_server(
     arguments: &Value,
     cx: ToolCallContext<'_>,
 ) -> Result<CallToolResult, CallToolError> {
-    let url = &backend.url;
+    let path = &backend.path;
     let cluster = &backend.cluster;
+    // Keyed by (cluster, path): path alone is not enough to tell two different
+    // upstream MCP servers apart (many of them mount at the same conventional path).
+    let upstream_key = (*cluster, path.clone());
     let session = cx.session;
     let arguments = arguments.as_object();
     let upstream_tool_name = backend.upstream_tool_name.as_ref();
     let upstream_call = async {
-        let cached = session.mcp_upstreams.pin().get(url.as_str()).map(StdArc::clone);
+        let cached = session.mcp_upstreams.pin().get(&upstream_key).map(StdArc::clone);
         let client = if let Some(client) = cached {
             client
         } else {
-            let new_client = StdArc::new(ToolsRegistry::get_mcp_client(cluster.as_str(), url.as_str()).await?);
-            StdArc::clone(session.mcp_upstreams.pin().get_or_insert_with(url.clone(), || new_client))
+            let new_client = StdArc::new(ToolsRegistry::get_mcp_client(cluster.as_str(), path.as_str()).await?);
+            StdArc::clone(session.mcp_upstreams.pin().get_or_insert_with(upstream_key.clone(), || new_client))
         };
 
         match client.call_tool_borrowed(upstream_tool_name, arguments).await {
             Ok(result) => Ok::<_, CallToolError>(result),
             Err(error) => {
                 if matches!(&error, ServiceError::TransportSend(_) | ServiceError::TransportClosed) {
-                    info!(target: "mcp_gateway", "removing MCP client for URL {url} due to transport error!");
-                    session.mcp_upstreams.pin().remove(url.as_str());
+                    info!(target: "mcp_gateway", "removing MCP client for path {path} (cluster {cluster}) due to transport error!");
+                    session.mcp_upstreams.pin().remove(&upstream_key);
                 }
                 Err(CallToolError::ServiceError(Box::new(error)))
             },

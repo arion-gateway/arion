@@ -45,11 +45,12 @@ use crate::listeners::http_connection_manager::mcp_gateway::{rbac::ToolRbac, ups
 const INDEFINITE_CACHE_LIFETIME: Duration = Duration::from_secs(100 * 365 * 24 * 3600);
 const DEFAULT_DYNAMIC_REFRESH_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Build the upstream MCP HTTP client for `url`, sending through the `HttpChannel` of `cluster`
-/// (endpoints, TLS, HTTP/1 or HTTP/2 and connection pools come from the cluster).
+/// Build the upstream MCP HTTP client for `path`, sending through the `HttpChannel` of `cluster`
+/// (endpoints, TLS, HTTP/1 or HTTP/2, connection pools and the Host/:authority header all come
+/// from the cluster).
 #[cfg(test)]
-fn upstream_http_client(cluster: &str, url: &str) -> Result<McpHttpClient, Box<ClientInitializeError>> {
-    McpHttpClient::try_new(cluster, url).map_err(|err| {
+fn upstream_http_client(cluster: &str, path: &str) -> Result<McpHttpClient, Box<ClientInitializeError>> {
+    McpHttpClient::try_new(cluster, path).map_err(|err| {
         Box::new(ClientInitializeError::TransportError {
             error: DynamicTransportError::from_parts(
                 "arion-cluster",
@@ -202,7 +203,7 @@ impl ToolsRegistry {
         server: &DynamicMcpServerEntry,
     ) -> Result<Vec<ToolEntry>, ListToolsError> {
         let upstream_tools =
-            Self::list_upstream_tools(&server.conf.transport, &server.conf.cluster, &server.conf.url).await?;
+            Self::list_upstream_tools(&server.conf.transport, &server.conf.cluster, &server.conf.path).await?;
         self.materialise_dynamic_tools(server, upstream_tools)
     }
 
@@ -227,7 +228,7 @@ impl ToolsRegistry {
                 output_schema,
                 backend: UpstreamBackend::McpServer {
                     transport: server.conf.transport.clone(),
-                    url: server.conf.url.clone(),
+                    path: server.conf.path.clone(),
                     cluster: server.conf.cluster,
                 },
                 rbac: server.conf.rbac.clone(),
@@ -252,12 +253,12 @@ impl ToolsRegistry {
     async fn list_upstream_tools(
         transport: &McpBackendTransportUpstream,
         cluster: &str,
-        url: &str,
+        path: &str,
     ) -> Result<Vec<Tool>, ListToolsError> {
-        debug!(target: "mcp_gateway", "Listing tools from upstream with transport {transport:?} at {url} (cluster {cluster})");
+        debug!(target: "mcp_gateway", "Listing tools from upstream with transport {transport:?} at {path} (cluster {cluster})");
         match transport {
             McpBackendTransportUpstream::StreamableHttp => {
-                let client = Self::get_mcp_client(cluster, url).await?;
+                let client = Self::get_mcp_client(cluster, path).await?;
                 let tools = client.list_tools(Option::default()).await.map_err(Box::new)?;
                 Ok(tools.tools)
             },
@@ -267,12 +268,12 @@ impl ToolsRegistry {
 
     pub(super) async fn get_mcp_client(
         cluster: &str,
-        url: &str,
+        path: &str,
     ) -> Result<McpUpstreamClient, Box<ClientInitializeError>> {
-        debug!(target: "mcp_gateway", "Creating MCP client for URL: {url} (cluster {cluster})...");
+        debug!(target: "mcp_gateway", "Creating MCP client for path: {path} (cluster {cluster})...");
         let client_info =
             ClientConfig::new(ClientCapabilities::default(), Implementation::new(DEFAULT_USER_AGENT, "0.1.0"));
-        McpUpstreamClient::connect(cluster, url, client_info).await.inspect_err(|e| {
+        McpUpstreamClient::connect(cluster, path, client_info).await.inspect_err(|e| {
             info!(target: "mcp_gateway", "get_mcp_client error: {}!", e);
         })
     }
@@ -284,12 +285,12 @@ mod tests {
 
     #[test]
     fn test_upstream_http_client_initialization() {
-        upstream_http_client("mcp", "http://127.0.0.1:9/mcp").expect("valid url must build a client");
+        upstream_http_client("mcp", "/mcp").expect("valid path must build a client");
     }
 
     #[test]
-    fn test_upstream_http_client_rejects_invalid_url() {
-        assert!(upstream_http_client("mcp", "not a url").is_err());
-        assert!(upstream_http_client("mcp", "ftp://example.com/mcp").is_err());
+    fn test_upstream_http_client_rejects_invalid_path() {
+        assert!(upstream_http_client("mcp", "not a path").is_err());
+        assert!(upstream_http_client("mcp", "http://example.com/mcp").is_err());
     }
 }

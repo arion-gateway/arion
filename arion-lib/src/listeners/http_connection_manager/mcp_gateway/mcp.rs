@@ -191,7 +191,13 @@ pub struct Session {
     pub session_id: SessionId,
     pub session_id_header: HeaderValue,
     pub last_activity: AtomicInstant,
-    pub mcp_upstreams: PapayaMap<SmolStr, StdArc<McpUpstreamClient>, ahash::RandomState>,
+    /// Upstream MCP clients cached for this session, keyed by `(cluster, path)`.
+    ///
+    /// Keying by `path` alone is not sufficient: `path` is just a request path (e.g. `"/mcp"`)
+    /// and does not identify the upstream host, so two MCP servers fronted by different clusters
+    /// that happen to expose the same path would collide in the cache and one would be called
+    /// through a client connected to the wrong upstream.
+    pub mcp_upstreams: PapayaMap<(InternedStr, SmolStr), StdArc<McpUpstreamClient>, ahash::RandomState>,
 }
 
 impl std::fmt::Debug for Session {
