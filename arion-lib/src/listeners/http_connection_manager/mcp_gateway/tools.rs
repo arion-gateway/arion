@@ -689,10 +689,7 @@ impl ToolsRegistry {
         }
     }
 
-    async fn get_mcp_client(
-        cluster: &str,
-        url: &str,
-    ) -> Result<McpUpstreamClient, Box<ClientInitializeError>> {
+    async fn get_mcp_client(cluster: &str, url: &str) -> Result<McpUpstreamClient, Box<ClientInitializeError>> {
         debug!(target: "mcp_gateway", "Creating MCP client for URL: {url} (cluster {cluster})...");
         let client_info =
             ClientConfig::new(ClientCapabilities::default(), Implementation::new(DEFAULT_USER_AGENT, "0.1.0"));
@@ -906,12 +903,9 @@ impl ToolsRegistry {
 
         match (&entry.conf.backend, &entry.transcoder) {
             (UpstreamBackend::Rest { .. }, TranscoderType::Rest(transcoder)) => {
-                let upstream_request = transcoder
-                    .encode(req_headers, &rpc.request)
-                    .map_err(|e| CallToolError::TranscoderError {
-                        tool: entry.conf.name.clone(),
-                        reason: e.to_string(),
-                    })?;
+                let upstream_request = transcoder.encode(req_headers, &rpc.request).map_err(|e| {
+                    CallToolError::TranscoderError { tool: entry.conf.name.clone(), reason: e.to_string() }
+                })?;
                 let outcome = upstream::invoke_rest_tool(&entry, upstream_request, upstream_limits, req_ctx).await;
                 let (bytes, _) = upstream::serialize_json_rpc_response(&rpc.id, &outcome.into_call_tool_result())?;
                 Ok(MessageResult::JsonRpcResponse(bytes))
@@ -1042,10 +1036,7 @@ fn build_tool_entry(tool_conf: McpTool, source: ToolSource) -> Result<ToolEntry,
                 body_template.clone(),
             )?)),
             cluster.to_interned_str(),
-            upstream_policy
-                .authority
-                .as_ref()
-                .map(|authority| http::HeaderValue::from_str(authority.as_str())),
+            upstream_policy.authority.as_ref().map(|authority| http::HeaderValue::from_str(authority.as_str())),
         ),
         UpstreamBackend::FunctionGraph => (TranscoderType::FunctionGraph(FunctionGraphTranscoder {}), "".into(), None),
         UpstreamBackend::McpServer { url, .. } => (TranscoderType::NoTranscoder, url.to_interned_str(), None),

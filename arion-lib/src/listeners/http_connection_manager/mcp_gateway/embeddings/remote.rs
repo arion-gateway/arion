@@ -100,8 +100,8 @@ impl EmbeddingsClient {
             Some(uri) => uri.clone(),
             None => Uri::try_from(self.path.as_str()).map_err(|e| EmbeddingError::Service(format!("request: {e}")))?,
         };
-        let host = HeaderValue::from_str(upstream_authority)
-            .map_err(|e| EmbeddingError::Service(format!("request: {e}")))?;
+        let host =
+            HeaderValue::from_str(upstream_authority).map_err(|e| EmbeddingError::Service(format!("request: {e}")))?;
 
         let body: ArionRequestBody = InstrumentedBody::new(
             BodyKind::Request,

@@ -535,10 +535,8 @@ impl McpUpstreamClient {
             .map_err(|e| Self::into_init_transport_error(e, "encode initialize request"))?;
 
         let init_req = http.build_direct_post_request(None, None, init_payload);
-        let response = http
-            .send(init_req)
-            .await
-            .map_err(|e| Self::into_init_transport_error(e, "send initialize request"))?;
+        let response =
+            http.send(init_req).await.map_err(|e| Self::into_init_transport_error(e, "send initialize request"))?;
 
         let status = response.status();
         check_auth(status, response.headers())
@@ -595,15 +593,13 @@ impl McpUpstreamClient {
         }
 
         let id = self.next_request_id();
-        let (_, new_state) = Self::expect_handshake_boxed(&self.http, &self.client_info, id)
-            .await
-            .map_err(|err| {
-                ServiceError::TransportSend(DynamicTransportError::from_parts(
-                    "arion-streamable-http",
-                    std::any::TypeId::of::<RoleClient>(),
-                    err,
-                ))
-            })?;
+        let (_, new_state) = Self::expect_handshake_boxed(&self.http, &self.client_info, id).await.map_err(|err| {
+            ServiceError::TransportSend(DynamicTransportError::from_parts(
+                "arion-streamable-http",
+                std::any::TypeId::of::<RoleClient>(),
+                err,
+            ))
+        })?;
         let new_state = StdArc::new(new_state);
         self.state.store(StdArc::clone(&new_state));
         Ok(new_state)
@@ -621,10 +617,9 @@ impl McpUpstreamClient {
         if status.is_success() {
             return Ok(());
         }
-        let body = collect_body(response.into_body()).await.map_or_else(
-            |_| "<failed to read response body>".to_owned(),
-            |b| String::from_utf8_lossy(&b).into_owned(),
-        );
+        let body = collect_body(response.into_body())
+            .await
+            .map_or_else(|_| "<failed to read response body>".to_owned(), |b| String::from_utf8_lossy(&b).into_owned());
         Err(StreamableHttpError::UnexpectedServerResponse(Cow::Owned(format!("HTTP {status}: {body}"))))
     }
 
@@ -699,11 +694,7 @@ impl McpUpstreamClient {
         let encode_res = if method == PingRequestMethod::VALUE {
             serde_json::to_writer(
                 &mut buf,
-                &OutboundJsonRpcResponse {
-                    jsonrpc: JsonRpcVersion2_0,
-                    id: server_req_id,
-                    result: EmptyResult {},
-                },
+                &OutboundJsonRpcResponse { jsonrpc: JsonRpcVersion2_0, id: server_req_id, result: EmptyResult {} },
             )
         } else {
             serde_json::to_writer(
@@ -752,10 +743,7 @@ impl McpUpstreamClient {
         };
         if let Some(method) = envelope.method {
             if let Some(server_req_id) = envelope.id {
-                return Ok(SseFrameAction::ServerRequest {
-                    id: server_req_id,
-                    method: SmolStr::from(method.as_ref()),
-                });
+                return Ok(SseFrameAction::ServerRequest { id: server_req_id, method: SmolStr::from(method.as_ref()) });
             }
             return Ok(SseFrameAction::Continue);
         }
@@ -794,21 +782,16 @@ impl McpUpstreamClient {
         let Some(first_item) = data_stream.next().await else {
             return Err(StreamableHttpError::UnexpectedEndOfStream);
         };
-        let first_chunk = first_item.map_err(|e| StreamableHttpError::Client(UpstreamClientError::Body(Box::new(e))))?;
+        let first_chunk =
+            first_item.map_err(|e| StreamableHttpError::Client(UpstreamClientError::Body(Box::new(e))))?;
 
         // Fast path: try to parse complete SSE events directly from `first_chunk` with zero copies.
         if first_chunk.len() <= DEFAULT_MAX_SSE_EVENT_SIZE
             && let Some((outcome, server_requests)) = try_parse_fast_sse_chunk::<R>(&first_chunk, expected_id)?
         {
             for (req_id, method) in server_requests {
-                Box::pin(Self::reply_to_server_request(
-                    http,
-                    session_id,
-                    protocol_version,
-                    &req_id,
-                    method.as_str(),
-                ))
-                .await;
+                Box::pin(Self::reply_to_server_request(http, session_id, protocol_version, &req_id, method.as_str()))
+                    .await;
             }
             // Await the terminating EOF (`0\r\n\r\n` on HTTP/1.1 chunked) so Hyper's connection
             // driver finishes decoding the response body and returns the socket to the pool!
@@ -931,9 +914,7 @@ impl McpUpstreamClient {
         let outcome = match self.post_request_once::<R>(id, payload.clone(), &state).await {
             Err(StreamableHttpError::SessionExpired) => {
                 let new_state = self.reinitialize(&state).await?;
-                self.post_request_once::<R>(id, payload, &new_state)
-                    .await
-                    .map_err(Self::into_service_error)?
+                self.post_request_once::<R>(id, payload, &new_state).await.map_err(Self::into_service_error)?
             },
             other => other.map_err(Self::into_service_error)?,
         };
@@ -961,11 +942,7 @@ impl McpUpstreamClient {
         name: &str,
         arguments: Option<&JsonObject>,
     ) -> Result<CallToolResult, ServiceError> {
-        self.send_typed_request(
-            CallToolRequestMethod::VALUE,
-            Some(BorrowedCallToolParams { name, arguments }),
-        )
-        .await
+        self.send_typed_request(CallToolRequestMethod::VALUE, Some(BorrowedCallToolParams { name, arguments })).await
     }
 
     /// Invoke `tools/call` with owned [`CallToolRequestParams`].
@@ -1165,9 +1142,7 @@ impl McpUpstreamClient {
                     self.send_typed_request(DiscoverRequestMethod::VALUE, Some(&req.params)).await?;
                 Ok(ServerResult::DiscoverResult(res))
             },
-            ClientRequest::CompleteRequest(req) => {
-                self.complete(req.params).await.map(ServerResult::CompleteResult)
-            },
+            ClientRequest::CompleteRequest(req) => self.complete(req.params).await.map(ServerResult::CompleteResult),
             ClientRequest::SetLevelRequest(req) => {
                 self.set_level(req.params).await?;
                 Ok(ServerResult::EmptyResult(EmptyResult {}))
@@ -1200,15 +1175,11 @@ impl McpUpstreamClient {
                 self.unsubscribe(req.params).await?;
                 Ok(ServerResult::EmptyResult(EmptyResult {}))
             },
-            ClientRequest::CallToolRequest(req) => {
-                self.call_tool(req.params).await.map(ServerResult::CallToolResult)
-            },
+            ClientRequest::CallToolRequest(req) => self.call_tool(req.params).await.map(ServerResult::CallToolResult),
             ClientRequest::ListToolsRequest(req) => {
                 self.list_tools(req.params).await.map(ServerResult::ListToolsResult)
             },
-            ClientRequest::GetTaskRequest(req) => {
-                self.get_task(req.params).await.map(ServerResult::GetTaskResult)
-            },
+            ClientRequest::GetTaskRequest(req) => self.get_task(req.params).await.map(ServerResult::GetTaskResult),
             ClientRequest::UpdateTaskRequest(req) => {
                 self.update_task(req.params).await?;
                 Ok(ServerResult::TaskAckResult(TaskAckResult::new()))
@@ -1224,10 +1195,9 @@ impl McpUpstreamClient {
             _ => {
                 let id = self.next_request_id();
                 let message = ClientJsonRpcMessage::request(request, RequestId::Number(id));
-                let payload = Bytes::from(
-                    serde_json::to_vec(&message)
-                        .map_err(|e| Self::into_service_error(StreamableHttpError::Client(UpstreamClientError::Json(e))))?,
-                );
+                let payload = Bytes::from(serde_json::to_vec(&message).map_err(|e| {
+                    Self::into_service_error(StreamableHttpError::Client(UpstreamClientError::Json(e)))
+                })?);
                 self.send_raw_request::<ServerResult>(id, payload).await
             },
         }

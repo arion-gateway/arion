@@ -111,9 +111,13 @@ impl InboundJsonRpcEnvelope {
             // JSON-RPC 2.0 responses with `"result": null` deserialize `result` as `None` when
             // typed as `Option<JsonObject>`; if `id` is present and neither `method` nor `error`
             // is set, treat it as an empty-object response.
-            (Some(id), None, None, None) if params.is_none() => Ok(model::JsonRpcMessage::Response(
-                model::JsonRpcResponse { jsonrpc, id, result: model::JsonObject::new() },
-            )),
+            (Some(id), None, None, None) if params.is_none() => {
+                Ok(model::JsonRpcMessage::Response(model::JsonRpcResponse {
+                    jsonrpc,
+                    id,
+                    result: model::JsonObject::new(),
+                }))
+            },
             _ => Err("invalid JSON-RPC 2.0 message envelope"),
         }
     }
@@ -225,8 +229,7 @@ impl McpGatewayListenerContext {
         }
 
         let session_id = SessionId(Uuid::new_v4().to_smolstr());
-        let session_id_header =
-            HeaderValue::from_str(session_id.as_str()).unwrap_or(HeaderValue::from_static(""));
+        let session_id_header = HeaderValue::from_str(session_id.as_str()).unwrap_or(HeaderValue::from_static(""));
 
         let session = StdArc::new(Session {
             listener_name,
@@ -719,9 +722,8 @@ impl McpGateway {
             },
             PingRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: 'ping' received");
-                let (response, _) =
-                    upstream::serialize_json_rpc_response(&rpc.id, &serde_json::Map::new())
-                        .unwrap_or_else(|_| (Bytes::new(), 0));
+                let (response, _) = upstream::serialize_json_rpc_response(&rpc.id, &serde_json::Map::new())
+                    .unwrap_or_else(|_| (Bytes::new(), 0));
 
                 Ok(MessageResult::JsonRpcResponse(response))
             },
@@ -736,8 +738,8 @@ impl McpGateway {
                         ));
                     },
                 };
-                let (response, _) = upstream::serialize_json_rpc_response(&rpc.id, &tools)
-                    .unwrap_or_else(|_| (Bytes::new(), 0));
+                let (response, _) =
+                    upstream::serialize_json_rpc_response(&rpc.id, &tools).unwrap_or_else(|_| (Bytes::new(), 0));
 
                 Ok(MessageResult::JsonRpcResponse(response))
             },
@@ -769,12 +771,10 @@ impl McpGateway {
                                 "FunctionGraph transcoding is not yet implemented",
                                 None,
                             ),
-                            CallToolError::TranscoderError { tool, reason } => {
-                                model::ErrorData::internal_error(
-                                    format!("Transcoder error for tool '{tool}': {reason}"),
-                                    None,
-                                )
-                            },
+                            CallToolError::TranscoderError { tool, reason } => model::ErrorData::internal_error(
+                                format!("Transcoder error for tool '{tool}': {reason}"),
+                                None,
+                            ),
                             CallToolError::ClientInitializeError(init_err) => match *init_err {
                                 ClientInitializeError::JsonRpcError(error_data) => error_data,
                                 ClientInitializeError::ConnectionClosed(msg) => {
@@ -844,10 +844,7 @@ impl McpGateway {
         }
     }
 
-    fn get_valid_session(
-        ctx: &McpGatewayListenerContext,
-        session_id: &str,
-    ) -> Result<StdArc<Session>, SessionError> {
+    fn get_valid_session(ctx: &McpGatewayListenerContext, session_id: &str) -> Result<StdArc<Session>, SessionError> {
         let Some(session) = ctx.session_map.pin().get(session_id).map(StdArc::clone) else {
             debug!(target: "mcp_gateway", "get_valid_session: valid session {} not found in session map", session_id);
             return Err(SessionError::NotFound);
