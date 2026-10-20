@@ -128,12 +128,8 @@ async fn invoke_mcp_server(
         }
     };
 
-    let invocation = Invocation::start(
-        cx.request,
-        entry.tool_name_attr.clone(),
-        "mcp_server",
-        backend.upstream_attr.clone(),
-    );
+    let invocation =
+        Invocation::start(cx.request, entry.tool_name_attr.clone(), "mcp_server", backend.upstream_attr.clone());
     let mut outcome: ToolInvocationOutcome = match fast_timeout(backend.timeout, upstream_call).await {
         Err(_) => Err(ToolInvocationFailure::upstream_timeout()),
         Ok(Ok(result)) => Ok(result),

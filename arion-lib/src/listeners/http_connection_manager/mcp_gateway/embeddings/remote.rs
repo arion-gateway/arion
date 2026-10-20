@@ -103,8 +103,8 @@ impl EmbeddingsClient {
             Some(uri) => uri.clone(),
             None => self.path.parse::<Uri>().map_err(|e| EmbeddingError::Service(format!("request: {e}")))?,
         };
-        let host = HeaderValue::from_str(upstream_authority)
-            .map_err(|e| EmbeddingError::Service(format!("request: {e}")))?;
+        let host =
+            HeaderValue::from_str(upstream_authority).map_err(|e| EmbeddingError::Service(format!("request: {e}")))?;
 
         let mut request = Request::new(body);
         *request.method_mut() = Method::POST;

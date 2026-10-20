@@ -35,8 +35,8 @@ use uuid::Uuid;
 
 use rmcp::model::{
     self, CallToolRequestMethod, ConstString, Implementation, InitializeRequestParams, InitializeResult,
-    InitializeResultMethod, InitializedNotificationMethod, ListToolsRequestMethod, NumberOrString,
-    PingRequestMethod, ServerCapabilities, Tool,
+    InitializeResultMethod, InitializedNotificationMethod, ListToolsRequestMethod, NumberOrString, PingRequestMethod,
+    ServerCapabilities, Tool,
 };
 
 use crate::{
@@ -153,9 +153,13 @@ impl InboundJsonRpcEnvelope {
             // JSON-RPC 2.0 responses with `"result": null` deserialize `result` as `None` when
             // typed as `Option<JsonObject>`; if `id` is present and neither `method` nor `error`
             // is set, treat it as an empty-object response.
-            (Some(id), None, None, None) if params_obj.is_none() => Ok(model::JsonRpcMessage::Response(
-                model::JsonRpcResponse { jsonrpc, id, result: model::JsonObject::new() },
-            )),
+            (Some(id), None, None, None) if params_obj.is_none() => {
+                Ok(model::JsonRpcMessage::Response(model::JsonRpcResponse {
+                    jsonrpc,
+                    id,
+                    result: model::JsonObject::new(),
+                }))
+            },
             _ => Err("invalid JSON-RPC 2.0 message envelope"),
         }
     }
@@ -457,11 +461,7 @@ pub struct McpGateway {
 
 impl McpGateway {
     fn with_inner(inner: StdArc<McpGatewayInner>) -> Self {
-        Self {
-            inner,
-            request_id: model::RequestId::Number(0),
-            version: http::Version::default(),
-        }
+        Self { inner, request_id: model::RequestId::Number(0), version: http::Version::default() }
     }
 }
 
@@ -538,12 +538,7 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
             GatewayMode::Code(_) => initialize_result.with_instructions(CodeMode::instructions()),
         };
 
-        Ok(Self::with_inner(StdArc::new(McpGatewayInner {
-            tools,
-            mode,
-            tds_registration,
-            initialize_result,
-        })))
+        Ok(Self::with_inner(StdArc::new(McpGatewayInner { tools, mode, tds_registration, initialize_result })))
     }
 }
 
@@ -938,7 +933,9 @@ impl McpGateway {
                 let cx = ToolCallContext { extensions: req_ext, headers: req_headers, request: req_ctx, session };
                 let result = self.inner.mode.call_tool(&self.inner.tools, cx, &name, arguments).await;
 
-                match result.and_then(|result| serialize_json_rpc_response(&self.request_id, &result).map_err(CallToolError::from)) {
+                match result.and_then(|result| {
+                    serialize_json_rpc_response(&self.request_id, &result).map_err(CallToolError::from)
+                }) {
                     Ok(bytes) => Ok(MessageResult::JsonRpcResponse(bytes)),
                     Err(err) => {
                         debug!(target: "mcp_gateway", "handle_rpc_json_request: 'tools/call' failed: {err:#}");
@@ -1177,8 +1174,10 @@ mod tests {
         assert_eq!(listed.tools.iter().map(|tool| tool.name.as_ref()).collect::<Vec<_>>(), ["crm.eager_only"]);
 
         let mut config = config_with_tools_mode();
-        config.tools =
-            vec![actual_tool("eager_one", DisclosureMode::Eager), actual_tool("hidden_one", DisclosureMode::Progressive)];
+        config.tools = vec![
+            actual_tool("eager_one", DisclosureMode::Eager),
+            actual_tool("hidden_one", DisclosureMode::Progressive),
+        ];
         let gateway = McpGateway::try_from(config).expect("tools gateway");
         let listed = gateway
             .inner
@@ -1199,19 +1198,16 @@ mod tests {
     #[tokio::test]
     async fn tool_search_returns_pretty_json_definitions_for_progressive_tools() {
         let mut config = config_with_tools_mode();
-        config.tools =
-            vec![actual_tool("eager_one", DisclosureMode::Eager), actual_tool("find_customer", DisclosureMode::Progressive)];
+        config.tools = vec![
+            actual_tool("eager_one", DisclosureMode::Eager),
+            actual_tool("find_customer", DisclosureMode::Progressive),
+        ];
         let gateway = McpGateway::try_from(config).expect("tools gateway");
         let cx = TestCallContext::default();
         let result = gateway
             .inner
             .mode
-            .call_tool(
-                &gateway.inner.tools,
-                cx.context(),
-                TOOL_SEARCH_TOOL_NAME,
-                json!({ "query": "find customer" }),
-            )
+            .call_tool(&gateway.inner.tools, cx.context(), TOOL_SEARCH_TOOL_NAME, json!({ "query": "find customer" }))
             .await
             .expect("tool_search call");
         let text = result.content.first().and_then(|block| block.as_text()).expect("text block");

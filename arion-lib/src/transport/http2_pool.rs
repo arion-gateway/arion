@@ -144,7 +144,6 @@ impl Drop for Http2StreamPermit {
     }
 }
 
-
 #[derive(Clone)]
 enum Http2Connect {
     Plain(UnifiedConnector),

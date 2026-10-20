@@ -166,7 +166,8 @@ impl RestBackend {
             })?;
 
         let tool_name = entry.tool.name.as_ref();
-        let mut invocation = Invocation::start(cx.request, entry.tool_name_attr.clone(), "rest", self.cluster.as_str().into());
+        let mut invocation =
+            Invocation::start(cx.request, entry.tool_name_attr.clone(), "rest", self.cluster.as_str().into());
         let outcome = match self.invoke_upstream(request, cx, &mut invocation, tool_name).await {
             Ok(response) => self.interpret_response(entry, response, &mut invocation).await,
             Err(failure) => Err(failure),

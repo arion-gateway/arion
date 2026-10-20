@@ -19,10 +19,10 @@ use std::time::Duration;
 
 use arion_data_plane_api::envoy_data_plane_api::{
     arion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        CodeMode, DisclosureMode, DynamicMcpServer, HttpUpstreamPolicy, JwtClaimMatcher,
-        JwtHeaderMatcher, McpGateway, McpServerBackend, OpenApiToolSource, Permission, QueryParam, RemoteEmbeddings,
-        RestBackend, ServerInfo, TdsSpecifier, Tool, ToolRbac, ToolSearch, Toolkit, ToolkitToolRef, ToolsMode,
-        mcp_gateway, mcp_server_backend, permission::PermissionType, rest_backend, tool, tool_rbac,
+        CodeMode, DisclosureMode, DynamicMcpServer, HttpUpstreamPolicy, JwtClaimMatcher, JwtHeaderMatcher, McpGateway,
+        McpServerBackend, OpenApiToolSource, Permission, QueryParam, RemoteEmbeddings, RestBackend, ServerInfo,
+        TdsSpecifier, Tool, ToolRbac, ToolSearch, Toolkit, ToolkitToolRef, ToolsMode, mcp_gateway, mcp_server_backend,
+        permission::PermissionType, rest_backend, tool, tool_rbac,
     },
     envoy::{
         config::core::v3::{DataSource, data_source::Specifier},
