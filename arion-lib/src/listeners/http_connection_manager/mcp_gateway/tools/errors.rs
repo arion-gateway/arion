@@ -157,9 +157,7 @@ impl From<CallToolError> for model::ErrorData {
                     model::ErrorData::internal_error(format!("Upstream client initialization error: {other}"), None)
                 },
             },
-            CallToolError::SerdeError(e) => {
-                model::ErrorData::parse_error(format!("Serialization error: {e}"), None)
-            },
+            CallToolError::SerdeError(e) => model::ErrorData::parse_error(format!("Serialization error: {e}"), None),
             CallToolError::ServiceError(svc_err) => match *svc_err {
                 ServiceError::McpError(error_data) => error_data,
                 ServiceError::TransportSend(e) => {

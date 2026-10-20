@@ -249,9 +249,7 @@ fn tool_error_envelope(error: &CallToolError) -> Value {
         CallToolError::NameNotString | CallToolError::ValidationError(_) => {
             ("invalid_input", "The tool input did not match its schema")
         },
-        CallToolError::RequestEncoding { .. } => {
-            ("upstream_error", "The upstream tool call failed")
-        },
+        CallToolError::RequestEncoding { .. } => ("upstream_error", "The upstream tool call failed"),
         CallToolError::ClientInitializeError(_) | CallToolError::ServiceError(_) => {
             ("upstream_error", "The upstream tool is unavailable")
         },
