@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(feature = "codemode")]
+pub mod codemode;
 pub(crate) mod embeddings;
 pub mod mcp;
 pub mod rbac;
 pub mod tools;
-pub mod transcoder;
 pub mod transport;
 pub mod uniqueness;
-pub mod upstream;
 pub mod xds_handler;

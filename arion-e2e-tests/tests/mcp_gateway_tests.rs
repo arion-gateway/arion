@@ -39,8 +39,8 @@ use arion_data_plane_api::envoy_data_plane_api::{
     google::protobuf::{Duration as ProstDuration, UInt32Value},
 };
 use arion_e2e_tests::config_builder::{
-    ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder, McpRestBackendBuilder,
-    McpServerBackendBuilder, McpToolBuilder, McpToolRbacBuilder, inline_string_data_source,
+    ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder, McpOpenApiToolSourceBuilder,
+    McpRestBackendBuilder, McpServerBackendBuilder, McpToolBuilder, McpToolRbacBuilder, inline_string_data_source,
 };
 use arion_e2e_tests::{
     ArionInstance, JwtKeyPair, McpTestClient, MockMcpServer, PreConfiguredResponse, SpawnOptions, TestBackend,
@@ -52,22 +52,25 @@ use serde_json::json;
 const SERVER_NAME: &str = "test-gateway";
 const SERVER_VERSION: &str = "1.0.0";
 const JWT_AUDIENCE: &str = "mcp-gateway";
+const TEST_TOOL_NAMESPACE: &str = "test";
 
 fn empty_schema() -> arion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::DataSource {
     inline_string_data_source(r#"{"type":"object","properties":{}}"#)
 }
 
 fn rest_tool(name: &str, description: &str, cluster: &str, method: &str, path: &str) -> ArionMcpTool {
-    McpToolBuilder::new(name, description)
+    McpToolBuilder::new(TEST_TOOL_NAMESPACE, name, description)
         .input_schema(empty_schema())
         .rest_backend(McpRestBackendBuilder::new(cluster, method, path))
+        .eager()
         .build()
 }
 
 fn mcp_server_tool(name: &str, description: &str, url: impl Into<String>) -> ArionMcpTool {
-    McpToolBuilder::new(name, description)
+    McpToolBuilder::new(TEST_TOOL_NAMESPACE, name, description)
         .input_schema(inline_string_data_source("{}"))
         .mcp_server_backend(McpServerBackendBuilder::new(url))
+        .eager()
         .build()
 }
 
@@ -136,8 +139,8 @@ async fn test_mcp_gateway_tools_list() {
     assert_eq!(tools.tools.len(), 2);
 
     let tool_names: Vec<&str> = tools.tools.iter().map(|t| t.name.as_str()).collect();
-    assert!(tool_names.contains(&"get_weather"));
-    assert!(tool_names.contains(&"get_user"));
+    assert!(tool_names.contains(&"test.get_weather"));
+    assert!(tool_names.contains(&"test.get_user"));
 
     arion.shutdown();
     let _ = std::fs::remove_file(&config_path);
@@ -149,7 +152,7 @@ async fn test_mcp_gateway_rest_path_templating() {
     let mut backend = TestBackend::start().await.expect("Failed to start test backend");
     backend.set_default_response(PreConfiguredResponse::with_body(r#"{"result": "success"}"#)).await;
 
-    let tool = McpToolBuilder::new("fetch_item", "Fetch an item by ID")
+    let tool = McpToolBuilder::new(TEST_TOOL_NAMESPACE, "fetch_item", "Fetch an item by ID")
         .input_schema(inline_string_data_source(
             r#"{"type":"object","properties":{"item_id":{"type":"string"}},"required":["item_id"]}"#,
         ))
@@ -171,7 +174,7 @@ async fn test_mcp_gateway_rest_path_templating() {
 
     let result = client
         .call_tool(
-            "fetch_item",
+            "test.fetch_item",
             json!({
                 "item_id": "12345"
             }),
@@ -195,7 +198,7 @@ async fn test_mcp_gateway_rest_query_params() {
     let mut backend = TestBackend::start().await.expect("Failed to start test backend");
     backend.set_default_response(PreConfiguredResponse::with_body(r#"{"users": []}"#)).await;
 
-    let tool = McpToolBuilder::new("search_users", "Search users with filters")
+    let tool = McpToolBuilder::new(TEST_TOOL_NAMESPACE, "search_users", "Search users with filters")
         .input_schema(inline_string_data_source(
             r#"{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"},"is_active":{"type":"boolean"}}}"#,
         ))
@@ -222,7 +225,7 @@ async fn test_mcp_gateway_rest_query_params() {
 
     client
         .call_tool(
-            "search_users",
+            "test.search_users",
             json!({
                 "name": "John",
                 "age": 30,
@@ -253,7 +256,7 @@ async fn test_mcp_gateway_rest_body_templating() {
     let mut backend = TestBackend::start().await.expect("Failed to start test backend");
     backend.set_default_response(PreConfiguredResponse::with_body(r#"{"id": "123"}"#)).await;
 
-    let tool = McpToolBuilder::new("create_user", "Create a new user")
+    let tool = McpToolBuilder::new(TEST_TOOL_NAMESPACE, "create_user", "Create a new user")
         .input_schema(inline_string_data_source(
             r#"{"type":"object","properties":{"username":{"type":"string"},"email":{"type":"string"},"age":{"type":"integer"}},"required":["username","email"]}"#,
         ))
@@ -280,7 +283,7 @@ async fn test_mcp_gateway_rest_body_templating() {
 
     client
         .call_tool(
-            "create_user",
+            "test.create_user",
             json!({
                 "username": "johndoe",
                 "email": "john@example.com",
@@ -310,7 +313,7 @@ async fn test_mcp_gateway_rest_full_transcoding() {
     let mut backend = TestBackend::start().await.expect("Failed to start test backend");
     backend.set_default_response(PreConfiguredResponse::with_body(r#"{"updated": true}"#)).await;
 
-    let tool = McpToolBuilder::new("update_resource", "Update a resource")
+    let tool = McpToolBuilder::new(TEST_TOOL_NAMESPACE, "update_resource", "Update a resource")
         .input_schema(inline_string_data_source(
             r#"{"type":"object","properties":{"resource_id":{"type":"string"},"force_update":{"type":"boolean"},"content":{"type":"string"},"version":{"type":"integer"}},"required":["resource_id","content"]}"#,
         ))
@@ -343,7 +346,7 @@ async fn test_mcp_gateway_rest_full_transcoding() {
 
     client
         .call_tool(
-            "update_resource",
+            "test.update_resource",
             json!({
                 "resource_id": "res-123",
                 "force_update": true,
@@ -377,12 +380,14 @@ async fn test_mcp_gateway_rest_authority_override() {
     let mut backend = TestBackend::start().await.expect("Failed to start test backend");
     backend.set_default_response(PreConfiguredResponse::with_body(r#"{"status":"ok"}"#)).await;
 
-    let override_tool = McpToolBuilder::new("authority_test", "Verify the configured upstream authority")
-        .input_schema(empty_schema())
-        .rest_backend(
-            McpRestBackendBuilder::new("backend_cluster", "GET", "/authority").authority("tools.internal.example:8443"),
-        )
-        .build();
+    let override_tool =
+        McpToolBuilder::new(TEST_TOOL_NAMESPACE, "authority_test", "Verify the configured upstream authority")
+            .input_schema(empty_schema())
+            .rest_backend(
+                McpRestBackendBuilder::new("backend_cluster", "GET", "/authority")
+                    .authority("tools.internal.example:8443"),
+            )
+            .build();
     let default_tool =
         rest_tool("authority_default", "Use the endpoint authority", "backend_cluster", "GET", "/authority");
 
@@ -396,13 +401,13 @@ async fn test_mcp_gateway_rest_authority_override() {
     let mut client = McpTestClient::new(arion.listener_addr().unwrap());
     client.initialize().await.expect("Failed to initialize");
 
-    let result = client.call_tool("authority_test", json!({})).await.expect("Failed to call tool");
+    let result = client.call_tool("test.authority_test", json!({})).await.expect("Failed to call tool");
     assert_eq!(result.is_error, Some(false));
     assert_eq!(result.structured_content, None);
     assert_eq!(result.content.len(), 1);
     assert_eq!(result.content[0].text, r#"{"status":"ok"}"#);
 
-    let result = client.call_tool("authority_default", json!({})).await.expect("Failed to call tool");
+    let result = client.call_tool("test.authority_default", json!({})).await.expect("Failed to call tool");
     assert_eq!(result.is_error, Some(false));
 
     // The configured authority wins; without one the endpoint address is used.
@@ -448,16 +453,51 @@ async fn test_mcp_gateway_tool_response_limit() {
     let mut client = McpTestClient::new(arion.listener_addr().unwrap());
     client.initialize().await.expect("Failed to initialize");
 
-    let at_limit = client.call_tool("at_limit", json!({})).await.expect("Failed to call at-limit tool");
+    let at_limit = client.call_tool("test.at_limit", json!({})).await.expect("Failed to call at-limit tool");
     assert_eq!(at_limit.is_error, Some(false));
     assert_eq!(at_limit.content.len(), 1);
     assert_eq!(at_limit.content[0].text, AT_LIMIT);
 
-    let result = client.call_tool("over_limit", json!({})).await.expect("Failed to call over-limit tool");
+    let result = client.call_tool("test.over_limit", json!({})).await.expect("Failed to call over-limit tool");
     assert_eq!(result.is_error, Some(true));
     let error = result.structured_content.as_ref().and_then(|value| value.get("error")).expect("missing error");
     assert_eq!(error.get("code"), Some(&json!("response_too_large")));
     assert_eq!(error.get("status"), Some(&json!(413)));
+    assert_eq!(error.get("retryable"), Some(&json!(false)));
+
+    arion.shutdown();
+    let _ = std::fs::remove_file(&config_path);
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_mcp_gateway_invalid_rest_output() {
+    let backend = TestBackend::start().await.expect("Failed to start test backend");
+    backend.set_default_response(PreConfiguredResponse::with_body(r#"{"value":"not an integer"}"#)).await;
+
+    let tool =
+        McpToolBuilder::new(TEST_TOOL_NAMESPACE, "invalid_output", "Reject output that does not match its schema")
+            .input_schema(empty_schema())
+            .output_schema(inline_string_data_source(
+                r#"{"type":"object","required":["value"],"properties":{"value":{"type":"integer"}}}"#,
+            ))
+            .rest_backend(McpRestBackendBuilder::new("backend_cluster", "GET", "/invalid-output"))
+            .build();
+    let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![
+        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
+    ]);
+    let config_path = bootstrap.build_to_temp().expect("Failed to build config");
+    let arion = ArionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
+        .await
+        .expect("Failed to spawn Arion");
+    let mut client = McpTestClient::new(arion.listener_addr().unwrap());
+    client.initialize().await.expect("Failed to initialize");
+
+    let result = client.call_tool("test.invalid_output", json!({})).await.expect("Failed to call tool");
+    assert_eq!(result.is_error, Some(true));
+    let error = result.structured_content.as_ref().and_then(|value| value.get("error")).expect("missing error");
+    assert_eq!(error.get("code"), Some(&json!("invalid_output")));
+    assert_eq!(error.get("status"), Some(&json!(200)));
     assert_eq!(error.get("retryable"), Some(&json!(false)));
 
     arion.shutdown();
@@ -479,7 +519,7 @@ async fn test_mcp_gateway_rest_retry_503_then_200() {
         ..Default::default()
     };
     let tool =
-        McpToolBuilder::new("retry", "Retry one transient upstream failure")
+        McpToolBuilder::new(TEST_TOOL_NAMESPACE, "retry", "Retry one transient upstream failure")
             .input_schema(empty_schema())
             .rest_backend(McpRestBackendBuilder::new("backend_cluster", "GET", "/retry").upstream_policy(
                 HttpUpstreamPolicy { authority: None, timeout: None, retry_policy: Some(retry_policy) },
@@ -497,7 +537,7 @@ async fn test_mcp_gateway_rest_retry_503_then_200() {
     let mut client = McpTestClient::new(arion.listener_addr().unwrap());
     client.initialize().await.expect("Failed to initialize");
 
-    let result = client.call_tool("retry", json!({})).await.expect("Failed to call retry tool");
+    let result = client.call_tool("test.retry", json!({})).await.expect("Failed to call retry tool");
     let first = backend.await_request().await.expect("Missing initial request");
     let retry = backend.await_request().await.expect("Missing retry request");
     assert_eq!(first.path(), "/retry");
@@ -530,7 +570,7 @@ async fn test_mcp_gateway_tool_timeout() {
     let mut client = McpTestClient::new(arion.listener_addr().unwrap());
     client.initialize().await.expect("Failed to initialize");
 
-    let result = client.call_tool("slow", json!({})).await.expect("Failed to call tool");
+    let result = client.call_tool("test.slow", json!({})).await.expect("Failed to call tool");
     assert_eq!(result.is_error, Some(true));
     let error = result.structured_content.as_ref().and_then(|value| value.get("error")).expect("missing error");
     assert_eq!(error.get("code"), Some(&json!("upstream_timeout")));
@@ -549,7 +589,7 @@ async fn test_mcp_gateway_rest_policy_timeout_overrides_global_timeout() {
         .set_default_response(PreConfiguredResponse::with_body("within tool timeout").delay(Duration::from_millis(100)))
         .await;
 
-    let tool = McpToolBuilder::new("policy_timeout", "Use the per-tool timeout")
+    let tool = McpToolBuilder::new(TEST_TOOL_NAMESPACE, "policy_timeout", "Use the per-tool timeout")
         .input_schema(empty_schema())
         .rest_backend(McpRestBackendBuilder::new("backend_cluster", "GET", "/policy-timeout").upstream_policy(
             HttpUpstreamPolicy {
@@ -572,7 +612,7 @@ async fn test_mcp_gateway_rest_policy_timeout_overrides_global_timeout() {
     let mut client = McpTestClient::new(arion.listener_addr().unwrap());
     client.initialize().await.expect("Failed to initialize");
 
-    let result = client.call_tool("policy_timeout", json!({})).await.expect("Failed to call tool");
+    let result = client.call_tool("test.policy_timeout", json!({})).await.expect("Failed to call tool");
     assert_eq!(result.is_error, Some(false));
     assert_eq!(result.content.len(), 1);
     assert_eq!(result.content[0].text, "within tool timeout");
@@ -603,7 +643,7 @@ async fn test_mcp_gateway_mcp_backend() {
 
     let result = client
         .call_tool(
-            "mock_echo",
+            "test.mock_echo",
             json!({
                 "message": "Hello, MCP!"
             }),
@@ -628,7 +668,7 @@ async fn test_mcp_gateway_rbac_jwt_claim_allow() {
 
     let jwt_keys = JwtKeyPair::generate();
 
-    let tool = McpToolBuilder::new("admin_only_tool", "Tool for admins only")
+    let tool = McpToolBuilder::new(TEST_TOOL_NAMESPACE, "admin_only_tool", "Tool for admins only")
         .input_schema(empty_schema())
         .rest_backend(McpRestBackendBuilder::new("backend_cluster", "GET", "/admin/secret"))
         .rbac(McpToolRbacBuilder::allow().jwt_claim("role", "admin"))
@@ -652,7 +692,7 @@ async fn test_mcp_gateway_rbac_jwt_claim_allow() {
     let mut admin_client = McpTestClient::new(arion.listener_addr().unwrap()).with_jwt(&admin_token);
     admin_client.initialize().await.expect("Failed to initialize");
 
-    let result = admin_client.call_tool("admin_only_tool", json!({})).await.expect("Failed to call tool");
+    let result = admin_client.call_tool("test.admin_only_tool", json!({})).await.expect("Failed to call tool");
     assert!(!result.is_error.unwrap_or(false), "Admin should have access to tool");
 
     let _ = backend.await_request().await.expect("No request received");
@@ -664,7 +704,7 @@ async fn test_mcp_gateway_rbac_jwt_claim_allow() {
     let mut user_client = McpTestClient::new(arion.listener_addr().unwrap()).with_jwt(&user_token);
     user_client.initialize().await.expect("Failed to initialize");
 
-    let result = user_client.call_tool("admin_only_tool", json!({})).await;
+    let result = user_client.call_tool("test.admin_only_tool", json!({})).await;
     assert!(result.is_err(), "User without admin role should be denied access");
 
     arion.shutdown();
@@ -679,7 +719,7 @@ async fn test_mcp_gateway_rbac_jwt_claim_deny() {
 
     let jwt_keys = JwtKeyPair::generate();
 
-    let tool = McpToolBuilder::new("premium_tool", "Tool for non-guests")
+    let tool = McpToolBuilder::new(TEST_TOOL_NAMESPACE, "premium_tool", "Tool for non-guests")
         .input_schema(empty_schema())
         .rest_backend(McpRestBackendBuilder::new("backend_cluster", "GET", "/api/premium"))
         .rbac(McpToolRbacBuilder::deny().jwt_claim("role", "guest"))
@@ -703,7 +743,7 @@ async fn test_mcp_gateway_rbac_jwt_claim_deny() {
     let mut user_client = McpTestClient::new(arion.listener_addr().unwrap()).with_jwt(&user_token);
     user_client.initialize().await.expect("Failed to initialize");
 
-    let result = user_client.call_tool("premium_tool", json!({})).await.expect("Failed to call tool");
+    let result = user_client.call_tool("test.premium_tool", json!({})).await.expect("Failed to call tool");
     assert!(!result.is_error.unwrap_or(false), "User with non-guest role should have access");
 
     let _ = backend.await_request().await.expect("No request received");
@@ -716,7 +756,7 @@ async fn test_mcp_gateway_rbac_jwt_claim_deny() {
     guest_client.initialize().await.expect("Failed to initialize");
 
     // Guest can initialize (not protected) but should be denied tool access
-    let result = guest_client.call_tool("premium_tool", json!({})).await;
+    let result = guest_client.call_tool("test.premium_tool", json!({})).await;
     assert!(result.is_err(), "Guest should be denied access to premium_tool");
 
     arion.shutdown();
@@ -731,7 +771,7 @@ async fn test_mcp_gateway_rbac_multiple_permissions() {
 
     let jwt_keys = JwtKeyPair::generate();
 
-    let tool = McpToolBuilder::new("multi_perm_tool", "Tool with multiple permission options")
+    let tool = McpToolBuilder::new(TEST_TOOL_NAMESPACE, "multi_perm_tool", "Tool with multiple permission options")
         .input_schema(empty_schema())
         .rest_backend(McpRestBackendBuilder::new("backend_cluster", "GET", "/api/multi"))
         .rbac(
@@ -761,7 +801,7 @@ async fn test_mcp_gateway_rbac_multiple_permissions() {
         let mut client = McpTestClient::new(arion.listener_addr().unwrap()).with_jwt(&token);
         client.initialize().await.expect("Failed to initialize");
 
-        let result = client.call_tool("multi_perm_tool", json!({})).await.expect("Failed to call tool");
+        let result = client.call_tool("test.multi_perm_tool", json!({})).await.expect("Failed to call tool");
         assert!(!result.is_error.unwrap_or(false), "User with role '{}' should have access", role);
 
         let _ = backend.await_request().await.expect("No request received");
@@ -774,7 +814,7 @@ async fn test_mcp_gateway_rbac_multiple_permissions() {
     let mut dept_client = McpTestClient::new(arion.listener_addr().unwrap()).with_jwt(&dept_token);
     dept_client.initialize().await.expect("Failed to initialize");
 
-    let result = dept_client.call_tool("multi_perm_tool", json!({})).await.expect("Failed to call tool");
+    let result = dept_client.call_tool("test.multi_perm_tool", json!({})).await.expect("Failed to call tool");
     assert!(!result.is_error.unwrap_or(false), "User with department 'security' should have access");
 
     // Test with regular user - should fail
@@ -784,7 +824,7 @@ async fn test_mcp_gateway_rbac_multiple_permissions() {
     let mut regular_client = McpTestClient::new(arion.listener_addr().unwrap()).with_jwt(&regular_token);
     regular_client.initialize().await.expect("Failed to initialize");
 
-    let result = regular_client.call_tool("multi_perm_tool", json!({})).await;
+    let result = regular_client.call_tool("test.multi_perm_tool", json!({})).await;
     assert!(result.is_err(), "Regular user without any matching permissions should be denied");
 
     arion.shutdown();
@@ -799,7 +839,7 @@ async fn test_mcp_gateway_rbac_jwt_header() {
 
     let jwt_keys = JwtKeyPair::generate();
 
-    let tool = McpToolBuilder::new("header_protected_tool", "Tool protected by JWT header")
+    let tool = McpToolBuilder::new(TEST_TOOL_NAMESPACE, "header_protected_tool", "Tool protected by JWT header")
         .input_schema(empty_schema())
         .rest_backend(McpRestBackendBuilder::new("backend_cluster", "GET", "/api/protected"))
         .rbac(McpToolRbacBuilder::allow().jwt_header("kid", jwt_keys.kid.clone()))
@@ -823,7 +863,7 @@ async fn test_mcp_gateway_rbac_jwt_header() {
     let mut client = McpTestClient::new(arion.listener_addr().unwrap()).with_jwt(&token);
     client.initialize().await.expect("Failed to initialize");
 
-    let result = client.call_tool("header_protected_tool", json!({})).await.expect("Failed to call tool");
+    let result = client.call_tool("test.header_protected_tool", json!({})).await.expect("Failed to call tool");
     assert!(!result.is_error.unwrap_or(false), "Tool call should succeed with valid JWT kid header");
 
     arion.shutdown();
@@ -859,7 +899,7 @@ async fn test_mcp_gateway_tool_without_rbac() {
     let mut client = McpTestClient::new(arion.listener_addr().unwrap()).with_jwt(&token);
     client.initialize().await.expect("Failed to initialize");
 
-    let result = client.call_tool("public_tool", json!({})).await.expect("Failed to call tool");
+    let result = client.call_tool("test.public_tool", json!({})).await.expect("Failed to call tool");
     assert!(!result.is_error.unwrap_or(false), "Any authenticated user should access public tool");
 
     arion.shutdown();
@@ -888,7 +928,7 @@ async fn test_mcp_gateway_tool_not_found() {
     client.initialize().await.expect("Failed to initialize");
 
     // Try to call a non-existent tool
-    let result = client.call_tool("non_existent_tool", json!({})).await;
+    let result = client.call_tool("test.non_existent_tool", json!({})).await;
     assert!(result.is_err(), "Calling non-existent tool should return an error");
 
     arion.shutdown();
@@ -901,7 +941,7 @@ async fn test_mcp_gateway_invalid_arguments() {
     let backend = TestBackend::start().await.expect("Failed to start test backend");
     backend.set_default_response(PreConfiguredResponse::with_body(r#"{"result": "ok"}"#)).await;
 
-    let tool = McpToolBuilder::new("param_tool", "Tool requiring parameters")
+    let tool = McpToolBuilder::new(TEST_TOOL_NAMESPACE, "param_tool", "Tool requiring parameters")
         .input_schema(inline_string_data_source(
             r#"{
                 "type": "object",
@@ -928,7 +968,7 @@ async fn test_mcp_gateway_invalid_arguments() {
     client.initialize().await.expect("Failed to initialize");
 
     // Call with missing required parameter
-    let result = client.call_tool("param_tool", json!({})).await;
+    let result = client.call_tool("test.param_tool", json!({})).await;
     // Should fail validation
     assert!(result.is_err(), "Calling tool with missing required parameter should return an error");
 
@@ -966,25 +1006,102 @@ async fn test_mcp_gateway_mixed_backends() {
     assert!(tools.tools.len() >= 2, "Should have at least 2 tools, got {}", tools.tools.len());
 
     let tool_names: Vec<&str> = tools.tools.iter().map(|t| t.name.as_str()).collect();
-    assert!(tool_names.contains(&"rest_tool"), "rest_tool should be present");
-    // MCP backend tools are namespaced with the tool name prefix
-    let has_mock_echo = tool_names.iter().any(|name| name.contains("mock_echo"));
-    assert!(has_mock_echo, "mock_echo should be present (possibly namespaced)");
+    assert!(tool_names.contains(&"test.rest_tool"), "rest_tool should be present");
+    assert!(tool_names.contains(&"test.mock_echo"), "test.mock_echo should be present");
 
     // Call REST backend tool
-    let rest_result = client.call_tool("rest_tool", json!({})).await.expect("Failed to call REST tool");
+    let rest_result = client.call_tool("test.rest_tool", json!({})).await.expect("Failed to call REST tool");
     assert!(!rest_result.is_error.unwrap_or(false), "REST tool call should succeed");
 
     let _ = rest_backend.await_request().await.expect("No request to REST backend");
 
-    let mcp_tool_name = tool_names.iter().find(|name| name.contains("mock_echo")).expect("mock_echo tool not found");
     let mcp_result =
-        client.call_tool(*mcp_tool_name, json!({"message": "test"})).await.expect("Failed to call MCP tool");
+        client.call_tool("test.mock_echo", json!({"message": "test"})).await.expect("Failed to call MCP tool");
     assert!(!mcp_result.is_error.unwrap_or(false), "MCP tool call should succeed");
     let mcp_content = mcp_result.content.first().map(|c| c.text.clone()).unwrap_or_default();
     assert!(mcp_content.contains("test"), "MCP response should echo the message");
 
     mock_mcp.shutdown();
+    arion.shutdown();
+    let _ = std::fs::remove_file(&config_path);
+}
+
+const OPENAPI_SPEC: &str = r#"
+servers:
+  - url: /api/v3
+paths:
+  /pets/{petId}:
+    get:
+      operationId: getPet
+      summary: Get one pet
+      parameters:
+        - { name: petId, in: path, required: true, schema: { type: string } }
+        - { name: verbose, in: query, schema: { type: boolean } }
+  /pets:
+    post:
+      operationId: createPet
+      summary: Create a pet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, properties: { name: { type: string } } }
+  /admin:
+    delete:
+      operationId: dropDatabase
+      summary: Dangerous admin operation
+"#;
+
+#[tokio::test]
+#[ignore]
+async fn test_mcp_gateway_open_api_source_derives_and_invokes_tools() {
+    let mut backend = TestBackend::start().await.expect("Failed to start test backend");
+    backend.set_default_response(PreConfiguredResponse::with_body(r#"{"status": "ok"}"#)).await;
+
+    let source =
+        McpOpenApiToolSourceBuilder::new("petstore", "backend_cluster", inline_string_data_source(OPENAPI_SPEC))
+            .exclude_operations(["dropDatabase"])
+            .eager_tools();
+    let gateway = McpGatewayBuilder::new(SERVER_NAME, SERVER_VERSION).open_api_tool_source(source);
+    let bootstrap = McpGatewayHttpConfigBuilder::new(gateway).build_bootstrap(vec![
+        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
+    ]);
+
+    let config_path = bootstrap.build_to_temp().expect("Failed to build config");
+    let arion = ArionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
+        .await
+        .expect("Failed to spawn Arion");
+
+    let mut client = McpTestClient::new(arion.listener_addr().unwrap());
+    client.initialize().await.expect("Failed to initialize");
+
+    let tools = client.list_tools().await.expect("Failed to list tools");
+    let names: Vec<&str> = tools.tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(names.contains(&"petstore.getPet"), "expected derived tool in {names:?}");
+    assert!(names.contains(&"petstore.createPet"), "expected derived tool in {names:?}");
+    assert!(!names.contains(&"petstore.dropDatabase"), "excluded operation must not be derived: {names:?}");
+
+    let result = client
+        .call_tool("petstore.getPet", json!({"petId": "42", "verbose": true}))
+        .await
+        .expect("Failed to call derived tool");
+    assert!(!result.is_error.unwrap_or(false), "derived tool call should succeed");
+    let request = backend.await_request().await.expect("No request received");
+    assert_eq!(request.method, "GET");
+    assert_eq!(request.path_and_query(), "/api/v3/pets/42?verbose=true");
+
+    let result = client
+        .call_tool("petstore.createPet", json!({"body": {"name": "Rex"}}))
+        .await
+        .expect("Failed to call derived tool");
+    assert!(!result.is_error.unwrap_or(false), "derived tool call should succeed");
+    let request = backend.await_request().await.expect("No request received");
+    assert_eq!(request.method, "POST");
+    assert_eq!(request.path(), "/api/v3/pets");
+    let body = request.body_str().expect("Request has no body");
+    let body_json: serde_json::Value = serde_json::from_str(body).expect("Invalid JSON body");
+    assert_eq!(body_json, json!({"name": "Rex"}), "the body argument is serialized as the JSON request body");
+
     arion.shutdown();
     let _ = std::fs::remove_file(&config_path);
 }
