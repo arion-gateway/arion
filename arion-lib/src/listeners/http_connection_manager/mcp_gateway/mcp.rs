@@ -886,10 +886,10 @@ impl McpGateway {
     fn rpc_error_decision(
         &self,
         error: model::ErrorData,
-        f: fn(&str, http::Version) -> FilterDecision,
+        f: impl FnOnce(String, http::Version) -> FilterDecision,
     ) -> FilterDecision {
         let body = serde_json::to_string(&self.build_json_rpc_error(error)).unwrap_or_default();
-        f(&body, self.version)
+        f(body, self.version)
     }
 
     /// Build headers with optional Content-Type and optional session ID for JSON responses.
