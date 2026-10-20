@@ -50,7 +50,7 @@ impl ToolsRegistry {
         {
             let pinned = self.tools.pin();
             for (id, tool) in &pinned {
-                if tool.embedding.load_full().is_some() {
+                if tool.embedding.load().is_some() {
                     continue;
                 }
                 texts.push(embeddings::build_search_text(&id.qualified_name(), &tool.description, &tool.input_schema));

@@ -271,6 +271,8 @@ pub enum UpstreamBackend {
     McpServer {
         transport: McpBackendTransportUpstream,
         url: SmolStr,
+        /// Cluster used to reach the MCP server (endpoints, TLS, HTTP/1 or HTTP/2).
+        cluster: InternedStr,
     },
     FunctionGraph,
 }
@@ -334,6 +336,8 @@ pub struct DynamicMcpServer {
     pub description: SmolStr,
     pub transport: McpBackendTransportUpstream,
     pub url: SmolStr,
+    /// Cluster used to reach the MCP server (endpoints, TLS, HTTP/1 or HTTP/2).
+    pub cluster: InternedStr,
     pub cache_duration: Option<Duration>,
     pub rbac: Option<McpToolRbac>,
     #[serde(default)]
@@ -592,8 +596,14 @@ mod envoy_conversions {
         fn try_from(arion: ArionDynamicMcpServer) -> Result<Self, Self::Error> {
             let transport = arion.transport().into();
             let tool_disclosure_mode = arion.tool_disclosure_mode().into();
-            let ArionDynamicMcpServer { namespace, description, url, cache_duration, rbac, .. } = arion;
+            let ArionDynamicMcpServer { namespace, description, url, cluster, cache_duration, rbac, .. } = arion;
+            if namespace.is_empty() {
+                return Err(GenericError::from_msg("DynamicMcpServer.namespace must not be empty"));
+            }
             let url = validate_mcp_url(url, "DynamicMcpServer.url")?;
+            if cluster.is_empty() {
+                return Err(GenericError::from_msg("DynamicMcpServer.cluster must not be empty"));
+            }
             let cache_duration = cache_duration.map(parse_positive_duration).transpose().with_node("cache_duration")?;
 
             Ok(DynamicMcpServer {
@@ -601,6 +611,7 @@ mod envoy_conversions {
                 description: description.into(),
                 transport,
                 url: url.into(),
+                cluster: intern_identifier(&cluster, "DynamicMcpServer.cluster")?,
                 cache_duration,
                 rbac: rbac.map(TryInto::try_into).transpose()?,
                 tool_disclosure_mode,
@@ -783,7 +794,14 @@ mod envoy_conversions {
                 ArionUpstreamBackend::McpServerBackend(be) => {
                     let transport = be.transport().into();
                     let url = validate_mcp_url(be.url, "McpServerBackend.url")?;
-                    Ok(UpstreamBackend::McpServer { transport, url: url.into() })
+                    if be.cluster.is_empty() {
+                        return Err(GenericError::from_msg("McpServerBackend.cluster must not be empty"));
+                    }
+                    Ok(UpstreamBackend::McpServer {
+                        transport,
+                        url: url.into(),
+                        cluster: intern_identifier(&be.cluster, "McpServerBackend.cluster")?,
+                    })
                 },
                 ArionUpstreamBackend::FunctionGraphBackend(_) => todo!(),
             }
@@ -969,6 +987,7 @@ mod envoy_conversions {
             let result: Result<DynamicMcpServer, _> = ArionDynamicMcpServer {
                 namespace: "example".to_owned(),
                 url: "localhost:3000/mcp".to_owned(),
+                cluster: "mcp".to_owned(),
                 ..Default::default()
             }
             .try_into();

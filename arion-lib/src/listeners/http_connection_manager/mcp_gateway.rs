@@ -20,4 +20,5 @@ pub mod rbac;
 pub mod tools;
 pub mod transport;
 pub mod uniqueness;
+pub(crate) mod upstream_client;
 pub mod xds_handler;

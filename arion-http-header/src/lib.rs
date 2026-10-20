@@ -110,3 +110,11 @@ custom_header!(
 custom_header!(
     /// The `mcp-session-id` header is used to pass the MCP session ID
     MCP_SESSION_ID, "mcp-session-id");
+
+custom_header!(
+    /// The `mcp-protocol-version` header is used to pass the MCP protocol version
+    MCP_PROTOCOL_VERSION, "mcp-protocol-version");
+
+custom_header!(
+    /// The `last-event-id` header is used to resume SSE streams from a given event ID
+    LAST_EVENT_ID, "last-event-id");

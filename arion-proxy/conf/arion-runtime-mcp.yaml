@@ -151,8 +151,8 @@ envoy_bootstrap:
                               path: "/v1/admin/user"
                           # --- tools served by an upstream MCP server ---
                           # Pinned by name rather than discovered: the gateway
-                          # dials `url` directly with its own MCP client (no
-                          # cluster involved) and sends `name` upstream verbatim
+                          # routes traffic through `cluster` using the path/host
+                          # from `url` and sends `name` upstream verbatim
                           # in tools/call, so it must match the upstream tool
                           # name exactly. Set `transport` explicitly, the proto
                           # default is Sse and only StreamableHttp is
@@ -168,12 +168,14 @@ envoy_bootstrap:
                             description: "Echo back the supplied message"
                             mcp_server_backend:
                               transport: StreamableHttp
+                              cluster: mcp_upstream_cluster
                               url: http://127.0.0.1:3001/mcp
                           - namespace: "pinned"
                             name: "add"
                             description: "Add two numbers"
                             mcp_server_backend:
                               transport: StreamableHttp
+                              cluster: mcp_upstream_cluster
                               url: http://127.0.0.1:3001/mcp
                         # Upstream MCP servers whose tools are discovered at
                         # runtime. Each server materialises one registry entry
@@ -182,6 +184,7 @@ envoy_bootstrap:
                           - namespace: "everything"
                             description: "everything mcp server"
                             transport: StreamableHttp
+                            cluster: mcp_upstream_cluster
                             url: http://127.0.0.1:3001/mcp
                             cache_duration: 10s
                         # Uncomment to bind this filter to an xDS Tool Discovery
@@ -232,3 +235,16 @@ envoy_bootstrap:
                       socket_address:
                         address: 127.0.0.1
                         port_value: 4002
+
+      - name: mcp_upstream_cluster
+        connect_timeout: 0.25s
+        type: STATIC
+        lb_policy: ROUND_ROBIN
+        load_assignment:
+          endpoints:
+            - lb_endpoints:
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 3001

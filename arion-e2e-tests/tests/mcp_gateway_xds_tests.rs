@@ -51,6 +51,7 @@ const TDS_CONFIG: &str = "main";
 const LISTENER_WAIT: Duration = Duration::from_secs(10);
 const JWT_AUDIENCE: &str = "mcp-gateway";
 const TEST_TOOL_NAMESPACE: &str = "test";
+const DYN_MCP_CLUSTER: &str = "dyn_mcp_cluster";
 
 async fn start_harness_with_mcp_listener() -> (XdsEnabledHarness, SocketAddr) {
     let mut harness = XdsEnabledHarness::start().await.expect("Failed to start harness");
@@ -69,6 +70,11 @@ async fn start_harness_with_mcp_listener() -> (XdsEnabledHarness, SocketAddr) {
     harness.arion_mut().wait_for_listener_at(listener_addr, LISTENER_WAIT).await.expect("Listener not ready");
 
     (harness, listener_addr)
+}
+
+async fn push_dyn_mcp_cluster(harness: &XdsEnabledHarness, addr: SocketAddr) {
+    let cluster = ClusterBuilder::new(DYN_MCP_CLUSTER).endpoint(EndpointBuilder::from_socket_addr(addr)).build();
+    harness.push_cluster(&cluster).await.expect("Failed to push dynamic MCP cluster");
 }
 
 fn rest_tool_proto(name: &str, description: &str, cluster: &str, path: &str) -> ArionMcpTool {
@@ -447,9 +453,11 @@ async fn test_mcp_gateway_xds_dynamic_server_add_materializes_tools() {
     let mock_url = format!("http://{}/mcp", mock.addr());
 
     let (harness, listener_addr) = start_harness_with_mcp_listener().await;
+    push_dyn_mcp_cluster(&harness, mock.addr()).await;
     let client = new_initialized_client(listener_addr).await;
 
-    let server_proto = DynamicMcpServerBuilder::new("dyn_srv", "dynamic mock", &mock_url).eager_tools().build();
+    let server_proto =
+        DynamicMcpServerBuilder::new("dyn_srv", "dynamic mock", DYN_MCP_CLUSTER, &mock_url).eager_tools().build();
     let resource_id = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "dyn_srv");
     harness.push_dynamic_mcp_server(&resource_id, &server_proto).await.expect("push dyn server");
 
@@ -468,9 +476,11 @@ async fn test_mcp_gateway_xds_dynamic_server_remove_evicts_tools() {
     let mock_url = format!("http://{}/mcp", mock.addr());
 
     let (harness, listener_addr) = start_harness_with_mcp_listener().await;
+    push_dyn_mcp_cluster(&harness, mock.addr()).await;
     let client = new_initialized_client(listener_addr).await;
 
-    let server_proto = DynamicMcpServerBuilder::new("dyn_srv", "dynamic mock", &mock_url).eager_tools().build();
+    let server_proto =
+        DynamicMcpServerBuilder::new("dyn_srv", "dynamic mock", DYN_MCP_CLUSTER, &mock_url).eager_tools().build();
     let resource_id = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "dyn_srv");
     harness.push_dynamic_mcp_server(&resource_id, &server_proto).await.expect("push dyn server");
 
@@ -498,9 +508,11 @@ async fn test_mcp_gateway_xds_dynamic_server_replaces_tools_on_update() {
     let mock_url = format!("http://{}/mcp", mock.addr());
 
     let (harness, listener_addr) = start_harness_with_mcp_listener().await;
+    push_dyn_mcp_cluster(&harness, mock.addr()).await;
     let client = new_initialized_client(listener_addr).await;
 
-    let server_proto = DynamicMcpServerBuilder::new("dyn_srv", "dynamic mock", &mock_url).eager_tools().build();
+    let server_proto =
+        DynamicMcpServerBuilder::new("dyn_srv", "dynamic mock", DYN_MCP_CLUSTER, &mock_url).eager_tools().build();
     let resource_id = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "dyn_srv");
     harness.push_dynamic_mcp_server(&resource_id, &server_proto).await.expect("initial push");
 

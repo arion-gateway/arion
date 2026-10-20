@@ -66,10 +66,10 @@ fn rest_tool(name: &str, description: &str, cluster: &str, method: &str, path: &
         .build()
 }
 
-fn mcp_server_tool(name: &str, description: &str, url: impl Into<String>) -> ArionMcpTool {
+fn mcp_server_tool(name: &str, description: &str, cluster: &str, url: impl Into<String>) -> ArionMcpTool {
     McpToolBuilder::new(TEST_TOOL_NAMESPACE, name, description)
         .input_schema(inline_string_data_source("{}"))
-        .mcp_server_backend(McpServerBackendBuilder::new(url))
+        .mcp_server_backend(McpServerBackendBuilder::new(cluster, url))
         .eager()
         .build()
 }
@@ -626,7 +626,12 @@ async fn test_mcp_gateway_rest_policy_timeout_overrides_global_timeout() {
 async fn test_mcp_gateway_mcp_backend() {
     let mut mock_mcp = MockMcpServer::start().await.expect("Failed to start mock MCP server");
 
-    let tool = mcp_server_tool("mock_echo", "Call remote echo tool", format!("http://{}/mcp", mock_mcp.addr()));
+    let tool = mcp_server_tool(
+        "mock_echo",
+        "Call remote echo tool",
+        "mcp_backend_cluster",
+        format!("http://{}/mcp", mock_mcp.addr()),
+    );
 
     let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![
         ClusterBuilder::new("mcp_backend_cluster").endpoint(EndpointBuilder::from_socket_addr(mock_mcp.addr())),
@@ -986,7 +991,8 @@ async fn test_mcp_gateway_mixed_backends() {
 
     let rest_tool = rest_tool("rest_tool", "REST backend tool", "rest_cluster", "GET", "/api/rest");
 
-    let mcp_tool = mcp_server_tool("mock_echo", "MCP backend tool", format!("http://{}/mcp", mock_mcp.addr()));
+    let mcp_tool =
+        mcp_server_tool("mock_echo", "MCP backend tool", "mcp_cluster", format!("http://{}/mcp", mock_mcp.addr()));
 
     let bootstrap = mcp_gateway_test_config(vec![rest_tool, mcp_tool]).build_bootstrap(vec![
         ClusterBuilder::new("rest_cluster").endpoint(EndpointBuilder::from_socket_addr(rest_backend.addr())),

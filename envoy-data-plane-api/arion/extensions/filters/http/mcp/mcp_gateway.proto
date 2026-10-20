@@ -130,6 +130,10 @@ message McpServerBackend {
   }
   TransportUpstream transport = 1;
   string url = 2;
+  // Cluster used to reach the MCP server. The cluster endpoints, TLS context
+  // and HTTP protocol options (HTTP/1 or HTTP/2) are taken from its
+  // configuration; `url` only provides the request path (and query).
+  string cluster = 3;
 }
 
 // Source of dynamically discovered tools. The namespace is both the public
@@ -146,6 +150,8 @@ message DynamicMcpServer {
   optional ToolRbac rbac = 6;
   // Applied to every tool materialised from this server.
   DisclosureMode tool_disclosure_mode = 7;
+  // Cluster used to reach the MCP server, see McpServerBackend.cluster.
+  string cluster = 8;
 }
 
 // An OpenAPI 3.x document expanded into one REST-backed tool per operation.
@@ -248,14 +254,9 @@ message RemoteEmbeddings {
 // A globally named, CodeMode-only curated Tool list reference.
 // This simplifies the discovery of a (sub)set of tools related to a task.
 message Toolkit {
-    // Name for the toolkit
     string name = 1;
-    // Description of the typical task type the toolkit is useful for.
     string description = 2;
-    // Guidance on the tools referenced in this kit, hints on how to
-    // compose them and use them efficiently
     string instructions = 3;
-    // Tools list
     repeated ToolkitToolRef tools = 4;
 }
 

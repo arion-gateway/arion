@@ -38,7 +38,7 @@ pub use errors::{CallToolError, ToolBuilderError};
 #[cfg(test)]
 pub(crate) use invoke::TestCallContext;
 pub use invoke::ToolCallContext;
-pub(crate) use invoke::call_tool_result_into_value;
+pub(crate) use invoke::serialize_json_rpc_response;
 #[cfg(feature = "codemode")]
 pub(crate) use invoke::serialized_json_size;
 
@@ -240,7 +240,7 @@ impl ToolsRegistry {
     }
 
     fn insert_tool(&self, id: ToolId, entry: ToolEntry) -> Option<StdArc<ToolEntry>> {
-        if entry.embedding.load_full().is_none() {
+        if entry.embedding.load().is_none() {
             self.embeddings_pending.store(true, Ordering::Release);
         }
         self.tools.pin().insert(id, StdArc::new(entry)).cloned()
@@ -253,6 +253,9 @@ impl ToolsRegistry {
     pub async fn bootstrap(&self) -> Result<(), CallToolError> {
         self.bootstrapped
             .get_or_init(|| async {
+                if self.dynamic_mcp_servers.is_empty() {
+                    return;
+                }
                 // Snapshot before awaiting so the pinned map guard never crosses an async boundary.
                 let servers = {
                     let pinned = self.dynamic_mcp_servers.pin();
