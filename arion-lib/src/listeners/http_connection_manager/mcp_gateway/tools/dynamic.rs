@@ -239,7 +239,7 @@ impl ToolsRegistry {
                 },
                 rbac: server.conf.rbac.clone(),
                 embedding: EmbeddingVector::default(),
-                disclosure_mode: server.conf.tool_disclosure_mode,
+                disclosure_mode: server.conf.disclosure_mode,
             };
             let id = ToolId::from_tool(&conf).map_err(|error| ListToolsError::InvalidSnapshot(error.to_string()))?;
             if !ids.insert(id.clone()) {

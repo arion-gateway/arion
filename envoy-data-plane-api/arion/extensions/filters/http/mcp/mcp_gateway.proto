@@ -144,8 +144,8 @@ message DynamicMcpServer {
   google.protobuf.Duration cache_duration = 5;
   // Applied to every tool materialised from this server.
   optional ToolRbac rbac = 6;
-  // Applied to every tool materialised from this server.
-  DisclosureMode tool_disclosure_mode = 7;
+  // Sets disclosure_mode on every tool materialised from this source.
+  DisclosureMode disclosure_mode = 7;
 }
 
 // An OpenAPI 3.x document expanded into one REST-backed tool per operation.
@@ -159,7 +159,8 @@ message OpenApiToolSource {
   string cluster = 3;
   HttpUpstreamPolicy upstream_policy = 4;
   optional ToolRbac rbac = 5;
-  DisclosureMode tool_disclosure_mode = 6;
+  // Sets disclosure_mode on every tool materialised from this source.
+  DisclosureMode disclosure_mode = 6;
   // Overrides the base path taken from the spec's first server URL.
   optional string path_prefix = 7;
   // When false (the default), operations that cannot be expressed as REST

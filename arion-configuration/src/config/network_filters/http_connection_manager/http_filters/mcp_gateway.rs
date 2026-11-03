@@ -337,7 +337,7 @@ pub struct DynamicMcpServer {
     pub cache_duration: Option<Duration>,
     pub rbac: Option<McpToolRbac>,
     #[serde(default)]
-    pub tool_disclosure_mode: DisclosureMode,
+    pub disclosure_mode: DisclosureMode,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -591,7 +591,7 @@ mod envoy_conversions {
         type Error = GenericError;
         fn try_from(arion: ArionDynamicMcpServer) -> Result<Self, Self::Error> {
             let transport = arion.transport().into();
-            let tool_disclosure_mode = arion.tool_disclosure_mode().into();
+            let disclosure_mode = arion.disclosure_mode().into();
             let ArionDynamicMcpServer { namespace, description, url, cache_duration, rbac, .. } = arion;
             let url = validate_mcp_url(url, "DynamicMcpServer.url")?;
             let cache_duration = cache_duration.map(parse_positive_duration).transpose().with_node("cache_duration")?;
@@ -603,7 +603,7 @@ mod envoy_conversions {
                 url: url.into(),
                 cache_duration,
                 rbac: rbac.map(TryInto::try_into).transpose()?,
-                tool_disclosure_mode,
+                disclosure_mode,
             })
         }
     }
@@ -611,7 +611,7 @@ mod envoy_conversions {
     impl TryFrom<ArionOpenApiToolSource> for McpOpenApiToolSource {
         type Error = GenericError;
         fn try_from(arion: ArionOpenApiToolSource) -> Result<Self, Self::Error> {
-            let tool_disclosure_mode = arion.tool_disclosure_mode().into();
+            let disclosure_mode = arion.disclosure_mode().into();
             let ArionOpenApiToolSource {
                 spec,
                 namespace,
@@ -632,7 +632,7 @@ mod envoy_conversions {
                 cluster: intern_identifier(&cluster, "OpenApiToolSource.cluster")?,
                 upstream_policy: upstream_policy.map(TryInto::try_into).transpose()?.unwrap_or_default(),
                 rbac: rbac.map(TryInto::try_into).transpose()?,
-                tool_disclosure_mode,
+                disclosure_mode,
                 path_prefix,
                 skip_unsupported_operations,
                 include_operations,

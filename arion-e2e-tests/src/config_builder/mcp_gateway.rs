@@ -439,7 +439,7 @@ impl DynamicMcpServerBuilder {
 
     #[must_use]
     pub fn eager_tools(mut self) -> Self {
-        self.proto.tool_disclosure_mode = DisclosureMode::Eager.into();
+        self.proto.disclosure_mode = DisclosureMode::Eager.into();
         self
     }
 
@@ -513,7 +513,7 @@ impl McpOpenApiToolSourceBuilder {
 
     #[must_use]
     pub fn eager_tools(mut self) -> Self {
-        self.proto.tool_disclosure_mode = DisclosureMode::Eager.into();
+        self.proto.disclosure_mode = DisclosureMode::Eager.into();
         self
     }
 

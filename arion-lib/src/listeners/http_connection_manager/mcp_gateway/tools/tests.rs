@@ -67,7 +67,7 @@ fn dynamic_server_entry(namespace: &str) -> DynamicMcpServerEntry {
         url: "http://localhost/mcp".into(),
         cache_duration: None,
         rbac: None,
-        tool_disclosure_mode: DisclosureMode::Progressive,
+        disclosure_mode: DisclosureMode::Progressive,
     })
 }
 
@@ -177,7 +177,7 @@ async fn failed_dynamic_refresh_retains_previous_tools() {
         url: "http://127.0.0.1:1/mcp".into(),
         cache_duration: None,
         rbac: None,
-        tool_disclosure_mode: DisclosureMode::Progressive,
+        disclosure_mode: DisclosureMode::Progressive,
     }));
     registry.dynamic_mcp_servers.pin().insert("srv".into(), StdArc::clone(&server));
     let conf = McpTool {
@@ -626,7 +626,7 @@ fn test_remove_dynamic_server_evicts_its_tools() {
         url: "http://localhost/mcp".into(),
         cache_duration: None,
         rbac: None,
-        tool_disclosure_mode: DisclosureMode::Progressive,
+        disclosure_mode: DisclosureMode::Progressive,
     };
     let server = StdArc::new(DynamicMcpServerEntry::new(server_conf));
     registry.dynamic_mcp_servers.pin().insert("srv".into(), StdArc::clone(&server));

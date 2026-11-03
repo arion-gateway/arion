@@ -34,7 +34,7 @@ pub struct OpenApiExpansionParams {
     pub cluster: InternedStr,
     pub upstream_policy: HttpUpstreamPolicy,
     pub rbac: Option<McpToolRbac>,
-    pub tool_disclosure_mode: DisclosureMode,
+    pub disclosure_mode: DisclosureMode,
     pub path_prefix: Option<String>,
     pub skip_unsupported_operations: bool,
     pub include_operations: Vec<String>,
@@ -258,7 +258,7 @@ fn build_tool(
         },
         rbac: params.rbac.clone(),
         embedding: EmbeddingVector::default(),
-        disclosure_mode: params.tool_disclosure_mode,
+        disclosure_mode: params.disclosure_mode,
     })
 }
 
@@ -480,7 +480,7 @@ components:
             cluster: "backend".into(),
             upstream_policy: HttpUpstreamPolicy::default(),
             rbac: None,
-            tool_disclosure_mode: DisclosureMode::Eager,
+            disclosure_mode: DisclosureMode::Eager,
             path_prefix: None,
             skip_unsupported_operations: false,
             include_operations: Vec::new(),
