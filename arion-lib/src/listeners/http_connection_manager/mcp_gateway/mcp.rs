@@ -13,18 +13,17 @@
 // limitations under the License.
 
 use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-    McpGateway as McpGatewayConfig, McpGatewayMode as ConfigGatewayMode, McpServerInfo,
+    McpGateway as McpGatewayConfig, McpGatewayMode as ConfigGatewayMode,
 };
 use arion_http_header::MCP_SESSION_ID;
 use arion_interner::InternedStr;
 use atomic_time::AtomicInstant;
 use bytes::Bytes;
-use http::{HeaderName, Method, Response, StatusCode};
+use http::{HeaderValue, Method, Response, StatusCode};
 use http_body_util::{BodyExt, Empty, Full};
 use papaya::HashMap as PapayaMap;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
-use smallvec::{SmallVec, smallvec};
 use smol_str::{SmolStr, ToSmolStr, format_smolstr};
 use std::sync::{
     Arc as StdArc, LazyLock,
@@ -53,7 +52,7 @@ use crate::{
                 embeddings,
                 tools::{
                     CallToolError, TOOL_SEARCH_TOOL_NAME, ToolBuilderError, ToolCallContext, ToolId, ToolSearchRequest,
-                    ToolSearchScope, ToolsRegistry, call_tool_result_into_value,
+                    ToolSearchScope, ToolsRegistry, serialize_json_rpc_response,
                 },
                 transport::{AcceptedMime, MIME_APPLICATION_JSON, RequestExt, SessionId},
             },
@@ -70,6 +69,8 @@ const MCP_MESSAGE_ENDPOINT: &str = "/mcp";
 const MCP_SEARCH_ENDPOINT: &str = "/mcp/search";
 const SESSION_IDLE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(300);
 const TOOL_SEARCH_DESCRIPTION_NAME_LIMIT: usize = 256;
+const CONNECTION_KEEP_ALIVE: HeaderValue = HeaderValue::from_static("keep-alive");
+const CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static(MIME_APPLICATION_JSON);
 
 static TOOL_SEARCH_INPUT_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
     json!({
@@ -112,9 +113,10 @@ fn parse_json_rpc_message(body: &[u8]) -> serde_json::Result<model::JsonRpcMessa
 pub struct Session {
     pub listener_name: InternedStr,
     pub session_id: SessionId,
+    pub session_id_header: HeaderValue,
     pub last_activity: AtomicInstant,
     pub mcp_upstreams:
-        PapayaMap<String, StdArc<RunningService<RoleClient, InitializeRequestParams>>, ahash::RandomState>,
+        PapayaMap<SmolStr, StdArc<RunningService<RoleClient, InitializeRequestParams>>, ahash::RandomState>,
 }
 
 impl std::fmt::Debug for Session {
@@ -134,6 +136,7 @@ impl Default for Session {
         Self {
             listener_name: "".into(),
             session_id: SessionId::default(),
+            session_id_header: HeaderValue::from_static(""),
             last_activity: AtomicInstant::now(),
             mcp_upstreams: PapayaMap::with_hasher(ahash::RandomState::default()),
         }
@@ -187,10 +190,12 @@ impl McpGatewayListenerContext {
         }
 
         let session_id = SessionId(Uuid::new_v4().to_smolstr());
+        let session_id_header = HeaderValue::from_str(session_id.as_str()).ok()?;
 
         let session = StdArc::new(Session {
             listener_name,
             session_id: session_id.clone(),
+            session_id_header,
             last_activity: AtomicInstant::now(),
             mcp_upstreams: PapayaMap::with_hasher(ahash::RandomState::default()),
         });
@@ -199,7 +204,7 @@ impl McpGatewayListenerContext {
     }
 
     #[inline]
-    pub fn delete_session(&self, session_id: &SessionId) -> bool {
+    pub fn delete_session(&self, session_id: &str) -> bool {
         self.session_map.pin().remove(session_id).is_some()
     }
 }
@@ -216,10 +221,10 @@ impl Default for McpGatewayListenerContext {
 
 #[derive(Debug)]
 pub struct McpGatewayInner {
-    server_info: McpServerInfo,
     tools: StdArc<ToolsRegistry>,
     mode: GatewayMode,
     tds_registration: Option<TdsRegistration>,
+    initialize_result: InitializeResult,
 }
 
 #[derive(Debug)]
@@ -357,15 +362,14 @@ impl Drop for McpGatewayInner {
 pub enum MessageResult {
     Nothing,
     JsonRpcError(model::JsonRpcError),
-    JsonRpcResponse(model::JsonRpcResponse<Value>),
-    JsonRpcResponseNewSession(model::JsonRpcResponse<Value>, StdArc<Session>),
+    JsonRpcResponse(Bytes),
+    JsonRpcResponseNewSession(Bytes, StdArc<Session>),
 }
 
 /// `McpGateway` filter
 #[derive(Debug, Clone)]
 pub struct McpGateway {
     inner: StdArc<McpGatewayInner>,
-    current_session: Option<StdArc<Session>>,
     request_id: model::RequestId,
     version: http::Version,
 }
@@ -374,7 +378,6 @@ impl McpGateway {
     fn with_inner(inner: StdArc<McpGatewayInner>) -> Self {
         Self {
             inner,
-            current_session: None,
             request_id: model::RequestId::Number(0),
             version: http::Version::default(),
         }
@@ -444,11 +447,21 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
             None
         };
 
+        let capabilities = ServerCapabilities::builder().enable_tools().enable_tool_list_changed().build();
+        let server_info =
+            Implementation::new(config.server_info.name.to_string(), config.server_info.version.to_string());
+        let initialize_result = InitializeResult::new(capabilities).with_server_info(server_info);
+        #[cfg(feature = "codemode")]
+        let initialize_result = match &mode {
+            GatewayMode::Tools(_) => initialize_result,
+            GatewayMode::Code(_) => initialize_result.with_instructions(CodeMode::instructions()),
+        };
+
         Ok(Self::with_inner(StdArc::new(McpGatewayInner {
-            server_info: config.server_info,
             tools,
             mode,
             tds_registration,
+            initialize_result,
         })))
     }
 }
@@ -547,11 +560,13 @@ impl McpGateway {
                 return FilterDecision::internal_server_error("Tool search failed", request.version());
             },
         };
-        let headers: SmallVec<[(HeaderName, &str); 2]> = smallvec![(http::header::CONTENT_TYPE, MIME_APPLICATION_JSON)];
-        match self.build_mcp_http_response(StatusCode::OK, Self::build_mcp_response_body(Some(body)), &headers) {
-            Ok(response) => FilterDecision::DirectResponse(Box::new(response)),
-            Err(decision) => decision,
-        }
+        let response = self.build_mcp_http_response(
+            StatusCode::OK,
+            Self::build_mcp_response_body(Some(body)),
+            None,
+            Some(CONTENT_TYPE_JSON),
+        );
+        FilterDecision::DirectResponse(Box::new(response))
     }
 
     #[allow(clippy::unused_self)]
@@ -564,25 +579,26 @@ impl McpGateway {
         ctx: &McpGatewayListenerContext,
         request: &mut http::Request<ArionRequestBody>,
     ) -> FilterDecision {
-        let Some(session_id) = request.get_mcp_session_id() else {
+        let Some(session_header) = request.headers().get(MCP_SESSION_ID).cloned() else {
             debug!(target: "mcp_gateway", "handle_mcp_delete_endpoint: session ID but none found in request");
             return FilterDecision::bad_request("Missing session ID", request.version());
         };
+        let Ok(session_id) = session_header.to_str() else {
+            debug!(target: "mcp_gateway", "handle_mcp_delete_endpoint: invalid session ID header");
+            return FilterDecision::bad_request("Missing session ID", request.version());
+        };
 
-        if !ctx.delete_session(&session_id) {
-            debug!(target: "mcp_gateway", "handle_mcp_delete_endpoint: StreamableHttp session {} not found in session map", session_id);
+        if !ctx.delete_session(session_id) {
+            debug!(target: "mcp_gateway", "handle_mcp_delete_endpoint: StreamableHttp session {session_id} not found in session map");
             return FilterDecision::not_found("Session not found", request.version());
         }
 
-        let builder = Response::builder()
-            .header(http::header::CONNECTION, "keep-alive")
-            .header(MCP_SESSION_ID, session_id.as_str())
-            .version(self.version)
-            .status(StatusCode::ACCEPTED);
-
-        let Ok(response) = builder.body(TimeoutBody::new(None, PolyBody::from(Empty::new())).into()) else {
-            unreachable!("handle_mcp_delete_endpoint: Failed to build response body");
-        };
+        let mut response: Response<ArionResponseBody> =
+            Response::new(TimeoutBody::new(None, PolyBody::from(Empty::new())).into());
+        *response.version_mut() = self.version;
+        *response.status_mut() = StatusCode::ACCEPTED;
+        response.headers_mut().insert(http::header::CONNECTION, CONNECTION_KEEP_ALIVE);
+        response.headers_mut().insert(MCP_SESSION_ID, session_header);
 
         FilterDecision::DirectResponse(Box::new(response))
     }
@@ -639,7 +655,7 @@ impl McpGateway {
         // get session ID from the request. It may return None, in which case we create a new session id in the "initialize" method
         //
         let session = if let Some(session_id) = request.get_mcp_session_id() {
-            let Some(session) = Self::get_valid_session(ctx, &session_id) else {
+            let Some(session) = Self::get_valid_session(ctx, session_id) else {
                 return self.rpc_error_decision(
                     model::ErrorData::invalid_request("Session not found", None),
                     FilterDecision::not_found,
@@ -676,21 +692,20 @@ impl McpGateway {
         // annotate the current_session...
         //
 
-        self.current_session = match &msg_result {
+        let current_session = match &msg_result {
             MessageResult::JsonRpcResponseNewSession(_, new_session) => Some(StdArc::clone(new_session)),
             _ => session,
         };
-        debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: current session: {:?}", self.current_session);
+        debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: current session: {current_session:?}");
 
         let (status, body) = match msg_result {
             MessageResult::JsonRpcError(json_rpc_error) => {
                 debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: return ({json_rpc_error:?})");
-                (StatusCode::OK, Some(serde_json::to_vec(&json_rpc_error).unwrap_or_default()))
+                (StatusCode::OK, Some(Bytes::from(serde_json::to_vec(&json_rpc_error).unwrap_or_default())))
             },
-            MessageResult::JsonRpcResponse(json_rpc_response)
-            | MessageResult::JsonRpcResponseNewSession(json_rpc_response, _) => {
-                debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: return ({json_rpc_response:?})");
-                (StatusCode::OK, Some(serde_json::to_vec(&json_rpc_response).unwrap_or_default()))
+            MessageResult::JsonRpcResponse(bytes) | MessageResult::JsonRpcResponseNewSession(bytes, _) => {
+                debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: return ({} bytes)", bytes.len());
+                (StatusCode::OK, Some(bytes))
             },
             MessageResult::Nothing => {
                 debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: return Nothing response.");
@@ -698,11 +713,11 @@ impl McpGateway {
             },
         };
 
-        let headers = self.build_http_headers_with_content_type(body.is_some().then_some(MIME_APPLICATION_JSON));
-        match self.build_mcp_http_response(status, Self::build_mcp_response_body(body.map(Bytes::from)), &headers) {
-            Ok(resp) => FilterDecision::DirectResponse(Box::new(resp)),
-            Err(decision) => decision,
-        }
+        let session_header = current_session.as_deref().map(|s| &s.session_id_header);
+        let content_type = body.is_some().then_some(CONTENT_TYPE_JSON);
+        let resp =
+            self.build_mcp_http_response(status, Self::build_mcp_response_body(body), session_header, content_type);
+        FilterDecision::DirectResponse(Box::new(resp))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -777,20 +792,6 @@ impl McpGateway {
                 ));
             }
 
-            let capabilities = ServerCapabilities::builder().enable_tools().enable_tool_list_changed().build();
-
-            let server_info = {
-                let info = &self.inner.server_info;
-                Implementation::new(info.name.to_string(), info.version.to_string())
-            };
-
-            let result = InitializeResult::new(capabilities).with_server_info(server_info);
-            #[cfg(feature = "codemode")]
-            let result = match &self.inner.mode {
-                GatewayMode::Tools(_) => result,
-                GatewayMode::Code(_) => result.with_instructions(CodeMode::instructions()),
-            };
-
             let Some(new_session) = ctx.create_session(listener_name) else {
                 info!(target: "mcp_gateway", "handle_rpc_json_request: failed to create new session!");
                 return Ok(MessageResult::JsonRpcError(
@@ -800,7 +801,8 @@ impl McpGateway {
 
             debug!(target: "mcp_gateway", "handle_rpc_json_request: new session: {new_session:?}");
 
-            let response = self.build_json_rpc_response(serde_json::to_value(result).unwrap_or(Value::Null));
+            let response =
+                serialize_json_rpc_response(&self.request_id, &self.inner.initialize_result).unwrap_or_default();
 
             return Ok(MessageResult::JsonRpcResponseNewSession(response, new_session));
         }
@@ -821,7 +823,8 @@ impl McpGateway {
             },
             PingRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: 'ping' received");
-                Ok(MessageResult::JsonRpcResponse(self.build_json_rpc_response(json!({}))))
+                let bytes = serialize_json_rpc_response(&self.request_id, &serde_json::Map::new()).unwrap_or_default();
+                Ok(MessageResult::JsonRpcResponse(bytes))
             },
             ListToolsRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: 'tools/list'");
@@ -834,9 +837,8 @@ impl McpGateway {
                         ));
                     },
                 };
-                Ok(MessageResult::JsonRpcResponse(
-                    self.build_json_rpc_response(serde_json::to_value(tools).unwrap_or(Value::Null)),
-                ))
+                let bytes = serialize_json_rpc_response(&self.request_id, &tools).unwrap_or_default();
+                Ok(MessageResult::JsonRpcResponse(bytes))
             },
             CallToolRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: 'tools/call'");
@@ -852,8 +854,8 @@ impl McpGateway {
                 let cx = ToolCallContext { extensions: req_ext, headers: req_headers, request: req_ctx, session };
                 let result = self.inner.mode.call_tool(&self.inner.tools, cx, &name, arguments).await;
 
-                match result.and_then(|result| call_tool_result_into_value(result).map_err(CallToolError::from)) {
-                    Ok(result) => Ok(MessageResult::JsonRpcResponse(self.build_json_rpc_response(result))),
+                match result.and_then(|result| serialize_json_rpc_response(&self.request_id, &result).map_err(CallToolError::from)) {
+                    Ok(bytes) => Ok(MessageResult::JsonRpcResponse(bytes)),
                     Err(err) => {
                         debug!(target: "mcp_gateway", "handle_rpc_json_request: 'tools/call' failed: {err:#}");
                         Ok(MessageResult::JsonRpcError(self.build_json_rpc_error(err.into())))
@@ -871,9 +873,9 @@ impl McpGateway {
         }
     }
 
-    fn get_valid_session(ctx: &McpGatewayListenerContext, session_id: &SessionId) -> Option<StdArc<Session>> {
+    fn get_valid_session(ctx: &McpGatewayListenerContext, session_id: &str) -> Option<StdArc<Session>> {
         let Some(session) = ctx.session_map.pin().get(session_id).map(StdArc::clone) else {
-            debug!(target: "mcp_gateway", "get_valid_session: valid session {} not found in session map", session_id);
+            debug!(target: "mcp_gateway", "get_valid_session: valid session {session_id} not found in session map");
             return None;
         };
 
@@ -892,21 +894,6 @@ impl McpGateway {
         f(body, self.version)
     }
 
-    /// Build headers with optional Content-Type and optional session ID for JSON responses.
-    fn build_http_headers_with_content_type(
-        &self,
-        content_type: Option<&'static str>,
-    ) -> SmallVec<[(HeaderName, &str); 2]> {
-        let mut headers = smallvec![];
-        if let Some(session_id) = self.get_current_session_id() {
-            headers.push((MCP_SESSION_ID, session_id.as_str()));
-        }
-        if let Some(content_type) = content_type {
-            headers.push((http::header::CONTENT_TYPE, content_type));
-        }
-        headers
-    }
-
     #[inline]
     fn build_mcp_response_body(body: Option<Bytes>) -> TimeoutBody<PolyBody> {
         match body {
@@ -915,49 +902,31 @@ impl McpGateway {
         }
     }
 
-    #[allow(clippy::result_large_err)]
     fn build_mcp_http_response(
         &self,
         status: StatusCode,
         body: TimeoutBody<PolyBody>,
-        headers: &[(HeaderName, &str)],
-    ) -> Result<Response<ArionResponseBody>, FilterDecision> {
-        let mut builder =
-            Response::builder().header(http::header::CONNECTION, "keep-alive").version(self.version).status(status);
-
-        for (name, value) in headers {
-            builder = builder.header(name, *value);
+        session_header: Option<&HeaderValue>,
+        content_type: Option<HeaderValue>,
+    ) -> Response<ArionResponseBody> {
+        let mut resp = Response::new(body.into());
+        *resp.version_mut() = self.version;
+        *resp.status_mut() = status;
+        let headers = resp.headers_mut();
+        headers.reserve(3);
+        headers.insert(http::header::CONNECTION, CONNECTION_KEEP_ALIVE);
+        if let Some(session_header) = session_header {
+            headers.insert(MCP_SESSION_ID, session_header.clone());
         }
-
-        let Ok(resp) = builder.body(body.into()) else {
-            debug!(target: "mcp_gateway", "build_mcp_response: failed to build response body for session {}",
-                self.current_session.as_deref().map(|s| s.session_id.clone()).unwrap_or_default());
-            return Err(FilterDecision::internal_server_error(
-                format!(
-                    "Failed to build accepted response for session {}",
-                    self.current_session.as_deref().map(|s| s.session_id.clone()).unwrap_or_default()
-                )
-                .as_str(),
-                self.version,
-            ));
-        };
-
-        Ok(resp)
+        if let Some(content_type) = content_type {
+            headers.insert(http::header::CONTENT_TYPE, content_type);
+        }
+        resp
     }
 
     #[inline]
     fn build_json_rpc_error(&self, error: model::ErrorData) -> model::JsonRpcError {
         model::JsonRpcError { jsonrpc: model::JsonRpcVersion2_0, id: Some(self.request_id.clone()), error }
-    }
-
-    #[inline]
-    fn build_json_rpc_response(&self, result: Value) -> model::JsonRpcResponse<Value> {
-        model::JsonRpcResponse { jsonrpc: model::JsonRpcVersion2_0, id: self.request_id.clone(), result }
-    }
-
-    #[inline]
-    pub fn get_current_session_id(&self) -> Option<&SessionId> {
-        self.current_session.as_deref().map(|s| &s.session_id)
     }
 }
 
@@ -966,8 +935,8 @@ mod tests {
     use super::super::tools::{CODEMODE_EXECUTE_TOOL_NAME, TestCallContext};
     use super::*;
     use arion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-        DisclosureMode, EmbeddingVector, HttpUpstreamPolicy, McpCodeMode, McpGatewayMode, McpTool, McpToolSearch,
-        McpToolsMode, UpstreamBackend, UpstreamLimits,
+        DisclosureMode, EmbeddingVector, HttpUpstreamPolicy, McpCodeMode, McpGatewayMode, McpServerInfo, McpTool,
+        McpToolSearch, McpToolsMode, UpstreamBackend, UpstreamLimits,
     };
 
     #[test]

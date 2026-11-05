@@ -17,6 +17,7 @@
 use std::{io, sync::Arc as StdArc, time::Instant};
 
 use arion_tracing::http_tracer::ScopedClientSpan;
+use bytes::Bytes;
 use opentelemetry::{KeyValue, StringValue};
 use pingora_timeout::fast_timeout::fast_timeout;
 use rmcp::{
@@ -103,21 +104,22 @@ async fn invoke_mcp_server(
     cx: ToolCallContext<'_>,
 ) -> Result<CallToolResult, CallToolError> {
     let url = &backend.url;
+    let cluster = &backend.cluster;
     let session = cx.session;
     let upstream_call = async {
         let cached = session.mcp_upstreams.pin().get(url.as_str()).map(StdArc::clone);
         let client = if let Some(client) = cached {
             client
         } else {
-            let new_client = StdArc::new(ToolsRegistry::get_mcp_client(url).await?);
-            StdArc::clone(session.mcp_upstreams.pin().get_or_insert(url.to_string(), new_client))
+            let new_client = StdArc::new(ToolsRegistry::get_mcp_client(cluster.as_str(), url.as_str()).await?);
+            StdArc::clone(session.mcp_upstreams.pin().get_or_insert_with(url.clone(), || new_client))
         };
 
         let call_params = match arguments {
             Value::Object(args) => {
-                CallToolRequestParams::new(backend.upstream_tool_name.to_string()).with_arguments(args)
+                CallToolRequestParams::new(backend.upstream_tool_name.clone()).with_arguments(args)
             },
-            _ => CallToolRequestParams::new(backend.upstream_tool_name.to_string()),
+            _ => CallToolRequestParams::new(backend.upstream_tool_name.clone()),
         };
 
         match client.call_tool(call_params).await {
@@ -134,9 +136,9 @@ async fn invoke_mcp_server(
 
     let invocation = Invocation::start(
         cx.request,
-        entry.tool.name.as_ref(),
+        entry.tool_name_attr.clone(),
         "mcp_server",
-        StdArc::<str>::from(backend.url.clone()).into(),
+        backend.upstream_attr.clone(),
     );
     let mut outcome: ToolInvocationOutcome = match fast_timeout(backend.timeout, upstream_call).await {
         Err(_) => Err(ToolInvocationFailure::upstream_timeout()),
@@ -166,9 +168,13 @@ pub(super) struct Invocation {
 }
 
 impl Invocation {
-    pub(super) fn start(req_ctx: &RequestCtx, tool_name: &str, backend: &'static str, upstream: StringValue) -> Self {
+    pub(super) fn start(
+        req_ctx: &RequestCtx,
+        tool_name: StringValue,
+        backend: &'static str,
+        upstream: StringValue,
+    ) -> Self {
         let started = Instant::now();
-        let tool_name = StringValue::from(StdArc::<str>::from(tool_name));
         let mut span = req_ctx.begin_upstream_span(upstream.as_str());
         span.set_attributes([
             KeyValue::new("mcp.tool.name", tool_name.clone()),
@@ -259,25 +265,19 @@ pub(crate) fn serialized_json_size(value: &impl Serialize) -> Result<usize, serd
     Ok(writer.0)
 }
 
-/// Converts a tool result into its wire value while moving an existing
-/// structured payload directly into `structuredContent`.
-pub(crate) fn call_tool_result_into_value(mut result: CallToolResult) -> Result<Value, serde_json::Error> {
-    let content = serde_json::to_value(std::mem::take(&mut result.content))?;
-    let mut value = serde_json::Map::with_capacity(5);
-    if let Some(result_type) = result.result_type.take() {
-        value.insert("resultType".to_owned(), serde_json::to_value(result_type)?);
-    }
-    value.insert("content".to_owned(), content);
-    if let Some(structured_content) = result.structured_content.take() {
-        value.insert("structuredContent".to_owned(), structured_content);
-    }
-    if let Some(is_error) = result.is_error.take() {
-        value.insert("isError".to_owned(), Value::Bool(is_error));
-    }
-    if let Some(meta) = result.meta.take() {
-        value.insert("_meta".to_owned(), serde_json::to_value(meta)?);
-    }
-    Ok(Value::Object(value))
+/// Serialize a JSON-RPC 2.0 response envelope `{"jsonrpc":"2.0","id":<id>,"result":<result>}`
+/// directly into a byte buffer in a single pass, avoiding intermediate `serde_json::Value` allocations.
+pub(crate) fn serialize_json_rpc_response(
+    id: &rmcp::model::RequestId,
+    result: &impl Serialize,
+) -> Result<Bytes, serde_json::Error> {
+    let mut buf = Vec::with_capacity(256);
+    buf.extend_from_slice(br#"{"jsonrpc":"2.0","id":"#);
+    serde_json::to_writer(&mut buf, id)?;
+    buf.extend_from_slice(br#","result":"#);
+    serde_json::to_writer(&mut buf, result)?;
+    buf.push(b'}');
+    Ok(Bytes::from(buf))
 }
 
 #[cfg(test)]
@@ -285,6 +285,27 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// Converts a tool result into its wire value while moving an existing
+    /// structured payload directly into `structuredContent`.
+    fn call_tool_result_into_value(mut result: CallToolResult) -> Result<Value, serde_json::Error> {
+        let content = serde_json::to_value(std::mem::take(&mut result.content))?;
+        let mut value = serde_json::Map::with_capacity(5);
+        if let Some(result_type) = result.result_type.take() {
+            value.insert("resultType".to_owned(), serde_json::to_value(result_type)?);
+        }
+        value.insert("content".to_owned(), content);
+        if let Some(structured_content) = result.structured_content.take() {
+            value.insert("structuredContent".to_owned(), structured_content);
+        }
+        if let Some(is_error) = result.is_error.take() {
+            value.insert("isError".to_owned(), Value::Bool(is_error));
+        }
+        if let Some(meta) = result.meta.take() {
+            value.insert("_meta".to_owned(), serde_json::to_value(meta)?);
+        }
+        Ok(Value::Object(value))
+    }
 
     #[test]
     fn counting_writer_matches_compact_json() {
@@ -302,5 +323,24 @@ mod tests {
         let serialized = serde_json::to_value(CallToolResult::structured(payload.clone())).unwrap();
         let moved = call_tool_result_into_value(CallToolResult::structured(payload)).unwrap();
         assert_eq!(moved, serialized);
+    }
+
+    #[test]
+    fn serialize_json_rpc_response_matches_json_rpc_response() {
+        let id = rmcp::model::RequestId::Number(42);
+        let result = CallToolResult::structured(json!({
+            "temperature": 22.5,
+            "tags": ["a", "b"],
+            "nested": {"x": [1, 2, 3], "emoji": "🦀"},
+        }));
+        let bytes = serialize_json_rpc_response(&id, &result).unwrap();
+
+        let expected = serde_json::to_vec(&rmcp::model::JsonRpcResponse {
+            jsonrpc: rmcp::model::JsonRpcVersion2_0,
+            id,
+            result: serde_json::to_value(&result).unwrap(),
+        })
+        .unwrap();
+        assert_eq!(bytes.as_ref(), expected.as_slice());
     }
 }

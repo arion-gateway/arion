@@ -349,8 +349,14 @@ pub struct McpServerBackendBuilder {
 
 impl McpServerBackendBuilder {
     #[must_use]
-    pub fn new(url: impl Into<String>) -> Self {
-        Self { proto: McpServerBackend { transport: McpTransport::StreamableHttp.to_proto(), url: url.into() } }
+    pub fn new(cluster: impl Into<String>, url: impl Into<String>) -> Self {
+        Self {
+            proto: McpServerBackend {
+                transport: McpTransport::StreamableHttp.to_proto(),
+                cluster: cluster.into(),
+                url: url.into(),
+            },
+        }
     }
 
     #[must_use]
@@ -394,12 +400,18 @@ pub struct DynamicMcpServerBuilder {
 
 impl DynamicMcpServerBuilder {
     #[must_use]
-    pub fn new(namespace: impl Into<String>, description: impl Into<String>, url: impl Into<String>) -> Self {
+    pub fn new(
+        namespace: impl Into<String>,
+        description: impl Into<String>,
+        cluster: impl Into<String>,
+        url: impl Into<String>,
+    ) -> Self {
         Self {
             proto: DynamicMcpServer {
                 namespace: namespace.into(),
                 description: description.into(),
                 transport: McpTransport::StreamableHttp.to_proto(),
+                cluster: cluster.into(),
                 url: url.into(),
                 ..Default::default()
             },

@@ -64,6 +64,7 @@ fn dynamic_server_entry(namespace: &str) -> DynamicMcpServerEntry {
         namespace: namespace.to_interned_str(),
         description: "".into(),
         transport: McpBackendTransportUpstream::StreamableHttp,
+        cluster: "mcp".into(),
         url: "http://localhost/mcp".into(),
         cache_duration: None,
         rbac: None,
@@ -174,6 +175,7 @@ async fn failed_dynamic_refresh_retains_previous_tools() {
         namespace: "srv".into(),
         description: "".into(),
         transport: McpBackendTransportUpstream::StreamableHttp,
+        cluster: "mcp".into(),
         url: "http://127.0.0.1:1/mcp".into(),
         cache_duration: None,
         rbac: None,
@@ -188,6 +190,7 @@ async fn failed_dynamic_refresh_retains_previous_tools() {
         output_schema: serde_json::Map::new(),
         backend: UpstreamBackend::McpServer {
             transport: McpBackendTransportUpstream::StreamableHttp,
+            cluster: "mcp".into(),
             url: "http://127.0.0.1:1/mcp".into(),
         },
         rbac: None,
@@ -553,6 +556,7 @@ fn tds_added_tools_inherit_registry_limits() {
     let mut tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
     tool.backend = UpstreamBackend::McpServer {
         transport: McpBackendTransportUpstream::StreamableHttp,
+        cluster: "mcp".into(),
         url: "http://localhost/mcp".into(),
     };
 
@@ -623,6 +627,7 @@ fn test_remove_dynamic_server_evicts_its_tools() {
         namespace: "srv".into(),
         description: "".into(),
         transport: McpBackendTransportUpstream::StreamableHttp,
+        cluster: "mcp".into(),
         url: "http://localhost/mcp".into(),
         cache_duration: None,
         rbac: None,
@@ -640,6 +645,7 @@ fn test_remove_dynamic_server_evicts_its_tools() {
             output_schema: serde_json::Map::new(),
             backend: UpstreamBackend::McpServer {
                 transport: McpBackendTransportUpstream::StreamableHttp,
+                cluster: "mcp".into(),
                 url: "http://localhost/mcp".into(),
             },
             rbac: None,

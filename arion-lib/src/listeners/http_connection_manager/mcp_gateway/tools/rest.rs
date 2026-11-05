@@ -58,6 +58,8 @@ use crate::{
 };
 
 pub(super) const DEFAULT_USER_AGENT: &str = concat!("arion/", env!("CARGO_PKG_VERSION"));
+const DEFAULT_USER_AGENT_HEADER: HeaderValue = HeaderValue::from_static(DEFAULT_USER_AGENT);
+const CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static("application/json");
 const PATH_TEMPLATE_NAME: &str = "path";
 const BODY_TEMPLATE_NAME: &str = "body";
 const URI_COMPONENT_SET: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(b'.').remove(b'~');
@@ -73,6 +75,7 @@ pub(super) struct RestBackend {
     method: http::Method,
     query_params: Vec<McpRestQueryParams>,
     path: CompiledTemplate<SmolStr>,
+    static_uri: Option<http::Uri>,
     body: Option<CompiledTemplate<Bytes>>,
     body_json: Option<SmolStr>,
     template_engine: Engine<'static>,
@@ -116,6 +119,10 @@ impl RestBackend {
         } else {
             CompiledTemplate::Static(format!("/{path}").into())
         };
+        let static_uri = match &path {
+            CompiledTemplate::Static(static_path) if query_params.is_empty() => static_path.parse::<http::Uri>().ok(),
+            _ => None,
+        };
         let body = match body_template {
             None => None,
             Some(template) if template.contains("{{") => {
@@ -134,6 +141,7 @@ impl RestBackend {
             method,
             query_params,
             path,
+            static_uri,
             body,
             body_json,
             template_engine,
@@ -158,7 +166,7 @@ impl RestBackend {
             })?;
 
         let tool_name = entry.tool.name.as_ref();
-        let mut invocation = Invocation::start(cx.request, tool_name, "rest", self.cluster.as_str().into());
+        let mut invocation = Invocation::start(cx.request, entry.tool_name_attr.clone(), "rest", self.cluster.as_str().into());
         let outcome = match self.invoke_upstream(request, cx, &mut invocation, tool_name).await {
             Ok(response) => self.interpret_response(entry, response, &mut invocation).await,
             Err(failure) => Err(failure),
@@ -171,28 +179,36 @@ impl RestBackend {
         http_headers: &http::HeaderMap,
         arguments: &Map<String, Value>,
     ) -> Result<Request<ArionRequestBody>, RequestBuildError> {
-        let mut uri = String::with_capacity(
+        let parsed_uri = if let Some(uri) = &self.static_uri {
+            uri.clone()
+        } else {
+            let mut uri = String::with_capacity(
+                match &self.path {
+                    CompiledTemplate::Static(path) => path.len(),
+                    CompiledTemplate::Dynamic => 64,
+                } + self.query_params.len() * 32
+                    + 2,
+            );
             match &self.path {
-                CompiledTemplate::Static(path) => path.len(),
-                CompiledTemplate::Dynamic => 64,
-            } + self.query_params.len() * 32
-                + 2,
-        );
-        match &self.path {
-            CompiledTemplate::Static(path) => uri.push_str(path),
-            CompiledTemplate::Dynamic => {
-                let rendered_path = self.render_template(PATH_TEMPLATE_NAME, arguments)?;
-                if !rendered_path.starts_with('/') {
-                    uri.push('/');
-                }
-                uri.push_str(&rendered_path);
-            },
-        }
-        append_query_string(&mut uri, &self.query_params, arguments);
+                CompiledTemplate::Static(path) => uri.push_str(path),
+                CompiledTemplate::Dynamic => {
+                    let rendered_path = self.render_template(PATH_TEMPLATE_NAME, arguments)?;
+                    if !rendered_path.starts_with('/') {
+                        uri.push('/');
+                    }
+                    uri.push_str(&rendered_path);
+                },
+            }
+            append_query_string(&mut uri, &self.query_params, arguments);
+            uri.parse::<http::Uri>().map_err(http::Error::from)?
+        };
 
-        let user_agent =
-            http_headers.get(http::header::USER_AGENT).and_then(|ua| ua.to_str().ok()).unwrap_or(DEFAULT_USER_AGENT);
-        let mut builder = Request::builder().method(&self.method).uri(uri).header(http::header::USER_AGENT, user_agent);
+        let user_agent = http_headers
+            .get(http::header::USER_AGENT)
+            .filter(|ua| ua.to_str().is_ok())
+            .cloned()
+            .unwrap_or(DEFAULT_USER_AGENT_HEADER);
+
         let rendered = match &self.body {
             Some(CompiledTemplate::Static(body)) => Some(body.clone()),
             Some(CompiledTemplate::Dynamic) => Some(Bytes::from(self.render_template(BODY_TEMPLATE_NAME, arguments)?)),
@@ -202,19 +218,27 @@ impl RestBackend {
                 .and_then(|source| resolve_variable(source, arguments))
                 .map(|value| Bytes::from(value.to_string())),
         };
+        let has_body = rendered.is_some();
         let body = match rendered {
-            Some(rendered) => {
-                builder = builder.header(http::header::CONTENT_TYPE, "application/json");
-                InstrumentedBody::new(
-                    BodyKind::Request,
-                    TimeoutBody::new(None, PolyBody::from(Full::new(rendered))),
-                    None,
-                    |_, _, _, _| {},
-                )
-            },
+            Some(rendered) => InstrumentedBody::new(
+                BodyKind::Request,
+                TimeoutBody::new(None, PolyBody::from(Full::new(rendered))),
+                None,
+                |_, _, _, _| {},
+            ),
             None => InstrumentedBody::default(),
         };
-        Ok(builder.body(body)?)
+
+        let mut request = Request::new(body);
+        *request.method_mut() = self.method.clone();
+        *request.uri_mut() = parsed_uri;
+        let headers = request.headers_mut();
+        headers.reserve(4);
+        headers.insert(http::header::USER_AGENT, user_agent);
+        if has_body {
+            headers.insert(http::header::CONTENT_TYPE, CONTENT_TYPE_JSON);
+        }
+        Ok(request)
     }
 
     async fn invoke_upstream(

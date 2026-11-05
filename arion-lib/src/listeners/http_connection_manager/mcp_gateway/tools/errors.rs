@@ -135,20 +135,20 @@ impl From<CallToolError> for model::ErrorData {
             CallToolError::NameNotString => {
                 model::ErrorData::invalid_params("'name' parameter is missing or not a valid string", None)
             },
-            CallToolError::ToolNotFound(ref name) => {
+            CallToolError::ToolNotFound(name) => {
                 model::ErrorData::resource_not_found(format!("Tool '{name}' not found"), None)
             },
-            CallToolError::RbacDenied(ref tool) => {
+            CallToolError::RbacDenied(tool) => {
                 model::ErrorData::invalid_request(format!("Access denied by RBAC policy for tool '{tool}'"), None)
             },
             CallToolError::FunctionGraphNotImplemented => {
                 model::ErrorData::internal_error("FunctionGraph transcoding is not yet implemented", None)
             },
-            CallToolError::RequestEncoding { ref tool, ref reason } => {
+            CallToolError::RequestEncoding { tool, reason } => {
                 model::ErrorData::internal_error(format!("Failed to encode request for tool '{tool}': {reason}"), None)
             },
-            CallToolError::ClientInitializeError(ref init_err) => match init_err.as_ref() {
-                ClientInitializeError::JsonRpcError(error_data) => error_data.clone(),
+            CallToolError::ClientInitializeError(init_err) => match *init_err {
+                ClientInitializeError::JsonRpcError(error_data) => error_data,
                 ClientInitializeError::ConnectionClosed(msg) => {
                     model::ErrorData::internal_error(format!("Upstream connection closed: {msg}"), None)
                 },
@@ -158,15 +158,15 @@ impl From<CallToolError> for model::ErrorData {
                 ClientInitializeError::Cancelled => {
                     model::ErrorData::internal_error("Upstream client initialization was cancelled", None)
                 },
-                _ => {
-                    model::ErrorData::internal_error(format!("Upstream client initialization error: {init_err}"), None)
+                other => {
+                    model::ErrorData::internal_error(format!("Upstream client initialization error: {other}"), None)
                 },
             },
-            CallToolError::SerdeError(ref e) => {
+            CallToolError::SerdeError(e) => {
                 model::ErrorData::parse_error(format!("Serialization error: {e}"), None)
             },
-            CallToolError::ServiceError(ref svc_err) => match svc_err.as_ref() {
-                ServiceError::McpError(error_data) => error_data.clone(),
+            CallToolError::ServiceError(svc_err) => match *svc_err {
+                ServiceError::McpError(error_data) => error_data,
                 ServiceError::TransportSend(e) => {
                     model::ErrorData::internal_error(format!("Upstream transport send error: {e}"), None)
                 },
@@ -181,7 +181,7 @@ impl From<CallToolError> for model::ErrorData {
                 ServiceError::Timeout { timeout } => {
                     model::ErrorData::internal_error(format!("Upstream request timed out after {timeout:?}"), None)
                 },
-                _ => model::ErrorData::internal_error(format!("Upstream service error: {svc_err}"), None),
+                other => model::ErrorData::internal_error(format!("Upstream service error: {other}"), None),
             },
             CallToolError::ValidationError(e) => {
                 model::ErrorData::internal_error(format!("Json schema validation error: {e}"), None)
