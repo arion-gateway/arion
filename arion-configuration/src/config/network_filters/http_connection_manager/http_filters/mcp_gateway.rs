@@ -270,9 +270,10 @@ pub enum UpstreamBackend {
     },
     McpServer {
         transport: McpBackendTransportUpstream,
-        url: SmolStr,
+        path: SmolStr,
+        /// Cluster used to reach the MCP server (endpoints, TLS, HTTP/1 or HTTP/2, Host/:authority).
+        cluster: InternedStr,
     },
-    FunctionGraph,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -333,7 +334,9 @@ pub struct DynamicMcpServer {
     pub namespace: InternedStr,
     pub description: SmolStr,
     pub transport: McpBackendTransportUpstream,
-    pub url: SmolStr,
+    pub path: SmolStr,
+    /// Cluster used to reach the MCP server (endpoints, TLS, HTTP/1 or HTTP/2, Host/:authority).
+    pub cluster: InternedStr,
     pub cache_duration: Option<Duration>,
     pub rbac: Option<McpToolRbac>,
     #[serde(default)]
@@ -545,14 +548,14 @@ mod envoy_conversions {
         (!duration.is_zero()).then_some(duration).ok_or_else(|| GenericError::from_msg("must be greater than zero"))
     }
 
-    fn validate_mcp_url(url: String, field: &'static str) -> Result<String, GenericError> {
-        let url = required!(url).with_node(field)?;
-        let parsed = url::Url::parse(&url)
+    fn validate_mcp_path(path: String, field: &'static str) -> Result<String, GenericError> {
+        let path = required!(path).with_node(field)?;
+        let uri = http::Uri::from_str(&path)
             .map_err(|error| GenericError::from_msg_with_cause(format!("Invalid {field}"), error))?;
-        if !matches!(parsed.scheme(), "http" | "https") || !parsed.has_host() {
-            return Err(GenericError::from_msg(format!("{field} must be an absolute HTTP(S) URL")));
+        if uri.scheme().is_some() || uri.authority().is_some() {
+            return Err(GenericError::from_msg(format!("{field} must be a request path, not an absolute URL")));
         }
-        Ok(url)
+        Ok(path)
     }
 
     fn validate_rest_path(path: String) -> Result<String, GenericError> {
@@ -592,15 +595,22 @@ mod envoy_conversions {
         fn try_from(arion: ArionDynamicMcpServer) -> Result<Self, Self::Error> {
             let transport = arion.transport().into();
             let disclosure_mode = arion.disclosure_mode().into();
-            let ArionDynamicMcpServer { namespace, description, url, cache_duration, rbac, .. } = arion;
-            let url = validate_mcp_url(url, "DynamicMcpServer.url")?;
+            let ArionDynamicMcpServer { namespace, description, path, cluster, cache_duration, rbac, .. } = arion;
+            if namespace.is_empty() {
+                return Err(GenericError::from_msg("DynamicMcpServer.namespace must not be empty"));
+            }
+            let path = validate_mcp_path(path, "DynamicMcpServer.path")?;
+            if cluster.is_empty() {
+                return Err(GenericError::from_msg("DynamicMcpServer.cluster must not be empty"));
+            }
             let cache_duration = cache_duration.map(parse_positive_duration).transpose().with_node("cache_duration")?;
 
             Ok(DynamicMcpServer {
                 namespace: intern_identifier(&namespace, "DynamicMcpServer.namespace")?,
                 description: description.into(),
                 transport,
-                url: url.into(),
+                path: path.into(),
+                cluster: intern_identifier(&cluster, "DynamicMcpServer.cluster")?,
                 cache_duration,
                 rbac: rbac.map(TryInto::try_into).transpose()?,
                 disclosure_mode,
@@ -685,10 +695,6 @@ mod envoy_conversions {
             let description = required!(description).with_node("Tool.description")?;
             let backend = required!(upstream_backend)?.try_into()?;
 
-            if let UpstreamBackend::FunctionGraph = backend {
-                unimplemented!("FunctionGraph backend is not supported yet")
-            }
-
             let validate_schema_fn = |schema, name| -> Result<Map<String, Value>, GenericError> {
                 if let Some(schema) = schema {
                     let bytes = TryInto::<DataSource>::try_into(schema)?.to_bytes_blocking()?;
@@ -707,9 +713,7 @@ mod envoy_conversions {
             };
 
             let input_schema = match backend {
-                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph => {
-                    validate_schema_fn(input_schema, "input")?
-                },
+                UpstreamBackend::Rest { .. } => validate_schema_fn(input_schema, "input")?,
                 UpstreamBackend::McpServer { .. } => {
                     // input_schema is ignored for MCP backends
                     if input_schema.is_some() {
@@ -720,9 +724,7 @@ mod envoy_conversions {
             };
 
             let output_schema = match backend {
-                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph => {
-                    validate_schema_fn(output_schema, "output")?
-                },
+                UpstreamBackend::Rest { .. } => validate_schema_fn(output_schema, "output")?,
                 UpstreamBackend::McpServer { .. } => {
                     // output_schema is ignored for MCP backends
                     if output_schema.is_some() {
@@ -782,10 +784,16 @@ mod envoy_conversions {
                 },
                 ArionUpstreamBackend::McpServerBackend(be) => {
                     let transport = be.transport().into();
-                    let url = validate_mcp_url(be.url, "McpServerBackend.url")?;
-                    Ok(UpstreamBackend::McpServer { transport, url: url.into() })
+                    let path = validate_mcp_path(be.path, "McpServerBackend.path")?;
+                    if be.cluster.is_empty() {
+                        return Err(GenericError::from_msg("McpServerBackend.cluster must not be empty"));
+                    }
+                    Ok(UpstreamBackend::McpServer {
+                        transport,
+                        path: path.into(),
+                        cluster: intern_identifier(&be.cluster, "McpServerBackend.cluster")?,
+                    })
                 },
-                ArionUpstreamBackend::FunctionGraphBackend(_) => todo!(),
             }
         }
     }
@@ -965,15 +973,16 @@ mod envoy_conversions {
         }
 
         #[test]
-        fn dynamic_mcp_server_conversion_rejects_an_invalid_url() {
+        fn dynamic_mcp_server_conversion_rejects_an_invalid_path() {
             let result: Result<DynamicMcpServer, _> = ArionDynamicMcpServer {
                 namespace: "example".to_owned(),
-                url: "localhost:3000/mcp".to_owned(),
+                path: "localhost:3000/mcp".to_owned(),
+                cluster: "mcp".to_owned(),
                 ..Default::default()
             }
             .try_into();
 
-            assert!(result.unwrap_err().to_string().contains("DynamicMcpServer.url"));
+            assert!(result.unwrap_err().to_string().contains("DynamicMcpServer.path"));
         }
 
         #[test]

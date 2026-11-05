@@ -14,7 +14,7 @@
 
 //! Tool entries, their public projections, and the config-to-runtime builders.
 
-use std::{sync::Arc as StdArc, time::Duration};
+use std::{borrow::Cow, sync::Arc as StdArc, time::Duration};
 
 use arion_configuration::config::network_filters::{
     http_connection_manager::http_filters::mcp_gateway::{
@@ -22,7 +22,9 @@ use arion_configuration::config::network_filters::{
     },
     network_rbac::Action,
 };
+use arion_interner::InternedStr;
 use jsonschema::Validator;
+use opentelemetry::StringValue;
 use rmcp::model::{self, Tool};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -48,13 +50,14 @@ pub enum ToolSource {
 pub(super) enum ToolBackend {
     Rest(Box<RestBackend>),
     McpServer(McpServerBackend),
-    FunctionGraph,
 }
 
 #[derive(Debug)]
 pub(super) struct McpServerBackend {
-    pub url: SmolStr,
-    pub upstream_tool_name: SmolStr,
+    pub path: SmolStr,
+    pub cluster: InternedStr,
+    pub upstream_attr: StringValue,
+    pub upstream_tool_name: Cow<'static, str>,
     pub timeout: Duration,
     pub max_response_bytes: usize,
 }
@@ -74,6 +77,7 @@ pub struct ToolEntry {
     pub bm25_doc: Bm25Document,
     pub embedding: arc_swap::ArcSwapOption<Vec<f32>>,
     pub tool: Tool,
+    pub(super) tool_name_attr: StringValue,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -201,19 +205,21 @@ pub(super) fn build_tool_entry(
                 upstream_limits,
             )?))
         },
-        UpstreamBackend::McpServer { url, .. } => {
-            let upstream_tool_name = match &source {
-                ToolSource::Direct | ToolSource::OpenApi => id.name.clone(),
-                ToolSource::Dynamic { upstream_tool_name } => upstream_tool_name.clone(),
+        UpstreamBackend::McpServer { path, cluster, .. } => {
+            let upstream_tool_name: Cow<'static, str> = match &source {
+                ToolSource::Direct | ToolSource::OpenApi => Cow::Owned(id.name.to_string()),
+                ToolSource::Dynamic { upstream_tool_name } => Cow::Owned(upstream_tool_name.to_string()),
             };
+            let upstream_attr = StringValue::from(StdArc::<str>::from(path.as_str()));
             ToolBackend::McpServer(McpServerBackend {
-                url,
+                path,
+                cluster,
+                upstream_attr,
                 upstream_tool_name,
                 timeout: upstream_limits.timeout,
                 max_response_bytes: upstream_limits.max_response_bytes,
             })
         },
-        UpstreamBackend::FunctionGraph => ToolBackend::FunctionGraph,
     };
     let embedding = {
         let supplied = embedding.as_slice();
@@ -226,6 +232,7 @@ pub(super) fn build_tool_entry(
         }
     };
     let qualified_name = id.qualified_name();
+    let tool_name_attr = StringValue::from(StdArc::<str>::from(qualified_name.as_str()));
     let bm25_doc = Bm25Document::from_tool_parts(&qualified_name, &description, &input_schema);
     let tool = {
         let mut tool = Tool::new(qualified_name, description.to_string(), StdArc::new(input_schema.clone()));
@@ -252,6 +259,7 @@ pub(super) fn build_tool_entry(
         bm25_doc,
         embedding,
         tool,
+        tool_name_attr,
     })
 }
 

@@ -63,9 +63,12 @@ pub struct JwtHeaderMatcher {
 }
 
 impl JwtHeaderMatcher {
+    #[inline]
     pub fn matches(&self, ext: &http::Extensions) -> bool {
-        let header = ext.get::<jsonwebtoken::Header>();
+        self.matches_header(ext.get::<jsonwebtoken::Header>())
+    }
 
+    pub(crate) fn matches_header(&self, header: Option<&jsonwebtoken::Header>) -> bool {
         if let Some(header) = header {
             match &self.field {
                 JwtHeaderField::Algorithm => jsonwebtoken::Algorithm::from_str(self.value.as_str()) == Ok(header.alg),
@@ -94,9 +97,12 @@ pub struct JwtPayloadMatcher {
 }
 
 impl JwtPayloadMatcher {
+    #[inline]
     pub fn matches(&self, ext: &http::Extensions) -> bool {
-        let claims = ext.get::<JwtClaims>();
+        self.matches_claims(ext.get::<JwtClaims>())
+    }
 
+    pub(crate) fn matches_claims(&self, claims: Option<&JwtClaims>) -> bool {
         if let Some(claims) = claims {
             match &self.field {
                 JwtClaimField::Issuer => claims.iss.as_ref().is_some_and(|iss| iss.as_str() == self.value.as_str()),
@@ -154,7 +160,19 @@ impl ToolRbac {
     }
 
     pub fn is_permitted(&self, ext: &http::Extensions) -> bool {
-        let any_permission_matched = self.permissions.iter().any(|p| p.is_applicable(ext));
+        let mut cached_header: Option<Option<&jsonwebtoken::Header>> = None;
+        let mut cached_claims: Option<Option<&JwtClaims>> = None;
+
+        let any_permission_matched = self.permissions.iter().any(|p| match p {
+            Permission::JwtHeader(matcher) => {
+                let header = *cached_header.get_or_insert_with(|| ext.get::<jsonwebtoken::Header>());
+                matcher.matches_header(header)
+            },
+            Permission::JwtClaim(matcher) => {
+                let claims = *cached_claims.get_or_insert_with(|| ext.get::<JwtClaims>());
+                matcher.matches_claims(claims)
+            },
+        });
 
         let permitted = match self.action {
             Action::Allow => any_permission_matched,
@@ -352,52 +370,44 @@ mod tool_rbac_tests {
             action: Action::Allow,
             permissions: vec![Permission::JwtClaim(JwtPayloadMatcher {
                 field: JwtClaimField::Subject,
-                value: "alice@example.com".into(),
+                value: "admin@example.com".into(),
             })],
         };
 
-        // Alice should be allowed
-        let claims = create_test_claims("alice@example.com", None);
+        let claims = create_test_claims("admin@example.com", None);
         let header = create_test_header(Some("key-1"), jsonwebtoken::Algorithm::HS256);
         let req = create_request_with_claims(claims, header);
-        let permitted = rbac.is_permitted(req.extensions());
-        assert!(permitted);
+        assert!(rbac.is_permitted(req.extensions()));
 
-        // Bob should be denied
-        let claims = create_test_claims("bob@example.com", None);
+        let claims = create_test_claims("user@example.com", None);
         let header = create_test_header(Some("key-1"), jsonwebtoken::Algorithm::HS256);
         let req = create_request_with_claims(claims, header);
-        let permitted = rbac.is_permitted(req.extensions());
-        assert!(!permitted);
+        assert!(!rbac.is_permitted(req.extensions()));
     }
 
     #[test]
-    fn test_key_id_matching() {
+    fn test_header_kid_matching() {
         let rbac = ToolRbac {
             action: Action::Allow,
             permissions: vec![Permission::JwtHeader(JwtHeaderMatcher {
                 field: JwtHeaderField::KeyID,
-                value: "trusted-key-123".into(),
+                value: "trusted-key-1".into(),
             })],
         };
 
         let claims = create_test_claims("user@example.com", None);
+        let header = create_test_header(Some("trusted-key-1"), jsonwebtoken::Algorithm::HS256);
+        let req = create_request_with_claims(claims, header);
+        assert!(rbac.is_permitted(req.extensions()));
 
-        // Request with trusted key
-        let header = create_test_header(Some("trusted-key-123"), jsonwebtoken::Algorithm::HS256);
-        let req = create_request_with_claims(claims.clone(), header);
-        let permitted = rbac.is_permitted(req.extensions());
-        assert!(permitted);
-
-        // Request with untrusted key
+        let claims = create_test_claims("user@example.com", None);
         let header = create_test_header(Some("untrusted-key"), jsonwebtoken::Algorithm::HS256);
         let req = create_request_with_claims(claims, header);
-        let permitted = rbac.is_permitted(req.extensions());
-        assert!(!permitted);
+        assert!(!rbac.is_permitted(req.extensions()));
     }
 
     #[test]
-    fn test_algorithm_matching() {
+    fn test_header_algorithm_matching() {
         let rbac = ToolRbac {
             action: Action::Allow,
             permissions: vec![Permission::JwtHeader(JwtHeaderMatcher {
@@ -407,45 +417,71 @@ mod tool_rbac_tests {
         };
 
         let claims = create_test_claims("user@example.com", None);
-
-        // Request with RS256 algorithm
         let header = create_test_header(Some("key-1"), jsonwebtoken::Algorithm::RS256);
-        let req = create_request_with_claims(claims.clone(), header);
-        let permitted = rbac.is_permitted(req.extensions());
-        assert!(permitted);
+        let req = create_request_with_claims(claims, header);
+        assert!(rbac.is_permitted(req.extensions()));
 
-        // Request with HS256 algorithm
+        let claims = create_test_claims("user@example.com", None);
         let header = create_test_header(Some("key-1"), jsonwebtoken::Algorithm::HS256);
         let req = create_request_with_claims(claims, header);
-        let permitted = rbac.is_permitted(req.extensions());
-        assert!(!permitted);
+        assert!(!rbac.is_permitted(req.extensions()));
     }
 
     #[test]
-    fn test_no_jwt_in_request() {
+    fn test_no_jwt_in_extensions() {
         let rbac = ToolRbac {
             action: Action::Allow,
             permissions: vec![Permission::JwtClaim(JwtPayloadMatcher {
                 field: JwtClaimField::Subject,
-                value: "user@example.com".into(),
+                value: "admin@example.com".into(),
             })],
         };
 
-        // Request without JWT claims
         let req = Request::builder().uri("/test").body(()).unwrap();
-        let permitted = rbac.is_permitted(req.extensions());
-        assert!(!permitted);
+        // Should deny when no JWT is present and action is Allow
+        assert!(!rbac.is_permitted(req.extensions()));
+
+        let rbac_deny = ToolRbac {
+            action: Action::Deny,
+            permissions: vec![Permission::JwtClaim(JwtPayloadMatcher {
+                field: JwtClaimField::Subject,
+                value: "blocked@example.com".into(),
+            })],
+        };
+
+        // Should allow when no JWT is present and action is Deny (no match means not denied)
+        assert!(rbac_deny.is_permitted(req.extensions()));
     }
 
     #[test]
-    fn test_empty_permissions_denies_all() {
-        let rbac = ToolRbac { action: Action::Allow, permissions: vec![] };
+    fn test_combined_header_and_claim_permissions() {
+        let rbac = ToolRbac {
+            action: Action::Allow,
+            permissions: vec![
+                Permission::JwtHeader(JwtHeaderMatcher { field: JwtHeaderField::KeyID, value: "admin-key".into() }),
+                Permission::JwtClaim(JwtPayloadMatcher {
+                    field: JwtClaimField::Extra("role".into()),
+                    value: "admin".into(),
+                }),
+            ],
+        };
 
-        let claims = create_test_claims("user@example.com", Some("admin"));
-        let header = create_test_header(Some("key-1"), jsonwebtoken::Algorithm::HS256);
+        // Match via header
+        let claims = create_test_claims("user@example.com", Some("user"));
+        let header = create_test_header(Some("admin-key"), jsonwebtoken::Algorithm::HS256);
         let req = create_request_with_claims(claims, header);
+        assert!(rbac.is_permitted(req.extensions()));
 
-        let permitted = rbac.is_permitted(req.extensions());
-        assert!(!permitted);
+        // Match via claim
+        let claims = create_test_claims("user@example.com", Some("admin"));
+        let header = create_test_header(Some("regular-key"), jsonwebtoken::Algorithm::HS256);
+        let req = create_request_with_claims(claims, header);
+        assert!(rbac.is_permitted(req.extensions()));
+
+        // Match neither
+        let claims = create_test_claims("user@example.com", Some("user"));
+        let header = create_test_header(Some("regular-key"), jsonwebtoken::Algorithm::HS256);
+        let req = create_request_with_claims(claims, header);
+        assert!(!rbac.is_permitted(req.extensions()));
     }
 }

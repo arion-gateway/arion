@@ -36,8 +36,7 @@ The streamable HTTP MCP endpoint is `/mcp`. Arion also supports a legacy downstr
 This minimal bootstrap exposes one MCP tool, `get_weather`, backed by a REST service.
 
 ```yaml
-runtime:
-  num_cpus: 2
+runtime:\n  num_cpus: 2
   num_runtimes: 2
 
 logging:
@@ -286,13 +285,16 @@ If `output_schema` is configured, Arion parses successful REST responses as JSON
 
 Static MCP-server tools forward `tools/call` to an upstream MCP server. Upstream MCP server communication is Streamable HTTP by design, so configure `transport: StreamableHttp`; upstream SSE is not supported. This is distinct from Arion's legacy downstream `/sse` support for clients.
 
+The upstream is reached through `cluster`: endpoints, TLS, HTTP/1 or HTTP/2, and the `Host`/`:authority` header sent upstream all come from the cluster configuration, exactly as for REST backends. `path` only provides the request path (and query).
+
 ```yaml
 tools:
   - name: echo
     description: Forward an echo call to the upstream MCP server.
     mcp_server_backend:
       transport: StreamableHttp
-      url: http://127.0.0.1:3001/mcp
+      cluster: mcp_upstream_cluster
+      path: /mcp
 ```
 
 For a static MCP-server backend, the exposed tool name is also the upstream tool name. If the client calls `echo`, Arion calls `echo` on the upstream MCP server.
@@ -309,7 +311,8 @@ dynamic_mcp_servers:
   - name: github
     description: GitHub repository and pull request tools.
     transport: StreamableHttp
-    url: http://127.0.0.1:3001/mcp
+    cluster: mcp_upstream_cluster
+    path: /mcp
     cache_duration: 30s
 ```
 
@@ -328,7 +331,8 @@ Dynamic server fields:
 | `name` | Namespace prefix for materialised tools. |
 | `description` | Human-readable server description. |
 | `transport` | Configure `StreamableHttp` for upstream MCP communication. Dynamic discovery does not support upstream SSE. |
-| `url` | Upstream MCP endpoint. |
+| `cluster` | Required. Cluster used to reach the upstream (endpoints, TLS, HTTP/1 or HTTP/2, Host/:authority). |
+| `path` | Request path (and query) sent to the upstream MCP server. |
 | `cache_duration` | Optional TTL for the discovered tool list. If unset, a successful first fetch is cached indefinitely. |
 | `rbac` | Optional RBAC policy applied to every materialised tool. |
 
@@ -742,8 +746,8 @@ tools:
       action: ALLOW
       permissions:
         - jwt_claim:
-            field: role
-            value: admin
+          field: role
+          value: admin
     rest_backend:
       cluster: admin_api
       method: DELETE
@@ -757,7 +761,8 @@ dynamic_mcp_servers:
   - name: repo
     description: Repository management tools.
     transport: StreamableHttp
-    url: http://repo-mcp.internal:3001/mcp
+    cluster: repo_mcp_cluster
+    path: /mcp
     cache_duration: 5m
     rbac:
       action: ALLOW
@@ -794,205 +799,3 @@ envoy_bootstrap:
                           similarity:
                             top_k: 5
 ```
-
-### Semantic Search Assisted Discovery
-
-```yaml
-semantic_search_tool:
-  enable_assisted_discovery: true
-  similarity:
-    top_k: 5
-```
-
-### TDS Incremental Updates
-
-Gateway binding:
-
-```yaml
-server_info:
-  name: tenant-a-mcp
-  version: "1.0.0"
-tds:
-  config_name: main
-```
-
-Control plane resource names:
-
-```text
-# Add or update a Tool payload named get_weather
-tenant-a-mcp/main/get_weather
-
-# Remove that Tool
-tenant-a-mcp/main/get_weather
-
-# Add or update a DynamicMcpServer payload named github
-tenant-a-mcp/main/github
-
-# Remove that DynamicMcpServer
-tenant-a-mcp/main/github
-```
-
-### Multi-Tenant Gateway With Bind Device
-
-This pattern runs multiple tenants in one Arion instance while keeping each tenant's listener and upstream traffic on tenant-specific network interfaces. Arion supports Linux `SO_BINDTODEVICE` via Envoy `socket_options`.
-
-Important details:
-
-- Listener bind-device socket options apply to the downstream listener socket.
-- Cluster `upstream_bind_config.socket_options` apply to upstream connections.
-- Arion supports at most one bind-device socket option per listener or upstream bind config.
-- `SO_BINDTODEVICE` is Linux-only.
-- `level: 1` and `name: 25` are the Linux socket option identifiers for `SOL_SOCKET` and `SO_BINDTODEVICE`.
-- `buf_value` is base64 for the interface name. A trailing null byte is optional; Arion appends it if missing.
-
-Two-tenant sketch:
-
-```yaml
-envoy_bootstrap:
-  static_resources:
-    listeners:
-      - name: tenant_a_mcp
-        address:
-          socket_address:
-            address: 10.10.1.10
-            port_value: 8000
-        socket_options:
-          - description: bind tenant A listener to tenant-a-in
-            level: 1
-            name: 25
-            buf_value: dGVuYW50LWEtaW4=
-        filterChains:
-          - name: tenant_a_chain
-            filters:
-              - name: http_gateway
-                typedConfig:
-                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
-                  statPrefix: tenant_a_mcp
-                  codecType: HTTP1
-                  httpFilters:
-                    - name: arion.filters.http.mcp
-                      typed_config:
-                        "@type": type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
-                        server_info:
-                          name: tenant-a-mcp
-                          version: "1.0.0"
-                        cluster_header: x-mcp-target-cluster
-                        tds:
-                          config_name: main
-                    - name: envoy.filters.http.router
-                      typedConfig:
-                        "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
-                  routeConfig:
-                    name: tenant_a_mcp_routes
-                    virtual_hosts:
-                      - name: tenant_a
-                        domains: ["*"]
-                        routes:
-                          - match:
-                              prefix: /
-                            route:
-                              cluster_header: x-mcp-target-cluster
-
-      - name: tenant_b_mcp
-        address:
-          socket_address:
-            address: 10.10.2.10
-            port_value: 8000
-        socket_options:
-          - description: bind tenant B listener to tenant-b-in
-            level: 1
-            name: 25
-            buf_value: dGVuYW50LWItaW4=
-        filterChains:
-          - name: tenant_b_chain
-            filters:
-              - name: http_gateway
-                typedConfig:
-                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
-                  statPrefix: tenant_b_mcp
-                  codecType: HTTP1
-                  httpFilters:
-                    - name: arion.filters.http.mcp
-                      typed_config:
-                        "@type": type.googleapis.com/arion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
-                        server_info:
-                          name: tenant-b-mcp
-                          version: "1.0.0"
-                        cluster_header: x-mcp-target-cluster
-                        tds:
-                          config_name: main
-                    - name: envoy.filters.http.router
-                      typedConfig:
-                        "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
-                  routeConfig:
-                    name: tenant_b_mcp_routes
-                    virtual_hosts:
-                      - name: tenant_b
-                        domains: ["*"]
-                        routes:
-                          - match:
-                              prefix: /
-                            route:
-                              cluster_header: x-mcp-target-cluster
-
-    clusters:
-      - name: tenant_a_tools_api
-        connect_timeout: 0.25s
-        type: STATIC
-        lb_policy: ROUND_ROBIN
-        upstream_bind_config:
-          socket_options:
-            - description: bind tenant A upstreams to tenant-a-out
-              level: 1
-              name: 25
-              buf_value: dGVuYW50LWEtb3V0
-        load_assignment:
-          endpoints:
-            - lb_endpoints:
-                - endpoint:
-                    address:
-                      socket_address:
-                        address: 10.20.1.10
-                        port_value: 8080
-
-      - name: tenant_b_tools_api
-        connect_timeout: 0.25s
-        type: STATIC
-        lb_policy: ROUND_ROBIN
-        upstream_bind_config:
-          socket_options:
-            - description: bind tenant B upstreams to tenant-b-out
-              level: 1
-              name: 25
-              buf_value: dGVuYW50LWItb3V0
-        load_assignment:
-          endpoints:
-            - lb_endpoints:
-                - endpoint:
-                    address:
-                      socket_address:
-                        address: 10.20.2.10
-                        port_value: 8080
-```
-
-Tenant-specific TDS resources then target different scopes:
-
-```text
-tenant-a-mcp/main/search_customer
-tenant-b-mcp/main/search_customer
-```
-
-Both resources can carry a `Tool` named `search_customer`, but they update different gateway registries.
-
-## Operational Notes
-
-- `tools/call` requires a valid MCP session.
-- `GET /mcp` returns method not allowed. Use `POST /mcp` for streamable HTTP.
-- `DELETE /mcp` with `mcp-session-id` deletes a streamable HTTP session.
-- Legacy downstream SSE starts with `GET /sse` and then posts messages to the endpoint sent in the SSE handshake.
-- Tool names must be unique within a gateway registry after namespacing.
-- Static tools and xDS-provided tools share the same provided-tool namespace; xDS can replace a static tool with the same name.
-- Dynamic tools are owned by their dynamic server and are removed by removing or replacing that server.
-- Configure upstream MCP server communication as Streamable HTTP by design.
-- If semantic search is enabled without `semantic_search_tool.embeddings`, Arion uses BM25 ranking locally.
-- If remote embeddings are configured, keep the embeddings endpoint behind a normal Arion cluster.
