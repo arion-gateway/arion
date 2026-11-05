@@ -56,6 +56,8 @@ pub fn normalise_in_place(v: &mut [f32]) {
     }
 }
 
+const MAX_SEARCH_TEXT_BYTES: usize = 2000;
+
 pub fn build_search_text(
     name: &str,
     description: &str,
@@ -74,6 +76,13 @@ pub fn build_search_text(
                 buf.push_str(arg_desc);
             }
         }
+    }
+    if buf.len() > MAX_SEARCH_TEXT_BYTES {
+        let mut end = MAX_SEARCH_TEXT_BYTES;
+        while !buf.is_char_boundary(end) {
+            end -= 1;
+        }
+        buf.truncate(end);
     }
     buf
 }
@@ -311,6 +320,17 @@ mod tests {
         assert!(text.contains("longitude: Decimal longitude"));
         assert!(text.contains("\ndays"));
         assert!(!text.contains("days:"));
+    }
+
+    #[test]
+    fn build_search_text_is_bounded_on_a_char_boundary() {
+        let schema_value = json!({
+            "properties": { "notes": { "type": "string", "description": "é".repeat(4000) } }
+        });
+        let serde_json::Value::Object(schema) = schema_value else { unreachable!() };
+        let text = build_search_text("tool", "description", &schema);
+        assert!(text.len() <= MAX_SEARCH_TEXT_BYTES);
+        assert!(text.chars().last().is_some_and(|last| last == 'é'));
     }
 
     #[test]

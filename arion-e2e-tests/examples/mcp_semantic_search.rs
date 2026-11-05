@@ -25,7 +25,7 @@ use std::time::Duration;
 use arion_data_plane_api::envoy_data_plane_api::arion::extensions::filters::http::mcp::mcp_gateway::v3::Tool as ArionMcpTool;
 use arion_e2e_tests::config_builder::{
     ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder, McpRestBackendBuilder,
-    McpSemanticSearchBuilder, McpToolBuilder, inline_string_data_source,
+    McpToolBuilder, McpToolSearchBuilder, inline_string_data_source,
 };
 use arion_e2e_tests::{ArionInstance, CallToolResult, McpTestClient, PreConfiguredResponse, SpawnOptions, TestBackend};
 use bytes::Bytes;
@@ -35,6 +35,7 @@ use serde_json::{Value, json};
 
 const LISTENER_NAME: &str = "mcp_semantic_search_demo";
 const SAMPLE_QUERY: &str = "I need the weather forecast and temperature";
+const DEMO_TOOL_NAMESPACE: &str = "demo";
 
 const WEATHER_CLUSTER: &str = "weather_backend";
 const USERS_CLUSTER: &str = "users_backend";
@@ -46,10 +47,7 @@ const ADMIN_CLUSTER: &str = "admin_backend";
 #[command(about = "Run an interactive Arion MCP Gateway semantic-search demo backed by built-in BM25 ranking.")]
 struct Args {
     #[arg(long, default_value_t = 2, value_name = "N")]
-    top_k: u32,
-
-    #[arg(long)]
-    assisted_discovery: bool,
+    max_allowable_results: u32,
 
     #[arg(long)]
     verbose_arion: bool,
@@ -78,17 +76,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let initial_tools = client.list_tools().await?;
     println!("Initial tools/list: {}", format_names(initial_tools.tools.iter().map(|tool| tool.name.as_str())));
 
-    let search_result = client.call_tool("semantic_search", json!({ "user_query": SAMPLE_QUERY })).await?;
-    if args.assisted_discovery {
-        let updated_tools = client.list_tools().await?;
-        println!(
-            "Sample semantic_search matched tools/list entries: {}",
-            format_names(updated_tools.tools.iter().map(|tool| tool.name.as_str()))
-        );
-    } else {
-        let names = semantic_result_tool_names(&search_result);
-        println!("Sample semantic_search result: {}", format_names(names.iter().map(String::as_str)));
-    }
+    let search_result = client.call_tool("tool_search", json!({ "query": SAMPLE_QUERY })).await?;
+    let names = semantic_result_tool_names(&search_result);
+    println!("Sample tool_search result: {}", format_names(names.iter().map(String::as_str)));
 
     println!();
     println!("Press Ctrl-C to stop Arion and the demo backends.");
@@ -104,8 +94,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn validate_args(args: &Args) -> Result<(), io::Error> {
-    if args.top_k == 0 {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "--top-k must be greater than zero"));
+    if args.max_allowable_results == 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "--max-allowable-results must be greater than zero"));
     }
     Ok(())
 }
@@ -118,7 +108,7 @@ fn spawn_options(args: &Args) -> SpawnOptions {
 fn build_config(args: &Args, backends: &DemoBackends) -> arion_e2e_tests::Result<PathBuf> {
     let gateway = McpGatewayBuilder::new("arion-mcp-local-demo", "1.0.0")
         .tools(demo_tools())
-        .semantic_search(McpSemanticSearchBuilder::new().assisted_discovery(args.assisted_discovery).top_k(args.top_k));
+        .search(McpToolSearchBuilder::new().max_allowable_results(args.max_allowable_results));
 
     McpGatewayHttpConfigBuilder::new(gateway)
         .listener(LISTENER_NAME, 0)
@@ -181,23 +171,39 @@ fn json_response(body: &'static str) -> PreConfiguredResponse {
 
 fn demo_tools() -> Vec<ArionMcpTool> {
     vec![
-        McpToolBuilder::new("get_weather", "Get weather forecast, temperature, and sky condition information")
+        McpToolBuilder::new(
+            DEMO_TOOL_NAMESPACE,
+            "get_weather",
+            "Get weather forecast, temperature, and sky condition information",
+        )
             .input_schema(inline_string_data_source(r#"{"type":"object","properties":{}}"#))
             .rest_backend(McpRestBackendBuilder::new(WEATHER_CLUSTER, "GET", "/api/weather"))
             .build(),
-        McpToolBuilder::new("get_user", "Retrieve user profile, account plan, and status information")
+        McpToolBuilder::new(
+            DEMO_TOOL_NAMESPACE,
+            "get_user",
+            "Retrieve user profile, account plan, and status information",
+        )
             .input_schema(inline_string_data_source(
                 r#"{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}"#,
             ))
             .rest_backend(McpRestBackendBuilder::new(USERS_CLUSTER, "GET", "/api/users/{{id}}"))
             .build(),
-        McpToolBuilder::new("process_payment", "Process payment transactions, billing requests, and invoices")
+        McpToolBuilder::new(
+            DEMO_TOOL_NAMESPACE,
+            "process_payment",
+            "Process payment transactions, billing requests, and invoices",
+        )
             .input_schema(inline_string_data_source(
                 r#"{"type":"object","properties":{"amount":{"type":"number"},"currency":{"type":"string"}},"required":["amount","currency"]}"#,
             ))
             .rest_backend(McpRestBackendBuilder::new(PAYMENTS_CLUSTER, "POST", "/api/payments"))
             .build(),
-        McpToolBuilder::new("admin_delete_user", "Delete a user account as an administrator and write an audit record")
+        McpToolBuilder::new(
+            DEMO_TOOL_NAMESPACE,
+            "admin_delete_user",
+            "Delete a user account as an administrator and write an audit record",
+        )
             .input_schema(inline_string_data_source(
                 r#"{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}"#,
             ))
@@ -211,8 +217,7 @@ fn print_startup(args: &Args, backends: &DemoBackends, config_path: &std::path::
     println!("Config: {}", config_path.display());
     println!("MCP endpoint: http://{listener_addr}/mcp");
     println!("Ranking: BM25");
-    println!("Top K: {}", args.top_k);
-    println!("Assisted discovery: {}", args.assisted_discovery);
+    println!("Maximum allowable results: {}", args.max_allowable_results);
     println!();
     println!("Backends:");
     println!("  weather:  http://{}", backends.weather.addr());
@@ -235,13 +240,13 @@ fn print_curl_examples(listener_addr: SocketAddr) {
         }
     });
     let list_tools = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}});
-    let semantic_search = json!({
+    let tool_search = json!({
         "jsonrpc": "2.0",
         "id": 3,
         "method": "tools/call",
         "params": {
-            "name": "semantic_search",
-            "arguments": { "user_query": SAMPLE_QUERY }
+            "name": "tool_search",
+            "arguments": { "query": SAMPLE_QUERY }
         }
     });
 
@@ -274,14 +279,14 @@ fn print_curl_examples(listener_addr: SocketAddr) {
     println!("  -H \"mcp-session-id: $SESSION_ID\" \\");
     println!("  -d '{list_tools}'");
     println!();
-    println!("# 3. Run semantic search using the same session id.");
+    println!("# 3. Run tool search using the same session id.");
     println!("echo");
-    println!("echo '== semantic_search =='");
+    println!("echo '== tool_search =='");
     println!("curl -s \"$MCP_ENDPOINT\" \\");
     println!("  -H 'content-type: application/json' \\");
     println!("  -H 'accept: text/event-stream, application/json' \\");
     println!("  -H \"mcp-session-id: $SESSION_ID\" \\");
-    println!("  -d '{semantic_search}'");
+    println!("  -d '{tool_search}'");
     println!("echo");
     println!();
     println!("# 4. Clean up the temporary response file.");

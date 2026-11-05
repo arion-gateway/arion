@@ -63,6 +63,7 @@ tracing     = ["arion-lib/tracing"]
 access-log  = ["arion-lib/access-log"]
 prometheus  = ["metrics"]
 wasm        = ["arion-lib/wasm"]
+codemode    = ["arion-lib/codemode"]
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }

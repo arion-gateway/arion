@@ -45,6 +45,50 @@ pub struct Runtime {
     pub event_interval: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub max_io_events_per_tick: Option<NonZeroUsize>,
+    #[serde(default, skip_serializing_if = "CodeModeRuntime::is_default")]
+    pub codemode: CodeModeRuntime,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq, Clone)]
+pub struct CodeModeRuntime {
+    #[serde(default = "CodeModeRuntime::default_pool_capacity")]
+    pub pool_capacity: NonZeroU32,
+    #[serde(default = "CodeModeRuntime::default_max_memory_bytes")]
+    pub max_memory_bytes: NonZeroUsize,
+}
+
+impl CodeModeRuntime {
+    // Evaluated at compile time, so a zero literal is a build error rather than a runtime panic.
+    pub const DEFAULT_POOL_CAPACITY: NonZeroU32 = NonZeroU32::new(128).unwrap();
+    pub const DEFAULT_MAX_MEMORY_BYTES: NonZeroUsize = NonZeroUsize::new(64 * 1024 * 1024).unwrap();
+
+    pub const fn default_pool_capacity() -> NonZeroU32 {
+        Self::DEFAULT_POOL_CAPACITY
+    }
+
+    pub const fn default_max_memory_bytes() -> NonZeroUsize {
+        Self::DEFAULT_MAX_MEMORY_BYTES
+    }
+
+    fn update_from_env(mut self) -> Self {
+        self.pool_capacity =
+            var("ARION_CODEMODE_POOL_CAPACITY").ok().and_then(|value| value.parse().ok()).unwrap_or(self.pool_capacity);
+        self.max_memory_bytes = var("ARION_CODEMODE_MAX_MEMORY_BYTES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(self.max_memory_bytes);
+        self
+    }
+
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+impl Default for CodeModeRuntime {
+    fn default() -> Self {
+        Self { pool_capacity: Self::default_pool_capacity(), max_memory_bytes: Self::default_max_memory_bytes() }
+    }
 }
 
 fn one() -> NonZeroU32 {
@@ -93,6 +137,7 @@ impl Runtime {
                 .or(self.max_io_events_per_tick),
 
             affinity_strategy: self.affinity_strategy,
+            codemode: self.codemode.update_from_env(),
         }
     }
 
@@ -241,6 +286,7 @@ impl Default for Runtime {
             event_interval: None,
             max_io_events_per_tick: None,
             affinity_strategy: None,
+            codemode: CodeModeRuntime::default(),
         }
     }
 }
@@ -383,5 +429,22 @@ mod tests {
     fn test_non_zero_num_cpus() {
         let cpus = non_zero_num_cpus();
         assert!(cpus.get() > 0);
+    }
+
+    #[test]
+    fn codemode_runtime_defaults_and_deserializes_overrides() {
+        let defaults = CodeModeRuntime::default();
+        assert_eq!(defaults.pool_capacity.get(), 128);
+        assert_eq!(defaults.max_memory_bytes.get(), 64 * 1024 * 1024);
+
+        let runtime: Runtime = serde_json::from_value(serde_json::json!({
+            "codemode": {
+                "pool_capacity": 7,
+                "max_memory_bytes": 8_388_608
+            }
+        }))
+        .unwrap();
+        assert_eq!(runtime.codemode.pool_capacity.get(), 7);
+        assert_eq!(runtime.codemode.max_memory_bytes.get(), 8_388_608);
     }
 }

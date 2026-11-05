@@ -1,0 +1,43 @@
+// Copyright 2026 The arion-gateway Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package arion:codemode@0.1.0;
+
+interface runner {
+    variant execution-error {
+        javascript(string),
+        fatal(string),
+    }
+
+    execute: func(code: string) -> result<string, execution-error>;
+}
+
+interface host {
+    /// Synchronous host request. Supports only kind "log".
+    request: func(kind: string, payload: string) -> result<string, string>;
+
+    /// Begin an asynchronous tool-call or catalog dispatch. Returns the call
+    /// id, which is also the submission sequence number to track completion.
+    submit: func(kind: string, payload: string) -> result<u64, string>;
+
+    /// Block until one submitted call completes and return it. Returns none
+    /// when no calls are in flight. A per-completion err rejects that call's
+    /// promise; an outer err is a host defect and ends the execution.
+    next-completion: func() -> result<option<tuple<u64, result<string, string>>>, string>;
+}
+
+world sandbox {
+    import host;
+    export runner;
+}

@@ -44,6 +44,13 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Check sandbox formatting
+        run: cargo +stable fmt --manifest-path arion-sandbox/Cargo.toml -- --check
+
+      - name: Verify sandbox artifact checksum
+        working-directory: arion-lib/src/listeners/http_connection_manager/mcp_gateway/codemode/artifacts
+        run: sha256sum --check codemode_sandbox.wasm.sha256
+
       - name: Run clippy (fail on warnings)
         run: cargo clippy --all-targets --all-features
 

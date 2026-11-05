@@ -1,0 +1,3 @@
+[target.wasm32-wasip1]
+# Do not inherit the proxy workspace's native CPU flags for the Wasm guest.
+rustflags = ["-C", "target-cpu=generic"]

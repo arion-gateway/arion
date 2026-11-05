@@ -54,10 +54,12 @@ pub use listener::{
 };
 pub use mcp_gateway::{
     DEFAULT_MCP_FILTER_CHAIN_NAME, DEFAULT_MCP_ROUTE_CONFIG_NAME, DEFAULT_MCP_VHOST_NAME, DynamicMcpServerBuilder,
-    MCP_DYNAMIC_SERVER_TYPE_URL, MCP_GATEWAY_FILTER_NAME, MCP_GATEWAY_TYPE_URL, MCP_TOOL_TYPE_URL, McpGatewayBuilder,
-    McpGatewayHttpConfigBuilder, McpRestBackendBuilder, McpSemanticSearchBuilder, McpServerBackendBuilder,
-    McpToolBuilder, McpToolRbacBuilder, McpTransport, dynamic_mcp_server_xds_resource, inline_string_data_source,
-    mcp_gateway_any, mcp_gateway_http_filter, mcp_gateway_route_config, mcp_resource_id, mcp_tool_xds_resource,
+    MCP_DYNAMIC_SERVER_TYPE_URL, MCP_GATEWAY_FILTER_NAME, MCP_GATEWAY_TYPE_URL, MCP_OPEN_API_SOURCE_TYPE_URL,
+    MCP_TOOL_TYPE_URL, MCP_TOOLKIT_TYPE_URL, McpCodeModeBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder,
+    McpOpenApiToolSourceBuilder, McpRestBackendBuilder, McpServerBackendBuilder, McpToolBuilder, McpToolRbacBuilder,
+    McpToolSearchBuilder, McpToolkitBuilder, McpTransport, dynamic_mcp_server_xds_resource, inline_string_data_source,
+    mcp_gateway_any, mcp_gateway_http_filter, mcp_gateway_route_config, mcp_open_api_source_xds_resource,
+    mcp_resource_id, mcp_tool_xds_resource, mcp_toolkit_xds_resource,
 };
 pub use network_global_rate_limit::{NetworkGlobalRateLimit, NetworkGlobalRateLimitBuilder};
 pub use oauth2::OAuth2Builder;
