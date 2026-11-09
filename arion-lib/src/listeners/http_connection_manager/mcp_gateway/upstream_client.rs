@@ -18,7 +18,8 @@
 //! Every request goes through the `HttpChannel` of the configured cluster, so endpoints, TLS
 //! context, HTTP/1 or HTTP/2 codec, connection pools and circuit breaker all come from the cluster
 //! configuration. The MCP `path` only provides the request path (and query); the Host/:authority
-//! header is resolved from the cluster's endpoint on every request (same source TLS SNI uses).
+//! header is resolved from the cluster's endpoint when the session pins its channel (same source
+//! TLS SNI uses).
 //!
 //! [`McpUpstreamClient`] executes all MCP client operations (`initialize`, `tools/call`,
 //! `tools/list`, `prompts/*`, `resources/*`, `ping`, notifications, etc.) directly in the caller's
@@ -30,8 +31,9 @@ use crate::{
         instrumented_body::InstrumentedBody, poly_body::PolyBody, response_flags::BodyKind, timeout_body::TimeoutBody,
     },
     clusters::{RoutingPriority, clusters_manager, clusters_manager::RoutingContext},
+    transport::HttpChannel,
 };
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use arion_http_header::{LAST_EVENT_ID, MCP_PROTOCOL_VERSION, MCP_SESSION_ID};
 use arion_interner::{InternedStr, StringInterner};
 use bytes::{BufMut, Bytes, BytesMut};
@@ -123,17 +125,26 @@ pub(crate) enum UpstreamClientError {
 
 type ClientError = StreamableHttpError<UpstreamClientError>;
 
+/// Upstream endpoint channel and pre-validated `Host` header pinned for an MCP session.
+#[derive(Debug)]
+struct PinnedEndpoint {
+    channel: HttpChannel,
+    host: HeaderValue,
+}
+
 /// `StreamableHttpClient` sending MCP traffic through the `HttpChannel` of a cluster.
 ///
-/// The client is bound to a single endpoint: the `uri` argument of the trait methods is
-/// ignored in favor of the target parsed once at construction. The `Host` header is resolved
-/// from the cluster's endpoint authority on every request (see `send`), not from configuration,
-/// because the selected endpoint is only known after resolving the upstream channel.
-/// `HttpChannel::send_request` rewrites it into `:authority` for HTTP/2.
+/// Because MCP Streamable HTTP is stateful (an upstream session lives on the specific endpoint
+/// that answered `initialize`), the client pins the resolved [`HttpChannel`] and its `Host`
+/// header on the first request and reuses them for every subsequent request in the session.
+/// On session expiration (`reinitialize`) or transport error, the pinned endpoint is cleared so
+/// the next handshake resolves a fresh endpoint from the cluster.
+/// `HttpChannel::send_request` rewrites `Host` into `:authority` for HTTP/2.
 #[derive(Clone, Debug)]
 pub(crate) struct McpHttpClient {
     cluster_id: InternedStr,
     target: Uri,
+    endpoint: StdArc<ArcSwapOption<PinnedEndpoint>>,
     #[cfg(feature = "instrumentation")]
     clock: quanta::Clock,
 }
@@ -150,9 +161,40 @@ impl McpHttpClient {
         Ok(Self {
             cluster_id: cluster.to_interned_str(),
             target,
+            endpoint: StdArc::new(ArcSwapOption::empty()),
             #[cfg(feature = "instrumentation")]
             clock: quanta::Clock::new(),
         })
+    }
+
+    #[inline]
+    fn reset_endpoint(&self) {
+        self.endpoint.store(None);
+    }
+
+    #[inline]
+    fn resolve_endpoint(&self) -> Result<StdArc<PinnedEndpoint>, ClientError> {
+        if let Some(pinned) = self.endpoint.load_full() {
+            return Ok(pinned);
+        }
+        self.resolve_endpoint_slow()
+    }
+
+    #[cold]
+    fn resolve_endpoint_slow(&self) -> Result<StdArc<PinnedEndpoint>, ClientError> {
+        let channels = clusters_manager::get_http_connection(&self.cluster_id, RoutingContext::None).map_err(|e| {
+            StreamableHttpError::Client(UpstreamClientError::Cluster { cluster: self.cluster_id, source: Box::new(e) })
+        })?;
+        let channel = channels.channel().clone();
+        let host = HeaderValue::from_str(channel.upstream_authority.as_str()).map_err(|source| {
+            StreamableHttpError::Client(UpstreamClientError::InvalidAuthority { cluster: self.cluster_id, source })
+        })?;
+        let fresh = StdArc::new(PinnedEndpoint { channel, host });
+        let prev = self.endpoint.compare_and_swap(&None::<StdArc<PinnedEndpoint>>, Some(StdArc::clone(&fresh)));
+        match prev.as_ref() {
+            Some(existing) => Ok(StdArc::clone(existing)),
+            None => Ok(fresh),
+        }
     }
 
     /// Fast-path POST request builder for [`McpUpstreamClient`]: uses pre-validated
@@ -231,22 +273,14 @@ impl McpHttpClient {
         Ok(request)
     }
 
-    /// Resolve the cluster channel and send. The cluster lookup happens on every call: the
-    /// cluster map is thread-local and may be replaced by xDS updates while the client lives.
-    ///
-    /// The `Host` header is set here from the resolved channel's endpoint authority (the same
-    /// source used for TLS SNI), since the selected endpoint is only known after resolving the
-    /// channel.
+    /// Send through the session's pinned cluster channel, resolving and pinning one on the first
+    /// call. If the upstream send fails at the transport level, the pinned channel is cleared so a
+    /// subsequent attempt can pick a healthy endpoint.
     async fn send(&self, mut request: Request<ArionRequestBody>) -> Result<Response<ArionResponseBody>, ClientError> {
-        let channels = clusters_manager::get_http_connection(&self.cluster_id, RoutingContext::None).map_err(|e| {
-            StreamableHttpError::Client(UpstreamClientError::Cluster { cluster: self.cluster_id, source: Box::new(e) })
-        })?;
-        let host = HeaderValue::from_str(channels.upstream_authority().as_str()).map_err(|source| {
-            StreamableHttpError::Client(UpstreamClientError::InvalidAuthority { cluster: self.cluster_id, source })
-        })?;
-        request.headers_mut().insert(HOST, host);
-        channels
-            .channel()
+        let endpoint = self.resolve_endpoint()?;
+        request.headers_mut().insert(HOST, endpoint.host.clone());
+        endpoint
+            .channel
             .send_request(
                 request,
                 None,
@@ -257,7 +291,10 @@ impl McpHttpClient {
                 &self.clock,
             )
             .await
-            .map_err(|e| StreamableHttpError::Client(UpstreamClientError::Upstream(Box::new(e))))
+            .map_err(|e| {
+                self.reset_endpoint();
+                StreamableHttpError::Client(UpstreamClientError::Upstream(Box::new(e)))
+            })
     }
 }
 
@@ -599,6 +636,7 @@ impl McpUpstreamClient {
             return Ok(current);
         }
 
+        self.http.reset_endpoint();
         let id = self.next_request_id();
         let (_, new_state) = Self::expect_handshake_boxed(&self.http, &self.client_info, id).await.map_err(|err| {
             ServiceError::TransportSend(DynamicTransportError::from_parts(
@@ -1894,7 +1932,7 @@ mod tests {
         use arion_configuration::config::{
             cluster::{
                 Cluster as ClusterConfig, ClusterDiscoveryType, ClusterLoadAssignment, HealthStatus,
-                HttpProtocolOptions, LbEndpoint, LbPolicy, LocalityLbEndpoints,
+                HttpProtocolOptions, LbEndpoint, LbPolicy, LocalityLbEndpoints, StandardLbPolicy,
                 http_protocol_options::{Codec, CommonHttpOptions, Http1ProtocolOptions, Http2ProtocolOptions},
             },
             core::Address,
@@ -1906,12 +1944,17 @@ mod tests {
         };
         use rmcp::model::{ClientCapabilities, ClientConfig, Implementation};
         use serde_json::json;
-        use std::{num::NonZeroU32, sync::atomic::AtomicUsize, time::Duration};
+        use std::{
+            num::NonZeroU32,
+            sync::atomic::{AtomicBool, AtomicUsize},
+            time::Duration,
+        };
 
         #[derive(Default)]
         struct Stats {
             connections: AtomicUsize,
             requests: AtomicUsize,
+            initialized: AtomicBool,
             ping_replies: AtomicUsize,
             method_not_found_replies: AtomicUsize,
         }
@@ -1933,6 +1976,12 @@ mod tests {
             let session_attached = req.headers().contains_key(MCP_SESSION_ID);
             let body = req.into_body().collect().await.unwrap().to_bytes();
             let msg: Value = serde_json::from_slice(&body).unwrap();
+            if msg.get("method").and_then(Value::as_str) != Some("initialize")
+                && !stats.initialized.load(Ordering::Relaxed)
+            {
+                // Stateful MCP servers reject requests for a session that was not initialized on this node.
+                return Response::builder().status(StatusCode::NOT_FOUND).body(Full::new(Bytes::new())).unwrap();
+            }
             // Client JSON-RPC Response / Error to a server-initiated request has no `method`.
             if msg.get("method").is_none() {
                 if msg.get("result").is_some() {
@@ -1944,15 +1993,18 @@ mod tests {
             }
             let id = msg["id"].clone();
             match msg["method"].as_str().unwrap_or_default() {
-                "initialize" => json_response(
-                    200,
-                    &json!({"jsonrpc": "2.0", "id": id, "result": {
-                        "protocolVersion": msg["params"]["protocolVersion"],
-                        "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "fake", "version": "0"},
-                    }}),
-                    true,
-                ),
+                "initialize" => {
+                    stats.initialized.store(true, Ordering::Relaxed);
+                    json_response(
+                        200,
+                        &json!({"jsonrpc": "2.0", "id": id, "result": {
+                            "protocolVersion": msg["params"]["protocolVersion"],
+                            "capabilities": {"tools": {}},
+                            "serverInfo": {"name": "fake", "version": "0"},
+                        }}),
+                        true,
+                    )
+                },
                 "tools/list" => {
                     assert!(session_attached, "session id must be forwarded after initialize");
                     let reply = json!({"jsonrpc": "2.0", "id": id, "result": {"tools": [{
@@ -2041,24 +2093,25 @@ mod tests {
             (addr, stats)
         }
 
-        fn register_static_cluster(name: &str, addr: std::net::SocketAddr, http2: bool) {
+        fn register_static_cluster_with_endpoints(name: &str, addrs: &[std::net::SocketAddr], http2: bool) {
             let cluster_name = name.to_interned_str();
+            let lb_endpoints = addrs
+                .iter()
+                .map(|addr| LbEndpoint {
+                    address: Address::Socket(addr.ip().to_string(), addr.port()),
+                    health_status: HealthStatus::Healthy,
+                    load_balancing_weight: NonZeroU32::MIN,
+                })
+                .collect();
             let cluster = ClusterConfig {
                 name: cluster_name,
                 discovery_settings: ClusterDiscoveryType::Static(ClusterLoadAssignment {
                     cluster_name,
-                    endpoints: vec![LocalityLbEndpoints {
-                        priority: 0,
-                        lb_endpoints: vec![LbEndpoint {
-                            address: Address::Socket(addr.ip().to_string(), addr.port()),
-                            health_status: HealthStatus::Healthy,
-                            load_balancing_weight: NonZeroU32::MIN,
-                        }],
-                    }],
+                    endpoints: vec![LocalityLbEndpoints { priority: 0, lb_endpoints }],
                 }),
                 transport_socket: None,
                 bind_device: None,
-                load_balancing_policy: LbPolicy::default(),
+                load_balancing_policy: LbPolicy::Standard(StandardLbPolicy::RoundRobin),
                 http_protocol_options: HttpProtocolOptions {
                     codec: if http2 { Codec::Http2 } else { Codec::Http1 },
                     common: CommonHttpOptions::default(),
@@ -2071,6 +2124,10 @@ mod tests {
                 circuit_breakers: None,
             };
             add_cluster(PartialClusterType::try_from((Box::new(cluster), &SecretManager::new())).unwrap()).unwrap();
+        }
+
+        fn register_static_cluster(name: &str, addr: std::net::SocketAddr, http2: bool) {
+            register_static_cluster_with_endpoints(name, &[addr], http2);
         }
 
         async fn run_list_tools_scenario(cluster: &str, http2: bool) {
@@ -2121,6 +2178,39 @@ mod tests {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn lists_tools_through_an_http2_cluster() {
             run_list_tools_scenario("mcp-upstream-client-h2", true).await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn pins_session_to_single_endpoint_in_multi_endpoint_cluster() {
+            let (addr1, stats1) = spawn_fake_mcp_server().await;
+            let (addr2, stats2) = spawn_fake_mcp_server().await;
+            let cluster = "mcp-upstream-multi-endpoint";
+            register_static_cluster_with_endpoints(cluster, &[addr1, addr2], false);
+
+            let info = ClientConfig::new(ClientCapabilities::default(), Implementation::new("test", "0.1.0"));
+            let client = McpUpstreamClient::connect(cluster, "/mcp", info)
+                .await
+                .expect("handshake must stay on the same endpoint in a RoundRobin multi-endpoint cluster");
+
+            for _ in 0..4 {
+                let res = client.call_tool_borrowed("echo", None).await.expect("tools/call must stick to endpoint");
+                assert_eq!(res.is_error, Some(false));
+            }
+            let sse_res = client
+                .call_tool_borrowed("sse_interactive", None)
+                .await
+                .expect("SSE tools/call and server-request replies must stick to endpoint");
+            assert_eq!(sse_res.is_error, Some(false));
+
+            drop(client);
+            remove_cluster(cluster).unwrap();
+
+            let r1 = stats1.requests.load(Ordering::Relaxed);
+            let r2 = stats2.requests.load(Ordering::Relaxed);
+            assert!(
+                (r1 == 9 && r2 == 0) || (r1 == 0 && r2 == 9),
+                "all 9 requests of the session must hit the same endpoint, got endpoint1={r1}, endpoint2={r2}"
+            );
         }
     }
 }
