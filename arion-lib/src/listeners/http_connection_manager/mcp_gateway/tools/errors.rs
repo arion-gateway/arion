@@ -21,6 +21,7 @@ use smol_str::SmolStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ToolInvocationErrorCode {
+    InvalidInput,
     InvalidOutput,
     UpstreamError,
     UpstreamTimeout,
@@ -31,6 +32,7 @@ pub(super) enum ToolInvocationErrorCode {
 impl ToolInvocationErrorCode {
     pub(super) const fn as_str(self) -> &'static str {
         match self {
+            Self::InvalidInput => "invalid_input",
             Self::InvalidOutput => "invalid_output",
             Self::UpstreamError => "upstream_error",
             Self::UpstreamTimeout => "upstream_timeout",
@@ -50,6 +52,15 @@ pub(super) struct ToolInvocationFailure {
 }
 
 impl ToolInvocationFailure {
+    pub(super) fn invalid_input(message: String) -> Self {
+        Self {
+            code: ToolInvocationErrorCode::InvalidInput,
+            message,
+            status: Some(StatusCode::BAD_REQUEST),
+            retryable: false,
+        }
+    }
+
     pub(super) fn upstream_error() -> Self {
         Self {
             code: ToolInvocationErrorCode::UpstreamError,
@@ -127,6 +138,18 @@ impl From<ServiceError> for CallToolError {
     }
 }
 
+impl CallToolError {
+    /// Input validation failures are tool execution errors in MCP: they go back to
+    /// the model as an `isError` result it can correct and retry. Every other
+    /// failure stays a JSON-RPC protocol error.
+    pub(crate) fn into_tool_execution_error(self) -> Result<model::CallToolResult, Self> {
+        match self {
+            Self::ValidationError(message) => Ok(ToolInvocationFailure::invalid_input(message).into_call_tool_result()),
+            error => Err(error),
+        }
+    }
+}
+
 impl From<CallToolError> for model::ErrorData {
     fn from(err: CallToolError) -> Self {
         match err {
@@ -177,7 +200,7 @@ impl From<CallToolError> for model::ErrorData {
                 other => model::ErrorData::internal_error(format!("Upstream service error: {other}"), None),
             },
             CallToolError::ValidationError(e) => {
-                model::ErrorData::internal_error(format!("Json schema validation error: {e}"), None)
+                model::ErrorData::invalid_params(format!("Json schema validation error: {e}"), None)
             },
             #[cfg(feature = "codemode")]
             CallToolError::CodeModeConcurrencyLimit => {

@@ -189,6 +189,13 @@ fn parse_json_rpc_message(body: &[u8]) -> Result<model::JsonRpcMessage, String> 
         .and_then(|env| env.into_json_rpc_message().map_err(str::to_owned))
 }
 
+/// `tools/call` arguments are optional in MCP; like rmcp, a missing value means
+/// no arguments, i.e. an empty object, before schema validation.
+#[inline]
+fn take_tool_call_arguments(params: &mut model::JsonObject) -> Value {
+    params.remove("arguments").unwrap_or_else(|| Value::Object(model::JsonObject::new()))
+}
+
 #[allow(clippy::struct_field_names)]
 pub struct Session {
     pub listener_name: InternedStr,
@@ -347,11 +354,12 @@ impl GatewayMode {
         name: &str,
         arguments: Value,
     ) -> Result<model::CallToolResult, CallToolError> {
-        match self {
+        let result = match self {
             Self::Tools(mode) => mode.call_tool(tools, cx, name, arguments).await,
             #[cfg(feature = "codemode")]
             Self::Code(mode) => mode.call_tool(tools, cx, name, arguments).await,
-        }
+        };
+        result.or_else(CallToolError::into_tool_execution_error)
     }
 }
 
@@ -928,7 +936,7 @@ impl McpGateway {
                         self.build_json_rpc_error(CallToolError::NameNotString.into()),
                     ));
                 };
-                let arguments = params.remove("arguments").unwrap_or(Value::Null);
+                let arguments = take_tool_call_arguments(&mut params);
 
                 let cx = ToolCallContext { extensions: req_ext, headers: req_headers, request: req_ctx, session };
                 let result = self.inner.mode.call_tool(&self.inner.tools, cx, &name, arguments).await;
@@ -1083,6 +1091,16 @@ mod tests {
         parse_json_rpc_message(br#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":[]}"#).unwrap_err();
     }
 
+    #[test]
+    fn missing_tool_call_arguments_become_an_empty_object() {
+        let arguments_of = |params: Value| {
+            let Value::Object(mut params) = params else { panic!("expected object params") };
+            take_tool_call_arguments(&mut params)
+        };
+        assert_eq!(arguments_of(json!({ "name": "t" })), json!({}));
+        assert_eq!(arguments_of(json!({ "name": "t", "arguments": { "a": 1 } })), json!({ "a": 1 }));
+    }
+
     fn config_with_codemode() -> McpGatewayConfig {
         McpGatewayConfig {
             server_info: McpServerInfo { name: "test".into(), version: "1".into() },
@@ -1214,5 +1232,32 @@ mod tests {
         let tools: Vec<Value> = serde_json::from_str(&text.text).expect("JSON tool definitions");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["name"], "crm.find_customer");
+    }
+
+    #[tokio::test]
+    async fn input_validation_failures_are_tool_execution_errors() {
+        let mut tool = actual_tool("find_customer", DisclosureMode::Eager);
+        tool.input_schema = serde_json::from_value(json!({
+            "type": "object",
+            "properties": { "customer_id": { "type": "string" } },
+            "required": ["customer_id"]
+        }))
+        .unwrap();
+        let mut config = config_with_tools_mode();
+        config.tools = vec![tool];
+        let gateway = McpGateway::try_from(config).expect("tools gateway");
+        let cx = TestCallContext::default();
+
+        let result = gateway
+            .inner
+            .mode
+            .call_tool(&gateway.inner.tools, cx.context(), "crm.find_customer", json!({}))
+            .await
+            .expect("validation failures are tool results, not JSON-RPC errors");
+
+        assert_eq!(result.is_error, Some(true));
+        let structured = result.structured_content.expect("structured error");
+        assert_eq!(structured["error"]["code"], "invalid_input");
+        assert!(structured["error"]["message"].as_str().is_some_and(|message| message.contains("customer_id")));
     }
 }
