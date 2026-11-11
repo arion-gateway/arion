@@ -457,6 +457,7 @@ dependencies = [
  "serde_yaml",
  "smallvec",
  "smol_str",
+ "sse-stream",
  "str-utils",
  "swc_common",
  "swc_ts_fast_strip",

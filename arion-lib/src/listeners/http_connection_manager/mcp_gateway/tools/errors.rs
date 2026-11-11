@@ -21,6 +21,7 @@ use smol_str::SmolStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ToolInvocationErrorCode {
+    InvalidInput,
     InvalidOutput,
     UpstreamError,
     UpstreamTimeout,
@@ -31,6 +32,7 @@ pub(super) enum ToolInvocationErrorCode {
 impl ToolInvocationErrorCode {
     pub(super) const fn as_str(self) -> &'static str {
         match self {
+            Self::InvalidInput => "invalid_input",
             Self::InvalidOutput => "invalid_output",
             Self::UpstreamError => "upstream_error",
             Self::UpstreamTimeout => "upstream_timeout",
@@ -50,6 +52,15 @@ pub(super) struct ToolInvocationFailure {
 }
 
 impl ToolInvocationFailure {
+    pub(super) fn invalid_input(message: String) -> Self {
+        Self {
+            code: ToolInvocationErrorCode::InvalidInput,
+            message,
+            status: Some(StatusCode::BAD_REQUEST),
+            retryable: false,
+        }
+    }
+
     pub(super) fn upstream_error() -> Self {
         Self {
             code: ToolInvocationErrorCode::UpstreamError,
@@ -100,8 +111,6 @@ pub enum CallToolError {
     ToolNotFound(String),
     #[error("access to tool '{0}' denied by RBAC policy")]
     RbacDenied(String),
-    #[error("FunctionGraph transcoding is not yet implemented")]
-    FunctionGraphNotImplemented,
     #[error("Failed to encode request for tool '{tool}': {reason}")]
     RequestEncoding { tool: String, reason: String },
     #[error("Client initialization error: {0}")]
@@ -129,26 +138,35 @@ impl From<ServiceError> for CallToolError {
     }
 }
 
+impl CallToolError {
+    /// Input validation failures are tool execution errors in MCP: they go back to
+    /// the model as an `isError` result it can correct and retry. Every other
+    /// failure stays a JSON-RPC protocol error.
+    pub(crate) fn into_tool_execution_error(self) -> Result<model::CallToolResult, Self> {
+        match self {
+            Self::ValidationError(message) => Ok(ToolInvocationFailure::invalid_input(message).into_call_tool_result()),
+            error => Err(error),
+        }
+    }
+}
+
 impl From<CallToolError> for model::ErrorData {
     fn from(err: CallToolError) -> Self {
         match err {
             CallToolError::NameNotString => {
                 model::ErrorData::invalid_params("'name' parameter is missing or not a valid string", None)
             },
-            CallToolError::ToolNotFound(ref name) => {
+            CallToolError::ToolNotFound(name) => {
                 model::ErrorData::resource_not_found(format!("Tool '{name}' not found"), None)
             },
-            CallToolError::RbacDenied(ref tool) => {
+            CallToolError::RbacDenied(tool) => {
                 model::ErrorData::invalid_request(format!("Access denied by RBAC policy for tool '{tool}'"), None)
             },
-            CallToolError::FunctionGraphNotImplemented => {
-                model::ErrorData::internal_error("FunctionGraph transcoding is not yet implemented", None)
-            },
-            CallToolError::RequestEncoding { ref tool, ref reason } => {
+            CallToolError::RequestEncoding { tool, reason } => {
                 model::ErrorData::internal_error(format!("Failed to encode request for tool '{tool}': {reason}"), None)
             },
-            CallToolError::ClientInitializeError(ref init_err) => match init_err.as_ref() {
-                ClientInitializeError::JsonRpcError(error_data) => error_data.clone(),
+            CallToolError::ClientInitializeError(init_err) => match *init_err {
+                ClientInitializeError::JsonRpcError(error_data) => error_data,
                 ClientInitializeError::ConnectionClosed(msg) => {
                     model::ErrorData::internal_error(format!("Upstream connection closed: {msg}"), None)
                 },
@@ -158,15 +176,13 @@ impl From<CallToolError> for model::ErrorData {
                 ClientInitializeError::Cancelled => {
                     model::ErrorData::internal_error("Upstream client initialization was cancelled", None)
                 },
-                _ => {
-                    model::ErrorData::internal_error(format!("Upstream client initialization error: {init_err}"), None)
+                other => {
+                    model::ErrorData::internal_error(format!("Upstream client initialization error: {other}"), None)
                 },
             },
-            CallToolError::SerdeError(ref e) => {
-                model::ErrorData::parse_error(format!("Serialization error: {e}"), None)
-            },
-            CallToolError::ServiceError(ref svc_err) => match svc_err.as_ref() {
-                ServiceError::McpError(error_data) => error_data.clone(),
+            CallToolError::SerdeError(e) => model::ErrorData::parse_error(format!("Serialization error: {e}"), None),
+            CallToolError::ServiceError(svc_err) => match *svc_err {
+                ServiceError::McpError(error_data) => error_data,
                 ServiceError::TransportSend(e) => {
                     model::ErrorData::internal_error(format!("Upstream transport send error: {e}"), None)
                 },
@@ -181,10 +197,10 @@ impl From<CallToolError> for model::ErrorData {
                 ServiceError::Timeout { timeout } => {
                     model::ErrorData::internal_error(format!("Upstream request timed out after {timeout:?}"), None)
                 },
-                _ => model::ErrorData::internal_error(format!("Upstream service error: {svc_err}"), None),
+                other => model::ErrorData::internal_error(format!("Upstream service error: {other}"), None),
             },
             CallToolError::ValidationError(e) => {
-                model::ErrorData::internal_error(format!("Json schema validation error: {e}"), None)
+                model::ErrorData::invalid_params(format!("Json schema validation error: {e}"), None)
             },
             #[cfg(feature = "codemode")]
             CallToolError::CodeModeConcurrencyLimit => {

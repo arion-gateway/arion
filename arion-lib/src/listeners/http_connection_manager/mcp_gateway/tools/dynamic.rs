@@ -22,14 +22,11 @@ use arion_configuration::config::network_filters::http_connection_manager::http_
     DynamicMcpServer, EmbeddingVector, McpBackendTransportUpstream, McpTool, UpstreamBackend,
 };
 use atomic_time::AtomicInstant;
+#[cfg(test)]
+use rmcp::transport::DynamicTransportError;
 use rmcp::{
-    ServiceExt,
-    model::{ClientCapabilities, ClientConfig, Implementation, InitializeRequestParams, Tool},
-    service::{ClientInitializeError, RoleClient, RunningService},
-    transport::{
-        DynamicTransportError, StreamableHttpClientTransport,
-        streamable_http_client::StreamableHttpClientTransportConfig,
-    },
+    model::{ClientCapabilities, ClientConfig, Implementation, Tool},
+    service::ClientInitializeError,
 };
 use scopeguard::defer;
 use smol_str::SmolStr;
@@ -39,37 +36,29 @@ use super::{
     ToolEntry, ToolId, ToolSource, ToolsRegistry,
     entry::{build_tool_entry, convert_config_rbac_to_runtime},
     errors::ListToolsError,
+    rest::DEFAULT_USER_AGENT,
 };
-use crate::listeners::http_connection_manager::mcp_gateway::rbac::ToolRbac;
-
-use super::rest::DEFAULT_USER_AGENT;
+#[cfg(test)]
+use crate::listeners::http_connection_manager::mcp_gateway::upstream_client::McpHttpClient;
+use crate::listeners::http_connection_manager::mcp_gateway::{rbac::ToolRbac, upstream_client::McpUpstreamClient};
 
 const INDEFINITE_CACHE_LIFETIME: Duration = Duration::from_secs(100 * 365 * 24 * 3600);
 const DEFAULT_DYNAMIC_REFRESH_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
-thread_local! {
-    /// Keep-alive pool local to each worker thread. Each transport retains its
-    /// own MCP session state while sharing this thread's HTTP connection pool.
-    static UPSTREAM_REQWEST_CLIENT: Result<reqwest::Client, StdArc<reqwest::Error>> = reqwest::Client::builder()
-        .pool_max_idle_per_host(usize::MAX)
-        .pool_idle_timeout(Duration::from_secs(90))
-        .tcp_keepalive(Duration::from_secs(60))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(StdArc::new);
-}
-
-fn upstream_http_client() -> Result<reqwest::Client, Box<ClientInitializeError>> {
-    UPSTREAM_REQWEST_CLIENT.with(|result| match result {
-        Ok(client) => Ok(client.clone()),
-        Err(error) => Err(Box::new(ClientInitializeError::TransportError {
+/// Build the upstream MCP HTTP client for `path`, sending through the `HttpChannel` of `cluster`
+/// (endpoints, TLS, HTTP/1 or HTTP/2, connection pools and the Host/:authority header all come
+/// from the cluster).
+#[cfg(test)]
+fn upstream_http_client(cluster: &str, path: &str) -> Result<McpHttpClient, Box<ClientInitializeError>> {
+    McpHttpClient::try_new(cluster, path).map_err(|err| {
+        Box::new(ClientInitializeError::TransportError {
             error: DynamicTransportError::from_parts(
-                "reqwest",
-                std::any::TypeId::of::<reqwest::Client>(),
-                Box::new(StdArc::clone(error)),
+                "arion-cluster",
+                std::any::TypeId::of::<McpHttpClient>(),
+                Box::new(err),
             ),
-            context: "failed to build upstream reqwest client".into(),
-        })),
+            context: "failed to build upstream MCP http client".into(),
+        })
     })
 }
 
@@ -143,6 +132,9 @@ impl ToolsRegistry {
     }
 
     pub(super) async fn refresh_expired_dynamic_servers(&self) {
+        if self.dynamic_mcp_servers.is_empty() {
+            return;
+        }
         let now = Instant::now();
         let expired: Vec<StdArc<DynamicMcpServerEntry>> = {
             let pinned = self.dynamic_mcp_servers.pin();
@@ -210,7 +202,8 @@ impl ToolsRegistry {
         &self,
         server: &DynamicMcpServerEntry,
     ) -> Result<Vec<ToolEntry>, ListToolsError> {
-        let upstream_tools = Self::list_upstream_tools(&server.conf.transport, &server.conf.url).await?;
+        let upstream_tools =
+            Self::list_upstream_tools(&server.conf.transport, &server.conf.cluster, &server.conf.path).await?;
         self.materialise_dynamic_tools(server, upstream_tools)
     }
 
@@ -235,7 +228,8 @@ impl ToolsRegistry {
                 output_schema,
                 backend: UpstreamBackend::McpServer {
                     transport: server.conf.transport.clone(),
-                    url: server.conf.url.clone(),
+                    path: server.conf.path.clone(),
+                    cluster: server.conf.cluster,
                 },
                 rbac: server.conf.rbac.clone(),
                 embedding: EmbeddingVector::default(),
@@ -258,12 +252,13 @@ impl ToolsRegistry {
 
     async fn list_upstream_tools(
         transport: &McpBackendTransportUpstream,
-        url: &str,
+        cluster: &str,
+        path: &str,
     ) -> Result<Vec<Tool>, ListToolsError> {
-        debug!(target: "mcp_gateway", "Listing tools from upstream with transport {transport:?} at {url}");
+        debug!(target: "mcp_gateway", "Listing tools from upstream with transport {transport:?} at {path} (cluster {cluster})");
         match transport {
             McpBackendTransportUpstream::StreamableHttp => {
-                let client = Self::get_mcp_client(url).await?;
+                let client = Self::get_mcp_client(cluster, path).await?;
                 let tools = client.list_tools(Option::default()).await.map_err(Box::new)?;
                 Ok(tools.tools)
             },
@@ -272,16 +267,13 @@ impl ToolsRegistry {
     }
 
     pub(super) async fn get_mcp_client(
-        url: &str,
-    ) -> Result<RunningService<RoleClient, InitializeRequestParams>, Box<ClientInitializeError>> {
-        debug!(target: "mcp_gateway", "Creating MCP client for URL: {url}...");
-        let transport = StreamableHttpClientTransport::with_client(
-            upstream_http_client()?,
-            StreamableHttpClientTransportConfig::with_uri(url),
-        );
+        cluster: &str,
+        path: &str,
+    ) -> Result<McpUpstreamClient, Box<ClientInitializeError>> {
+        debug!(target: "mcp_gateway", "Creating MCP client for path: {path} (cluster {cluster})...");
         let client_info =
             ClientConfig::new(ClientCapabilities::default(), Implementation::new(DEFAULT_USER_AGENT, "0.1.0"));
-        client_info.serve(transport).await.map_err(Box::new).inspect_err(|e| {
+        McpUpstreamClient::connect(cluster, path, client_info).await.inspect_err(|e| {
             info!(target: "mcp_gateway", "get_mcp_client error: {}!", e);
         })
     }
@@ -293,11 +285,12 @@ mod tests {
 
     #[test]
     fn test_upstream_http_client_initialization() {
-        let client_result = upstream_http_client();
-        assert!(client_result.is_ok(), "upstream_http_client should initialize without error: {client_result:?}");
-        let first = client_result.unwrap();
-        let second = upstream_http_client().unwrap();
-        drop(first);
-        drop(second);
+        upstream_http_client("mcp", "/mcp").expect("valid path must build a client");
+    }
+
+    #[test]
+    fn test_upstream_http_client_rejects_invalid_path() {
+        assert!(upstream_http_client("mcp", "not a path").is_err());
+        assert!(upstream_http_client("mcp", "http://example.com/mcp").is_err());
     }
 }

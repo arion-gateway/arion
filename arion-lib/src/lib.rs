@@ -423,7 +423,7 @@ impl Default for ArionRequestBody {
 }
 
 /// The Arion Response Body: a poly body with timeout and an optional pool permit.
-pub type ArionResponseBody = OnEndBody<TimeoutBody<PolyBody>>;
+pub type ArionResponseBody = OnEndBody<TimeoutBody<PolyBody>, crate::transport::pool_permit::BodyEndPermit>;
 
 /// Downstream response body sent to the client: instrumentation over [`ArionResponseBody`].
 pub(crate) type ArionClientBody = InstrumentedBody<ArionResponseBody>;

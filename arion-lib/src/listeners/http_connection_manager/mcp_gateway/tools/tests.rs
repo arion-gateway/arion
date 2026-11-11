@@ -64,7 +64,8 @@ fn dynamic_server_entry(namespace: &str) -> DynamicMcpServerEntry {
         namespace: namespace.to_interned_str(),
         description: "".into(),
         transport: McpBackendTransportUpstream::StreamableHttp,
-        url: "http://localhost/mcp".into(),
+        cluster: "mcp".into(),
+        path: "/mcp".into(),
         cache_duration: None,
         rbac: None,
         disclosure_mode: DisclosureMode::Progressive,
@@ -174,7 +175,8 @@ async fn failed_dynamic_refresh_retains_previous_tools() {
         namespace: "srv".into(),
         description: "".into(),
         transport: McpBackendTransportUpstream::StreamableHttp,
-        url: "http://127.0.0.1:1/mcp".into(),
+        cluster: "mcp".into(),
+        path: "/mcp".into(),
         cache_duration: None,
         rbac: None,
         disclosure_mode: DisclosureMode::Progressive,
@@ -188,7 +190,8 @@ async fn failed_dynamic_refresh_retains_previous_tools() {
         output_schema: serde_json::Map::new(),
         backend: UpstreamBackend::McpServer {
             transport: McpBackendTransportUpstream::StreamableHttp,
-            url: "http://127.0.0.1:1/mcp".into(),
+            cluster: "mcp".into(),
+            path: "/mcp".into(),
         },
         rbac: None,
         embedding: EmbeddingVector::default(),
@@ -553,7 +556,8 @@ fn tds_added_tools_inherit_registry_limits() {
     let mut tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
     tool.backend = UpstreamBackend::McpServer {
         transport: McpBackendTransportUpstream::StreamableHttp,
-        url: "http://localhost/mcp".into(),
+        cluster: "mcp".into(),
+        path: "/mcp".into(),
     };
 
     registry.add_tool(tool).unwrap();
@@ -623,7 +627,8 @@ fn test_remove_dynamic_server_evicts_its_tools() {
         namespace: "srv".into(),
         description: "".into(),
         transport: McpBackendTransportUpstream::StreamableHttp,
-        url: "http://localhost/mcp".into(),
+        cluster: "mcp".into(),
+        path: "/mcp".into(),
         cache_duration: None,
         rbac: None,
         disclosure_mode: DisclosureMode::Progressive,
@@ -640,7 +645,8 @@ fn test_remove_dynamic_server_evicts_its_tools() {
             output_schema: serde_json::Map::new(),
             backend: UpstreamBackend::McpServer {
                 transport: McpBackendTransportUpstream::StreamableHttp,
-                url: "http://localhost/mcp".into(),
+                cluster: "mcp".into(),
+                path: "/mcp".into(),
             },
             rbac: None,
             embedding: EmbeddingVector::default(),

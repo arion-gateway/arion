@@ -43,8 +43,8 @@ use arion_e2e_tests::config_builder::{
     McpRestBackendBuilder, McpServerBackendBuilder, McpToolBuilder, McpToolRbacBuilder, inline_string_data_source,
 };
 use arion_e2e_tests::{
-    ArionInstance, JwtKeyPair, McpTestClient, MockMcpServer, PreConfiguredResponse, SpawnOptions, TestBackend,
-    TestJwtClaims, generate_jwt_token,
+    ArionInstance, CallToolResult, JwtKeyPair, McpJsonRpcRequest, McpTestClient, MockMcpServer, PreConfiguredResponse,
+    SpawnOptions, TestBackend, TestJwtClaims, generate_jwt_token,
 };
 use http::StatusCode;
 use serde_json::json;
@@ -66,10 +66,10 @@ fn rest_tool(name: &str, description: &str, cluster: &str, method: &str, path: &
         .build()
 }
 
-fn mcp_server_tool(name: &str, description: &str, url: impl Into<String>) -> ArionMcpTool {
+fn mcp_server_tool(name: &str, description: &str, cluster: &str, path: impl Into<String>) -> ArionMcpTool {
     McpToolBuilder::new(TEST_TOOL_NAMESPACE, name, description)
         .input_schema(inline_string_data_source("{}"))
-        .mcp_server_backend(McpServerBackendBuilder::new(url))
+        .mcp_server_backend(McpServerBackendBuilder::new(cluster, path))
         .eager()
         .build()
 }
@@ -626,7 +626,7 @@ async fn test_mcp_gateway_rest_policy_timeout_overrides_global_timeout() {
 async fn test_mcp_gateway_mcp_backend() {
     let mut mock_mcp = MockMcpServer::start().await.expect("Failed to start mock MCP server");
 
-    let tool = mcp_server_tool("mock_echo", "Call remote echo tool", format!("http://{}/mcp", mock_mcp.addr()));
+    let tool = mcp_server_tool("mock_echo", "Call remote echo tool", "mcp_backend_cluster", "/mcp");
 
     let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![
         ClusterBuilder::new("mcp_backend_cluster").endpoint(EndpointBuilder::from_socket_addr(mock_mcp.addr())),
@@ -968,9 +968,47 @@ async fn test_mcp_gateway_invalid_arguments() {
     client.initialize().await.expect("Failed to initialize");
 
     // Call with missing required parameter
-    let result = client.call_tool("test.param_tool", json!({})).await;
-    // Should fail validation
-    assert!(result.is_err(), "Calling tool with missing required parameter should return an error");
+    let result = client.call_tool("test.param_tool", json!({})).await.expect("Failed to call tool");
+    // Should fail validation as a tool execution error the model can act on, not a JSON-RPC error
+    assert_eq!(result.is_error, Some(true), "Calling tool with missing required parameter should return an error");
+    assert_eq!(result.structured_content.unwrap()["error"]["code"], "invalid_input");
+
+    arion.shutdown();
+    let _ = std::fs::remove_file(&config_path);
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_mcp_gateway_tool_call_without_arguments() {
+    let backend = TestBackend::start().await.expect("Failed to start test backend");
+    backend.set_default_response(PreConfiguredResponse::with_body(r#"{"result": "ok"}"#)).await;
+
+    let tool = rest_tool("no_args_tool", "Tool without parameters", "backend_cluster", "GET", "/api/no-args");
+
+    let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![
+        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
+    ]);
+
+    let config_path = bootstrap.build_to_temp().expect("Failed to build config");
+
+    let arion = ArionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
+        .await
+        .expect("Failed to spawn Arion");
+
+    let mut client = McpTestClient::new(arion.listener_addr().unwrap());
+    client.initialize().await.expect("Failed to initialize");
+
+    // `arguments` is optional in tools/call, so omitting it must pass input schema validation
+    let request = McpJsonRpcRequest {
+        jsonrpc: "2.0".to_owned(),
+        id: Some(3),
+        method: "tools/call".to_owned(),
+        params: json!({ "name": "test.no_args_tool" }),
+    };
+    let (response, _) = client.send_request(&request).await.expect("Failed to call tool");
+    assert!(response.error.is_none(), "Unexpected JSON-RPC error: {:?}", response.error);
+    let result: CallToolResult = serde_json::from_value(response.result.unwrap()).expect("Failed to parse tool result");
+    assert_eq!(result.is_error, Some(false), "Unexpected tool result: {:?}", result);
 
     arion.shutdown();
     let _ = std::fs::remove_file(&config_path);
@@ -986,7 +1024,7 @@ async fn test_mcp_gateway_mixed_backends() {
 
     let rest_tool = rest_tool("rest_tool", "REST backend tool", "rest_cluster", "GET", "/api/rest");
 
-    let mcp_tool = mcp_server_tool("mock_echo", "MCP backend tool", format!("http://{}/mcp", mock_mcp.addr()));
+    let mcp_tool = mcp_server_tool("mock_echo", "MCP backend tool", "mcp_cluster", "/mcp");
 
     let bootstrap = mcp_gateway_test_config(vec![rest_tool, mcp_tool]).build_bootstrap(vec![
         ClusterBuilder::new("rest_cluster").endpoint(EndpointBuilder::from_socket_addr(rest_backend.addr())),

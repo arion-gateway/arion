@@ -16,21 +16,16 @@
 // limitations under the License.
 
 use super::connector::{UnifiedConnector, map_tls_connect_error};
+use super::pool_permit::{BodyEndPermit, pooled_response};
 use super::timer::PingoraTimer;
 use crate::{
     ArionRequestBody, ArionResponseBody, Error, Result,
-    body::{
-        on_end_body::{BodyEndPermit, OnEndBody},
-        poly_body::PolyBody,
-        timeout_body::TimeoutBody,
-    },
     event_error::UpstreamError,
     thread_local::{LocalBuilder, ThreadLocalObject},
 };
 use arion_configuration::config::cluster::http_protocol_options::Http2ProtocolOptions;
 use http::{Request, Response, Uri, uri::Authority};
 use hyper::{
-    body::Incoming,
     client::conn::http2::{Builder as Http2Builder, SendRequest},
     rt::{Read, Write},
 };
@@ -100,7 +95,7 @@ impl Http2PoolInner {
         });
     }
 
-    fn checkout(&self) -> Option<(SendRequest<ArionRequestBody>, StdArc<AtomicU32>)> {
+    fn checkout(&self) -> Option<(SendRequest<ArionRequestBody>, Http2StreamPermit)> {
         let conns = self.conns.lock();
         for conn in conns.iter() {
             if conn.tx.is_closed() {
@@ -109,16 +104,18 @@ impl Http2PoolInner {
             let in_flight = conn.in_flight.load(Ordering::Relaxed);
             let has_capacity = self.max_concurrent_streams.map(|max| in_flight < max).unwrap_or(true);
             if has_capacity {
-                conn.in_flight.fetch_add(1, Ordering::Relaxed);
                 conn.last_used.store(self.clock.raw(), Ordering::Relaxed);
-                return Some((conn.tx.clone(), StdArc::clone(&conn.in_flight)));
+                return Some((conn.tx.clone(), Http2StreamPermit::acquire(&conn.in_flight)));
             }
         }
         None
     }
 
-    fn insert(&self, tx: SendRequest<ArionRequestBody>, in_flight: StdArc<AtomicU32>) {
+    fn insert(&self, tx: SendRequest<ArionRequestBody>) -> Http2StreamPermit {
+        let in_flight = StdArc::new(AtomicU32::new(0));
+        let permit = Http2StreamPermit::acquire(&in_flight);
         self.conns.lock().push(H2Conn { tx, in_flight, last_used: AtomicU64::new(self.clock.raw()) });
+        permit
     }
 
     fn len(&self) -> usize {
@@ -126,12 +123,23 @@ impl Http2PoolInner {
     }
 }
 
+/// One in-flight stream on an HTTP/2 connection. Taken at checkout and released on drop, so the
+/// slot is freed even when the request future is cancelled before the response arrives.
 pub struct Http2StreamPermit {
     in_flight: StdArc<AtomicU32>,
 }
 
 impl Http2StreamPermit {
-    pub fn on_body_end(self, _completed: bool) {
+    #[inline]
+    fn acquire(in_flight: &StdArc<AtomicU32>) -> Self {
+        in_flight.fetch_add(1, Ordering::Relaxed);
+        Self { in_flight: StdArc::clone(in_flight) }
+    }
+}
+
+impl Drop for Http2StreamPermit {
+    #[inline]
+    fn drop(&mut self) {
         self.in_flight.fetch_sub(1, Ordering::Relaxed);
     }
 }
@@ -246,24 +254,19 @@ impl std::fmt::Debug for Http2Pool {
 
 impl Http2Pool {
     pub async fn send(&self, req: Request<ArionRequestBody>) -> Result<Response<ArionResponseBody>> {
-        let (mut tx, in_flight) = self.checkout().await?;
-        match tx.send_request(req).await {
-            Ok(response) => Ok(attach_stream_permit(in_flight, response)),
-            Err(err) => {
-                in_flight.fetch_sub(1, Ordering::Relaxed);
-                Err(Error::from(UpstreamError::from(err)))
-            },
-        }
+        // The permit is dropped (stream slot released) on error and on cancellation.
+        let (mut tx, permit) = self.checkout().await?;
+        let response = tx.send_request(req).await.map_err(|err| Error::from(UpstreamError::from(err)))?;
+        Ok(pooled_response(response, BodyEndPermit::Http2(permit)))
     }
 
-    async fn checkout(&self) -> Result<(SendRequest<ArionRequestBody>, StdArc<AtomicU32>)> {
+    async fn checkout(&self) -> Result<(SendRequest<ArionRequestBody>, Http2StreamPermit)> {
         if let Some(ready) = self.inner.checkout() {
             return Ok(ready);
         }
         let tx = self.connect_one().await?;
-        let in_flight = StdArc::new(AtomicU32::new(1));
-        self.inner.insert(tx.clone(), StdArc::clone(&in_flight));
-        Ok((tx, in_flight))
+        let permit = self.inner.insert(tx.clone());
+        Ok((tx, permit))
     }
 
     async fn connect_one(&self) -> Result<SendRequest<ArionRequestBody>> {
@@ -280,19 +283,6 @@ impl Http2Pool {
             },
         }
     }
-}
-
-fn attach_stream_permit(in_flight: StdArc<AtomicU32>, response: Response<Incoming>) -> Response<ArionResponseBody> {
-    let (parts, body) = response.into_parts();
-    if http_body::Body::is_end_stream(&body) {
-        in_flight.fetch_sub(1, Ordering::Relaxed);
-        return Response::from_parts(parts, TimeoutBody::new(None, PolyBody::from(body)).into());
-    }
-    Response::from_parts(
-        parts,
-        OnEndBody::new(TimeoutBody::new(None, PolyBody::from(body)))
-            .with_on_end(BodyEndPermit::Http2(Http2StreamPermit { in_flight })),
-    )
 }
 
 async fn handshake<T>(io: T, opts: &Http2ProtocolOptions) -> Result<SendRequest<ArionRequestBody>>
@@ -344,4 +334,100 @@ fn dst_uri(authority: &Authority, tls: bool) -> Result<Uri> {
         .path_and_query(http::uri::PathAndQuery::from_static("/"))
         .build()
         .map_err(Error::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transport::connector::ConnectUsing;
+    use arion_interner::StringInterner;
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Full};
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
+    use std::{convert::Infallible, net::SocketAddr};
+
+    /// h2c server: `/slow` answers after a long delay, `/stream` sends a body in two chunks.
+    async fn spawn_h2_server() -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let service = service_fn(|req: Request<hyper::body::Incoming>| async move {
+                        if req.uri().path() == "/slow" {
+                            pingora_timeout::sleep(Duration::from_secs(30)).await;
+                        }
+                        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(b"hello"))))
+                    });
+                    if let Err(err) = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                        .serve_connection(TokioIo::new(stream), service)
+                        .await
+                    {
+                        debug!("test h2 server connection closed: {err}");
+                    }
+                });
+            }
+        });
+        addr
+    }
+
+    fn pool_for(addr: SocketAddr) -> StdArc<Http2Pool> {
+        let authority = Authority::try_from(addr.to_string()).unwrap();
+        let connect_using = ConnectUsing::Socket {
+            authority: authority.clone(),
+            bind_device: None,
+            connect_timeout: None,
+            idle_timeout: None,
+        };
+        let connector = UnifiedConnector::from((&connect_using, "h2-pool-test".to_interned_str(), true));
+        Http2PoolBuilder.build(Http2PoolArg {
+            connect: Http2Connect::Plain(connector),
+            dst: dst_uri(&authority, false).unwrap(),
+            idle_timeout: Duration::from_secs(60),
+            http2_options: Http2ProtocolOptions::default(),
+        })
+    }
+
+    fn request(addr: SocketAddr, path: &str) -> Request<ArionRequestBody> {
+        Request::builder()
+            .version(http::Version::HTTP_2)
+            .uri(format!("http://{addr}{path}"))
+            .body(ArionRequestBody::default())
+            .unwrap()
+    }
+
+    fn in_flight(pool: &Http2Pool) -> u32 {
+        pool.inner.conns.lock().iter().map(|c| c.in_flight.load(Ordering::Relaxed)).sum()
+    }
+
+    #[tokio::test]
+    async fn stream_slot_is_released_when_send_is_cancelled() {
+        let addr = spawn_h2_server().await;
+        let pool = pool_for(addr);
+
+        let cancelled =
+            pingora_timeout::fast_timeout::fast_timeout(Duration::from_millis(100), pool.send(request(addr, "/slow")))
+                .await;
+        assert!(cancelled.is_err(), "the slow request must time out");
+        assert_eq!(in_flight(&pool), 0, "a cancelled send must not leak an in-flight stream");
+    }
+
+    #[tokio::test]
+    async fn stream_slot_is_released_at_end_of_body_and_on_drop() {
+        let addr = spawn_h2_server().await;
+        let pool = pool_for(addr);
+
+        let response = pool.send(request(addr, "/")).await.unwrap();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&*body, b"hello");
+        assert_eq!(in_flight(&pool), 0, "completed body must release the stream");
+
+        let response = pool.send(request(addr, "/")).await.unwrap();
+        assert!(in_flight(&pool) <= 1);
+        drop(response);
+        assert_eq!(in_flight(&pool), 0, "dropped body must release the stream");
+        assert_eq!(pool.inner.len(), 1, "both requests must share one connection");
+    }
 }
