@@ -74,6 +74,7 @@ Optional features of the `arion-proxy` crate (enable with
 | Feature | Description |
 |---------|-------------|
 | `wasm` | HTTP Wasm filter host (Wasmtime). Required to load Wasm HTTP filters at runtime. |
+| `codemode` | Sandboxed TypeScript execution for MCP code mode. |
 | `metrics` | Metrics collection |
 | `prometheus` | Prometheus metrics export (implies `metrics`) |
 | `access-log` | Access logging |
@@ -98,10 +99,15 @@ to size its worker thread pool.
 
 ## Documentation
 
-See [docs/](docs/) for guides, including [metrics](docs/metrics.md),
+Start with the [documentation index](docs/README.md) for
+[base configuration](docs/configuration.md), [HTTP filters](docs/http-filters.md),
+[external processing](docs/ext-proc.md) and [the MCP gateway](docs/mcp/mcp-gateway.md).
+
+For common setup tasks, see the local guides for [metrics](docs/metrics.md),
 [tracing](docs/tracing.md), [access logging](docs/access-log.md),
-[global rate limiting](docs/global-rate-limiter.md),
-[the MCP gateway](docs/mcp/mcp-gateway.md), and [demos](docs/demos.md).
+[global rate limiting](docs/global-rate-limiter.md) and [demos](docs/demos.md).
+
+The [Arion website](https://arion-gateway.dev/docs/) has the full guides and reference.
 
 ## License
 
