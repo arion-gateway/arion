@@ -1,6 +1,6 @@
 [package]
 name = "arion-wasm-types"
-version = "0.1.0"
+version = "1.0.0"
 edition.workspace = true
 description = "Shared ABI types between the Arion proxy (host) and the Arion Wasm SDK (guest)."
 license = "Apache-2.0"

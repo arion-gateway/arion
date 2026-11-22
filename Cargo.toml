@@ -30,7 +30,7 @@ description  = "Arion Proxy is a cloud native proxy. Arion Proxy is configurable
 edition      = "2024"
 license-file = "./LICENSE"
 rust-version = "1.89"
-version      = "0.1.0"
+version      = "1.0.0"
 
 [workspace.dependencies]
 # --- Arion Internal Crates ---

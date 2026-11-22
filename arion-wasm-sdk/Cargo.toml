@@ -1,6 +1,6 @@
 [package]
 name = "arion_wasm_sdk"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 description = "Guest-side SDK for writing WebAssembly plugins that run inside the Arion proxy."
 license = "Apache-2.0"

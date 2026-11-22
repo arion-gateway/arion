@@ -214,7 +214,7 @@ dependencies = [
 
 [[package]]
 name = "arion-configuration"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -257,7 +257,7 @@ dependencies = [
 
 [[package]]
 name = "arion-data-plane-api"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -275,7 +275,7 @@ dependencies = [
 
 [[package]]
 name = "arion-e2e-tests"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "arion-configuration",
  "arion-data-plane-api",
@@ -322,7 +322,7 @@ dependencies = [
 
 [[package]]
 name = "arion-format"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "ahash",
  "arion-http-header",
@@ -350,14 +350,14 @@ dependencies = [
 
 [[package]]
 name = "arion-http-header"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "http",
 ]
 
 [[package]]
 name = "arion-interner"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "ahash",
  "criterion",
@@ -371,7 +371,7 @@ dependencies = [
 
 [[package]]
 name = "arion-lib"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "abort-on-drop",
  "ahash",
@@ -491,7 +491,7 @@ dependencies = [
 
 [[package]]
 name = "arion-metrics"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "ahash",
  "arion-configuration",
@@ -517,7 +517,7 @@ dependencies = [
 
 [[package]]
 name = "arion-proxy"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "abort-on-drop",
  "affinity",
@@ -562,7 +562,7 @@ dependencies = [
 
 [[package]]
 name = "arion-stats"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "atomicoption",
  "memory-stats",
@@ -572,7 +572,7 @@ dependencies = [
 
 [[package]]
 name = "arion-tracing"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "arc-swap",
  "arion-configuration",
@@ -598,7 +598,7 @@ dependencies = [
 
 [[package]]
 name = "arion-wasm-types"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "bytes",
  "http",
@@ -609,7 +609,7 @@ dependencies = [
 
 [[package]]
 name = "arion-xds"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "arion-configuration",
  "arion-data-plane-api",
@@ -2508,7 +2508,7 @@ dependencies = [
 
 [[package]]
 name = "envoy-data-plane-api"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "glob",
  "prost 0.14.4",
@@ -3305,7 +3305,7 @@ dependencies = [
 
 [[package]]
 name = "hyper_unix_listener"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "clap",
  "hyper",

@@ -104,14 +104,16 @@ examples/
 demos/
 benches/
 **/benches/
-# arion-format declares a [[bench]] target; cargo refuses to load the
-# workspace when its source file is missing
+# Workspace crates that declare explicit [[bench]] targets; cargo refuses
+# to load the workspace when their source files are missing
 !arion-format/benches/
+!arion-interner/benches/
 
-# Exclude tests but keep some bootstrap files used in CI/runtime
+# Exclude tests but keep files referenced by workspace manifests or runtime
 tests/
 **/tests/
 !arion-data-plane-api/tests/bootstrap*.yml
+!arion-e2e-tests/tests/mcp_gateway_semantic_search.rs
 
 # Docs and performance artifacts
 docs/_build/

@@ -8,7 +8,7 @@ WORKDIR /tmp/arion
 
 COPY . .
 
-RUN cargo build --release
+RUN cargo build --release --locked -p arion-proxy --all-features
 
 FROM debian:bookworm-slim
 
