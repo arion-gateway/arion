@@ -78,6 +78,10 @@ docker run -d \
 | `CONTROL_PLANE_IP` | IP address of the control plane          | `127.0.0.1` |
 | `LOG_LEVEL`        | Logging level (debug, info, warn, error) | `info`      |
 | `ARION_CPU_LIMIT`  | Number of CPU cores/threads to use. Set this to control Arion's concurrency, especially in containers. | (auto-detect) |
+
+The other `ARION_*` runtime variables are listed in
+[Base configuration](../docs/configuration.md#runtime-environment-variables).
+
 ### Example: Setting CPU Limit in Docker
 
 To explicitly set the number of CPU cores/threads Arion should use:
