@@ -78,6 +78,10 @@ docker run -d \
 | `CONTROL_PLANE_IP` | IP address of the control plane          | `127.0.0.1` |
 | `LOG_LEVEL`        | Logging level (debug, info, warn, error) | `info`      |
 | `ARION_CPU_LIMIT`  | Number of CPU cores/threads to use. Set this to control Arion's concurrency, especially in containers. | (auto-detect) |
+
+The other `ARION_*` runtime variables are listed in
+[Base configuration](../docs/configuration.md#runtime-environment-variables).
+
 ### Example: Setting CPU Limit in Docker
 
 To explicitly set the number of CPU cores/threads Arion should use:
@@ -89,7 +93,20 @@ docker run -d \
   arion-proxy
 ```
 
-Or, in Kubernetes, use the Downward API as shown in the main README.
+### Example: Setting CPU Limit in Kubernetes
+
+Use the Downward API to pass the container's CPU limit to Arion. With
+`divisor: "1"`, Kubernetes rounds fractional limits up to a whole number of
+cores:
+
+```yaml
+env:
+  - name: ARION_CPU_LIMIT
+    valueFrom:
+      resourceFieldRef:
+        resource: limits.cpu
+        divisor: "1"
+```
 
 ## Verification
 
@@ -115,30 +132,23 @@ curl -v http://localhost:8000/ # Will attempt to proxy to backend (may timeout i
 
 ### Setting up Backend Servers for Testing
 
-The default configuration points to backend servers at `127.0.0.1:4001` and `127.0.0.1:4002`. To test with actual backends:
+The default configuration points to backend servers at `127.0.0.1:4001` and `127.0.0.1:4002`. Inside a container, `127.0.0.1` is the container's own loopback interface, so the backends must listen there. To test with actual backends:
 
-**Using Docker Network (to fix container networking):**
+**Sharing Arion's network namespace (no host networking or config changes needed):**
 
 ```bash
-# Create a custom network
-docker network create arion-net
+# Run Arion with the default configuration
+docker run -d -p 8000:8000 --name arion-proxy arion-proxy
 
-# Start test backend servers on the network
-docker run -d --network arion-net --name backend1 nginx:alpine
-docker run -d --network arion-net --name backend2 nginx:alpine
+# Start test backends on 127.0.0.1:4001 and 127.0.0.1:4002 inside Arion's network namespace
+docker run -d --network container:arion-proxy --name backend1 python:3-alpine python -m http.server 4001
+docker run -d --network container:arion-proxy --name backend2 python:3-alpine python -m http.server 4002
 
-# Update config to use container names instead of localhost
-cp arion-proxy/conf/arion-runtime.yaml my-config.yaml
-sed -i 's/127.0.0.1:4001/backend1:80/g' my-config.yaml
-sed -i 's/127.0.0.1:4002/backend2:80/g' my-config.yaml
+# Requests to / are now spread across both backends
+curl -v http://localhost:8000/
 
-# Run Arion on the same network
-docker run -d \
-  --network arion-net \
-  -p 8000:8000 \
-  -v $(pwd)/my-config.yaml:/etc/arion/arion-runtime.yaml \
-  --name arion-proxy \
-  arion-proxy
+# Clean up
+docker rm -f backend1 backend2 arion-proxy
 ```
 
 **Alternative with host networking:**

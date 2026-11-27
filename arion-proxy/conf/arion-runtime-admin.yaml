@@ -101,12 +101,12 @@ envoy_bootstrap:
                 - endpoint:
                     address:
                       socket_address:
-                        address: 10.206.137.58
+                        address: 127.0.0.1
                         port_value: 4001
                 - endpoint:
                     address:
                       socket_address:
-                        address: 10.206.137.58
+                        address: 127.0.0.1
                         port_value: 4002
 
       - name: cluster_tcp
@@ -119,10 +119,10 @@ envoy_bootstrap:
                 - endpoint:
                     address:
                       socket_address:
-                        address: 10.206.137.58
+                        address: 127.0.0.1
                         port_value: 4003
                 - endpoint:
                     address:
                       socket_address:
-                        address: 10.206.137.58
+                        address: 127.0.0.1
                         port_value: 4004

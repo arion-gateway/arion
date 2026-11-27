@@ -31,6 +31,21 @@ Arion-native capabilities for AI workloads.
 
 ## Quick start
 
+### Prerequisites
+
+- **Rust** 1.89 or later.
+- **`protoc`**, the Protocol Buffers compiler, which generates the Envoy API
+  bindings. It must accept the vendored protobuf v36.1 sources: `protoc` 36.x
+  works, while 34.x fails with `cc_enable_arenas specifies a removal error`.
+  The Debian/Ubuntu `protobuf-compiler` package used by CI and the Docker
+  image also works.
+- **`cmake`** and a C compiler, which build the bundled zlib-ng.
+
+```console
+brew install protobuf cmake                      # macOS
+sudo apt-get install -y protobuf-compiler cmake  # Debian/Ubuntu
+```
+
 ### Build from source
 
 ```console

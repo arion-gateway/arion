@@ -103,13 +103,36 @@ All these sections are optional:
 Runtime precedence is **environment > command-line flags > YAML > defaults**.
 For example, `ARION_CPU_LIMIT` overrides both `--num-cpus` and
 `runtime.num_cpus`. Common runtime variables are `ARION_GATEWAY_RUNTIMES` and
-`ARION_SERVICE_THREADS`. CPU detection honours container cgroup quotas.
+`ARION_SERVICE_THREADS`; see [all runtime variables](#runtime-environment-variables)
+below. CPU detection honours container cgroup quotas.
 Start with runtime defaults and tune for your workload; scheduler knobs are not
 required for a base configuration.
 
 ```bash
 ARION_CPU_LIMIT=4 RUST_LOG=info cargo run --bin arion -- --config arion.yaml
 ```
+
+### Runtime environment variables
+
+Each variable overrides the matching flag and YAML key. Values that do not
+parse as the expected number are ignored, and the next source applies.
+
+| Variable | Flag | YAML key |
+| --- | --- | --- |
+| `ARION_CPU_LIMIT` | `--num-cpus` | `runtime.num_cpus` |
+| `ARION_GATEWAY_RUNTIMES` | `--num-runtimes` | `runtime.num_runtimes` |
+| `ARION_SERVICE_THREADS` | `--num-service-threads` | `runtime.num_service_threads` |
+| `ARION_RT_GLOBAL_QUEUE_INTERVAL` | `--global-queue-interval` | `runtime.global_queue_interval` |
+| `ARION_RT_EVENT_INTERVAL` | `--event-interval` | `runtime.event_interval` |
+| `ARION_RT_MAX_IO_EVENT_PER_TICK` | `--max-io-events-per-tick` | `runtime.max_io_events_per_tick` |
+| `ARION_CODEMODE_POOL_CAPACITY` | | `runtime.codemode.pool_capacity` (default 128) |
+| `ARION_CODEMODE_MAX_MEMORY_BYTES` | | `runtime.codemode.max_memory_bytes` (default 64 MiB) |
+
+`ARION_GATEWAY_CORES` is read as a fallback when `ARION_CPU_LIMIT` is unset or
+invalid. The `ARION_RT_*` variables tune the Tokio scheduler; leave them unset unless
+profiling shows a need. The `ARION_CODEMODE_*` variables apply to
+[MCP code mode](mcp/mcp-gateway.md). `ARION_INTERNER_MAX_ENTRIES` is described
+in the [string interner](arion-interner.md#capacity-limit) guide.
 
 ## Bootstrap sources
 
