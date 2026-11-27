@@ -89,7 +89,20 @@ docker run -d \
   arion-proxy
 ```
 
-Or, in Kubernetes, use the Downward API as shown in the main README.
+### Example: Setting CPU Limit in Kubernetes
+
+Use the Downward API to pass the container's CPU limit to Arion. With
+`divisor: "1"`, Kubernetes rounds fractional limits up to a whole number of
+cores:
+
+```yaml
+env:
+  - name: ARION_CPU_LIMIT
+    valueFrom:
+      resourceFieldRef:
+        resource: limits.cpu
+        divisor: "1"
+```
 
 ## Verification
 
